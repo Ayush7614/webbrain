@@ -21,6 +21,9 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
+import { URL } from 'node:url';
 
 // Keep these two constants in sync with src/chrome/src/agent/agent.js —
 // the whole point of this probe is to mirror what the extension sends.
@@ -75,6 +78,10 @@ console.error(`[info] size:     ${bytes.length} bytes  mime: ${mime}`);
 console.error(`[info] endpoint: ${endpoint}`);
 if (modelArg) console.error(`[info] model:    ${modelArg}`);
 
+// Stream the response so headers arrive immediately. With stream:false,
+// large models (300B+ at low quant) can blow past undici's 5-minute
+// headers timeout during prompt-eval and trip UND_ERR_HEADERS_TIMEOUT
+// before the first byte. Generation content is identical either way.
 const body = {
   messages: [
     { role: 'system', content: VISION_SYSTEM_PROMPT },
@@ -88,7 +95,8 @@ const body = {
   ],
   temperature: 0,
   max_tokens: 800,
-  stream: false,
+  stream: true,
+  stream_options: { include_usage: true },
   // Suppress chain-of-thought preambles across the major reasoning model
   // families:
   //   - Qwen3/3.5/3.6: `enable_thinking: false`
@@ -105,36 +113,87 @@ if (process.env.VISION_PROBE_KEY) {
   headers['Authorization'] = `Bearer ${process.env.VISION_PROBE_KEY}`;
 }
 
+// Use node:http directly instead of fetch — undici's default 5-minute
+// headers timeout fires before the first byte for big multimodal models
+// (300B+ at low quant), where prompt-eval alone can take longer than
+// that.
 const t0 = Date.now();
-let res;
-try {
-  res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
-} catch (e) {
+const url = new URL(endpoint);
+const lib = url.protocol === 'https:' ? https : http;
+const reqBody = JSON.stringify(body);
+const req = lib.request({
+  method: 'POST',
+  hostname: url.hostname,
+  port: url.port || (url.protocol === 'https:' ? 443 : 80),
+  path: url.pathname + url.search,
+  headers: { ...headers, 'Content-Length': Buffer.byteLength(reqBody) },
+});
+req.setTimeout(0); // disable inactivity timeout
+req.on('error', (e) => {
   console.error(`[error] network: ${e.message}`);
   process.exit(1);
-}
-const dt = Date.now() - t0;
-console.error(`[info] status ${res.status}  ${dt} ms`);
+});
+req.write(reqBody);
+req.end();
+const res = await new Promise((resolve) => req.once('response', resolve));
+console.error(`[info] status ${res.statusCode}  ${Date.now() - t0} ms (headers)`);
 
-const txt = await res.text();
-if (!res.ok) {
+if (res.statusCode < 200 || res.statusCode >= 300) {
+  let buf = '';
+  for await (const chunk of res) buf += chunk;
   console.error('[error] response body:');
-  console.error(txt.slice(0, 4000));
+  console.error(buf.slice(0, 4000));
   process.exit(1);
 }
 
-let data;
-try {
-  data = JSON.parse(txt);
-} catch {
-  console.error('[error] non-JSON response:');
-  console.error(txt.slice(0, 4000));
-  process.exit(1);
+// Parse SSE stream. Each event is `data: <json>\n\n`; final event is
+// `data: [DONE]`. Usage arrives in the last JSON event (before [DONE])
+// when stream_options.include_usage is set. Some models (MiMo, DeepSeek)
+// emit `reasoning_content` deltas alongside `content`; we capture both
+// but only the visible content is the structured caption.
+let content = '';
+let reasoning = '';
+let usage2 = {};
+let timings = null;
+let firstTokenAt = null;
+let buffer = '';
+res.setEncoding('utf8');
+process.stdout.write('\n========== MODEL RESPONSE ==========\n');
+for await (const chunk of res) {
+  buffer += chunk;
+  let idx;
+  while ((idx = buffer.indexOf('\n\n')) !== -1) {
+    const event = buffer.slice(0, idx);
+    buffer = buffer.slice(idx + 2);
+    for (const line of event.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6).trim();
+      if (payload === '[DONE]') continue;
+      let evt;
+      try { evt = JSON.parse(payload); } catch { continue; }
+      const delta = evt?.choices?.[0]?.delta || {};
+      if (delta.content) {
+        if (firstTokenAt === null) {
+          firstTokenAt = Date.now();
+          console.error(`[info] ttft:  ${firstTokenAt - t0} ms`);
+        }
+        content += delta.content;
+        process.stdout.write(delta.content);
+      }
+      if (delta.reasoning_content) {
+        if (firstTokenAt === null) {
+          firstTokenAt = Date.now();
+          console.error(`[info] ttft:  ${firstTokenAt - t0} ms (reasoning)`);
+        }
+        reasoning += delta.reasoning_content;
+      }
+      if (evt?.usage) usage2 = evt.usage;
+      if (evt?.choices?.[0]?.timings) timings = evt.choices[0].timings;
+    }
+  }
 }
-
-const content = data?.choices?.[0]?.message?.content || '';
-const usage2 = data?.usage || {};
-console.error(`[info] usage: ${JSON.stringify(usage2)}`);
-console.log('\n========== MODEL RESPONSE ==========');
-console.log(content);
-console.log('====================================\n');
+process.stdout.write('\n====================================\n\n');
+console.error(`[info] total: ${Date.now() - t0} ms`);
+if (reasoning) console.error(`[info] reasoning: ${reasoning.length} chars (suppressed; see model docs to disable)`);
+console.error(`[info] usage:   ${JSON.stringify(usage2)}`);
+if (timings) console.error(`[info] timings: prompt ${timings.prompt_n}t/${timings.prompt_ms?.toFixed(0)}ms (${timings.prompt_per_second?.toFixed(2)}t/s), predict ${timings.predicted_n}t/${timings.predicted_ms?.toFixed(0)}ms (${timings.predicted_per_second?.toFixed(2)}t/s)`);
