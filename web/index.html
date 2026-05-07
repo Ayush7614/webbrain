@@ -122,6 +122,14 @@
     },
     {
       "@type": "Question",
+      "name": "Can I move the Firefox sidebar from the left to the right, like Chrome's side panel?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes — Firefox's sidebar defaults to the left, but you can flip it. Right-click anywhere in the sidebar header and choose 'Move Sidebar to Right' (or use View → Sidebar → Move Sidebar to Right from the menu bar). The position persists across restarts. Chrome's sidePanel defaults to the right and isn't user-movable from the panel itself."
+      }
+    },
+    {
+      "@type": "Question",
       "name": "Is WebBrain safe to use? Can it modify web pages?",
       "acceptedAnswer": {
         "@type": "Answer",
@@ -142,6 +150,14 @@
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "By default, WebBrain always goes through the visible UI for any action that creates, modifies, deletes, sends, submits, posts, or buys anything. It will navigate to the page, fill the form, and click the button — exactly the way you would. It refuses to call REST/GraphQL endpoints directly via background fetch() for mutations. This is deliberate: API actions are invisible (you don't see what's being sent), often require separate auth tokens you may not have configured, and have a much larger blast radius than a visible mis-click. UI-first means everything is on screen, in your normal browser session, and stoppable. For reading data — fetching a README, looking up an issue, comparing prices across sites, checking a status page — WebBrain freely uses background HTTP requests via the fetch_url and research_url tools. Reading is not the same as acting; it doesn't change anything on a remote service, so the safety concerns don't apply. If you specifically want to allow API mutations for a particular task, type /allow-api at the start of your message (optionally followed by a short task description). This per-conversation override lets WebBrain fall back to API endpoints when the UI is genuinely failing or unworkable, while still preferring UI when UI works. A sticky badge stays visible above the input area while the override is active, and it clears when you reset the conversation."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use it in LM Studio too?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. WebBrain's read-only network tools — fetch_url and research_url — also ship as a standalone LM Studio plugin at webbrain/web-tools. Install with `lms clone webbrain/web-tools` and toggle it on in any LM Studio chat — any tool-capable model can then call those two tools without you installing the browser extension. Pure Node, no headless browser."
       }
     },
     {
@@ -1521,6 +1537,11 @@
     </details>
 
     <details class="faq-item">
+      <summary>Can I move the Firefox sidebar from the left to the right, like Chrome&#39;s side panel?</summary>
+      <p>Yes — Firefox&#39;s sidebar defaults to the left, but you can flip it. Right-click anywhere in the sidebar header and choose <strong>Move Sidebar to Right</strong> (or use <strong>View → Sidebar → Move Sidebar to Right</strong> from the menu bar). The position persists across restarts. Chrome&#39;s sidePanel defaults to the right and isn&#39;t user-movable from the panel itself.</p>
+    </details>
+
+    <details class="faq-item">
       <summary>Is WebBrain safe to use? Can it modify web pages?</summary>
       <p>WebBrain has two modes: Ask mode (default) is read-only and cannot modify anything on the page. Act mode enables full browser agent capabilities (clicking, typing, navigating) but requires explicit user confirmation before activation, and comes with a visible warning banner. You can stop the agent at any time with the Stop button. The extension's source code is fully open for audit on GitHub.</p>
     </details>
@@ -1533,6 +1554,11 @@
     <details class="faq-item">
       <summary>Does WebBrain call APIs directly, or does it always click through the UI?</summary>
       <p>By default, WebBrain <strong>always goes through the visible UI</strong> for any action that creates, modifies, deletes, sends, submits, posts, or buys anything. It will navigate to the page, fill the form, and click the button — exactly the way you would. It refuses to call REST/GraphQL endpoints directly via background <code>fetch()</code> for mutations. This is deliberate: API actions are invisible (you don't see what's being sent), often require separate auth tokens you may not have configured, and have a much larger blast radius than a visible mis-click. UI-first means everything is on screen, in your normal browser session, and stoppable.</p><p>For <strong>reading</strong> data — fetching a README, looking up an issue, comparing prices across sites, checking a status page — WebBrain freely uses background HTTP requests via the <code>fetch_url</code> and <code>research_url</code> tools. Reading is not the same as acting; it doesn't change anything on a remote service, so the safety concerns don't apply.</p><p>If you specifically want to allow API mutations for a particular task, type <code>/allow-api</code> at the start of your message (optionally followed by a short task description). This per-conversation override lets WebBrain fall back to API endpoints when the UI is genuinely failing or unworkable, while still preferring UI when UI works. A sticky badge stays visible above the input area while the override is active, and it clears when you reset the conversation.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Can I use it in LM Studio too?</summary>
+      <p>Yes. WebBrain&#39;s read-only network tools — <code>fetch_url</code> and <code>research_url</code> — also ship as a standalone <a href="https://lmstudio.ai" target="_blank">LM Studio</a> plugin at <a href="https://lmstudio.ai/webbrain/web-tools" target="_blank">webbrain/web-tools</a>. Install with <code>lms clone webbrain/web-tools</code> and toggle it on in any LM Studio chat — any tool-capable model can then call those two tools without you installing the browser extension. Pure Node, no headless browser. Source: <a href="https://github.com/esokullu/webbrain/tree/main/lmstudio-plugin" target="_blank">lmstudio-plugin/</a>.</p>
     </details>
 
     <details class="faq-item">

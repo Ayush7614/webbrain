@@ -122,6 +122,14 @@
     },
     {
       "@type": "Question",
+      "name": "Firefox'un yan çubuğunu Chrome'daki gibi soldan sağa taşıyabilir miyim?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Evet — Firefox'un yan çubuğu varsayılan olarak solda görünür, ama sağa alabilirsin. Yan çubuk başlığına sağ tıkla ve 'Yan Çubuğu Sağa Taşı'yı seç (veya menü çubuğundan Görünüm → Yan Çubuk → Yan Çubuğu Sağa Taşı). Konum, yeniden başlatmalar arasında korunur. Chrome'un sidePanel'i varsayılan olarak sağdadır ve panelin kendisinden kullanıcı tarafından taşınamaz."
+      }
+    },
+    {
+      "@type": "Question",
       "name": "WebBrain güvenli mi? Web sayfalarını değiştirebilir mi?",
       "acceptedAnswer": {
         "@type": "Answer",
@@ -142,6 +150,14 @@
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "Varsayılan olarak WebBrain; oluşturan, değiştiren, silen, gönderen, yayınlayan, paylaşan veya satın alan her eylem için her zaman görünür arayüzden gider. Sayfaya gider, formu doldurur ve düğmeye tıklar — tam da senin yapacağın gibi. Mutasyonlar için arka planda fetch() ile REST/GraphQL uç noktalarını doğrudan çağırmayı reddeder. Bu kasıtlıdır: API eylemleri görünmezdir (ne gönderildiğini görmezsin), çoğu zaman yapılandırmadığın ayrı yetki jetonları gerektirir ve görünür bir yanlış tıklamaya göre çok daha geniş bir etki alanına sahiptir. UI-first: her şey ekrandadır, olağan tarayıcı oturumundadır ve durdurulabilir. Veri okumak için — bir README alma, issue arama, fiyat karşılaştırma, durum sayfasını kontrol etme — WebBrain, fetch_url ve research_url araçlarıyla arka plan HTTP isteklerini rahatça kullanır. Okumak eylem değildir; uzak bir serviste hiçbir şey değişmez, bu nedenle güvenlik endişeleri burada geçerli değildir. Belirli bir görev için API mutasyonlarına özellikle izin vermek istiyorsan, mesajının başına /allow-api yaz (isteğe bağlı olarak kısa bir görev tanımı ekle). Konuşma başına geçerli bu geçersiz kılma, arayüz gerçekten başarısız ya da kullanılamaz olduğunda WebBrain'in API uç noktalarına geri düşmesine izin verir; arayüz çalıştığında yine arayüzü tercih eder. Geçersiz kılma aktifken giriş alanının üstünde yapışkan bir rozet görünür ve konuşma sıfırlandığında bayrak temizlenir."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Bunu LM Studio'da da kullanabilir miyim?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Evet. WebBrain'in salt okunur ağ araçları — fetch_url ve research_url — bağımsız bir LM Studio eklentisi olarak webbrain/web-tools adresinde de yayınlanır. `lms clone webbrain/web-tools` ile kur ve herhangi bir LM Studio sohbetinde aç — araç destekleyen herhangi bir model, tarayıcı eklentisini kurmadan bu iki aracı çağırabilir. Saf Node, headless tarayıcı yok."
       }
     },
     {
@@ -1521,6 +1537,11 @@
     </details>
 
     <details class="faq-item">
+      <summary>Firefox&#39;un yan çubuğunu Chrome&#39;daki gibi soldan sağa taşıyabilir miyim?</summary>
+      <p>Evet — Firefox'un yan çubuğu varsayılan olarak solda görünür, ama sağa alabilirsin. Yan çubuk başlığına sağ tıkla ve <strong>Yan Çubuğu Sağa Taşı</strong>'yı seç (veya menü çubuğundan <strong>Görünüm → Yan Çubuk → Yan Çubuğu Sağa Taşı</strong>). Konum, yeniden başlatmalar arasında korunur. Chrome'un sidePanel'i varsayılan olarak sağdadır ve panelin kendisinden kullanıcı tarafından taşınamaz.</p>
+    </details>
+
+    <details class="faq-item">
       <summary>WebBrain güvenli mi? Web sayfalarını değiştirebilir mi?</summary>
       <p>WebBrain'in iki kipi vardır: Sor kipi (varsayılan) salt okunurdur ve sayfada hiçbir şeyi değiştiremez. Uygula kipi tam tarayıcı ajan yeteneklerini (tıklama, yazma, gezinme) açar, ancak etkinleştirilmeden önce kullanıcıdan açık onay ister ve görünür bir uyarı banner'ı ile gelir. İstediğin an Durdur düğmesiyle ajanı durdurabilirsin. Uzantının kaynak kodu denetim için tamamen GitHub'da açıktır.</p>
     </details>
@@ -1533,6 +1554,11 @@
     <details class="faq-item">
       <summary>WebBrain API&#39;leri doğrudan mı çağırır, yoksa her zaman arayüzden mi gider?</summary>
       <p>Varsayılan olarak WebBrain; oluşturan, değiştiren, silen, gönderen, yayınlayan, paylaşan veya satın alan her eylem için <strong>her zaman görünür arayüzden gider</strong>. Sayfaya gider, formu doldurur ve düğmeye tıklar — tam da senin yapacağın gibi. Mutasyonlar için arka planda <code>fetch()</code> ile REST/GraphQL uç noktalarını doğrudan çağırmayı reddeder. Bu kasıtlıdır: API eylemleri görünmezdir (ne gönderildiğini görmezsin), çoğu zaman yapılandırmadığın ayrı yetki jetonları gerektirir ve görünür bir yanlış tıklamaya göre çok daha geniş bir etki alanına sahiptir. UI-first: her şey ekrandadır, olağan tarayıcı oturumundadır ve durdurulabilir.</p><p><strong>Veri okumak</strong> için — bir README alma, issue arama, fiyat karşılaştırma, durum sayfasını kontrol etme — WebBrain, <code>fetch_url</code> ve <code>research_url</code> araçlarıyla arka plan HTTP isteklerini rahatça kullanır. Okumak eylem değildir; uzak bir serviste hiçbir şey değişmez, bu nedenle güvenlik endişeleri burada geçerli değildir.</p><p>Belirli bir görev için API mutasyonlarına özellikle izin vermek istiyorsan, mesajının başına <code>/allow-api</code> yaz (isteğe bağlı olarak kısa bir görev tanımı ekle). Konuşma başına geçerli bu geçersiz kılma, arayüz gerçekten başarısız ya da kullanılamaz olduğunda WebBrain'in API uç noktalarına geri düşmesine izin verir; arayüz çalıştığında yine arayüzü tercih eder. Geçersiz kılma aktifken giriş alanının üstünde yapışkan bir rozet görünür ve konuşma sıfırlandığında bayrak temizlenir.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Bunu LM Studio&#39;da da kullanabilir miyim?</summary>
+      <p>Evet. WebBrain'in salt okunur ağ araçları — <code>fetch_url</code> ve <code>research_url</code> — bağımsız bir <a href="https://lmstudio.ai" target="_blank">LM Studio</a> eklentisi olarak <a href="https://lmstudio.ai/webbrain/web-tools" target="_blank">webbrain/web-tools</a> adresinde de yayınlanır. <code>lms clone webbrain/web-tools</code> ile kur ve herhangi bir LM Studio sohbetinde aç — araç destekleyen herhangi bir model, tarayıcı eklentisini kurmadan bu iki aracı çağırabilir. Saf Node, headless tarayıcı yok. Kaynak: <a href="https://github.com/esokullu/webbrain/tree/main/lmstudio-plugin" target="_blank">lmstudio-plugin/</a>.</p>
     </details>
 
     <details class="faq-item">

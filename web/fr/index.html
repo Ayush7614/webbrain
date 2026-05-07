@@ -122,6 +122,14 @@
     },
     {
       "@type": "Question",
+      "name": "Puis-je déplacer la barre latérale de Firefox de la gauche vers la droite, comme le panneau latéral de Chrome ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Oui — la barre latérale de Firefox est à gauche par défaut, mais vous pouvez la basculer à droite. Faites un clic droit dans l'en-tête de la barre latérale et choisissez 'Déplacer la barre latérale à droite' (ou passez par Affichage → Barre latérale → Déplacer la barre latérale à droite dans la barre de menus). La position est conservée entre les redémarrages. Le sidePanel de Chrome est à droite par défaut et n'est pas déplaçable par l'utilisateur depuis le panneau lui-même."
+      }
+    },
+    {
+      "@type": "Question",
       "name": "WebBrain est-il sûr ? Peut-il modifier les pages web ?",
       "acceptedAnswer": {
         "@type": "Answer",
@@ -142,6 +150,14 @@
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "Par défaut, WebBrain passe toujours par l'interface visible pour toute action qui crée, modifie, supprime, envoie, publie, poste ou achète quoi que ce soit. Il navigue jusqu'à la page, remplit le formulaire et clique sur le bouton — exactement comme vous. Il refuse d'appeler directement des endpoints REST/GraphQL via fetch() en arrière-plan pour des mutations. C'est délibéré : les actions par API sont invisibles (vous ne voyez pas ce qui est envoyé), exigent souvent des jetons d'auth que vous n'avez peut-être pas configurés, et ont un rayon d'impact bien plus large qu'un mauvais clic visible. UI-first signifie que tout est à l'écran, dans votre session habituelle, et interruptible. Pour lire des données — récupérer un README, consulter un ticket, comparer des prix, vérifier une page de statut — WebBrain utilise librement les requêtes HTTP en arrière-plan via les outils fetch_url et research_url. Lire n'est pas agir ; rien ne change sur un service distant, donc les garde-fous ne s'appliquent pas. Si vous voulez autoriser les mutations par API pour une tâche précise, tapez /allow-api en début de message (éventuellement suivi d'une courte description). Cette dérogation par conversation permet à WebBrain de basculer vers des endpoints API quand l'interface échoue vraiment, tout en privilégiant l'UI quand elle fonctionne. Un badge collant reste visible au-dessus de la zone de saisie tant que la dérogation est active, et se dissipe quand vous réinitialisez la conversation."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Puis-je l'utiliser aussi dans LM Studio ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Oui. Les outils réseau en lecture seule de WebBrain — fetch_url et research_url — sont aussi publiés comme plugin autonome LM Studio sur webbrain/web-tools. Installez-le avec `lms clone webbrain/web-tools` et activez-le dans n'importe quel chat LM Studio — tout modèle compatible avec les outils peut alors appeler ces deux outils sans que vous installiez l'extension navigateur. Pur Node, pas de navigateur headless."
       }
     },
     {
@@ -1521,6 +1537,11 @@
     </details>
 
     <details class="faq-item">
+      <summary>Puis-je déplacer la barre latérale de Firefox de la gauche vers la droite, comme le panneau latéral de Chrome ?</summary>
+      <p>Oui — la barre latérale de Firefox est à gauche par défaut, mais vous pouvez la basculer à droite. Faites un clic droit dans l'en-tête de la barre latérale et choisissez <strong>Déplacer la barre latérale à droite</strong> (ou passez par <strong>Affichage → Barre latérale → Déplacer la barre latérale à droite</strong> dans la barre de menus). La position est conservée entre les redémarrages. Le sidePanel de Chrome est à droite par défaut et n'est pas déplaçable par l'utilisateur depuis le panneau lui-même.</p>
+    </details>
+
+    <details class="faq-item">
       <summary>WebBrain est-il sûr ? Peut-il modifier les pages web ?</summary>
       <p>WebBrain a deux modes : le mode Demander (par défaut) est en lecture seule et ne peut rien modifier sur la page. Le mode Agir active les capacités complètes de l'agent (clic, saisie, navigation) mais demande une confirmation explicite de l'utilisateur avant activation et affiche un avertissement visible. Vous pouvez arrêter l'agent à tout moment avec le bouton Arrêter. Le code source de l'extension est entièrement ouvert à l'audit sur GitHub.</p>
     </details>
@@ -1533,6 +1554,11 @@
     <details class="faq-item">
       <summary>WebBrain appelle-t-il les API directement ou passe-t-il toujours par l&#39;interface ?</summary>
       <p>Par défaut, WebBrain <strong>passe toujours par l'interface visible</strong> pour toute action qui crée, modifie, supprime, envoie, publie, poste ou achète quoi que ce soit. Il navigue jusqu'à la page, remplit le formulaire et clique sur le bouton — exactement comme vous. Il refuse d'appeler directement des endpoints REST/GraphQL via <code>fetch()</code> en arrière-plan pour des mutations. C'est délibéré : les actions par API sont invisibles (vous ne voyez pas ce qui est envoyé), exigent souvent des jetons d'auth que vous n'avez peut-être pas configurés, et ont un rayon d'impact bien plus large qu'un mauvais clic visible. UI-first signifie que tout est à l'écran, dans votre session habituelle, et interruptible.</p><p>Pour <strong>lire</strong> des données — récupérer un README, consulter un ticket, comparer des prix, vérifier une page de statut — WebBrain utilise librement les requêtes HTTP en arrière-plan via les outils <code>fetch_url</code> et <code>research_url</code>. Lire n'est pas agir ; rien ne change sur un service distant, donc les garde-fous ne s'appliquent pas.</p><p>Si vous voulez autoriser les mutations par API pour une tâche précise, tapez <code>/allow-api</code> en début de message (éventuellement suivi d'une courte description). Cette dérogation par conversation permet à WebBrain de basculer vers des endpoints API quand l'interface échoue vraiment, tout en privilégiant l'UI quand elle fonctionne. Un badge collant reste visible au-dessus de la zone de saisie tant que la dérogation est active, et se dissipe quand vous réinitialisez la conversation.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Puis-je l&#39;utiliser aussi dans LM Studio ?</summary>
+      <p>Oui. Les outils réseau en lecture seule de WebBrain — <code>fetch_url</code> et <code>research_url</code> — sont aussi publiés comme plugin autonome <a href="https://lmstudio.ai" target="_blank">LM Studio</a> sur <a href="https://lmstudio.ai/webbrain/web-tools" target="_blank">webbrain/web-tools</a>. Installez-le avec <code>lms clone webbrain/web-tools</code> et activez-le dans n'importe quel chat LM Studio — tout modèle compatible avec les outils peut alors appeler ces deux outils sans que vous installiez l'extension navigateur. Pur Node, pas de navigateur headless. Source : <a href="https://github.com/esokullu/webbrain/tree/main/lmstudio-plugin" target="_blank">lmstudio-plugin/</a>.</p>
     </details>
 
     <details class="faq-item">

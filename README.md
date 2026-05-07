@@ -137,6 +137,20 @@ Key difference: Chrome uses Manifest V3 (service worker, `chrome.scripting`, `si
 | `iframe_read` / `iframe_click` / `iframe_type` | No | Yes | Read/click/type inside cross-origin iframes (Stripe, embedded forms). |
 | `done` | Yes | Yes | Signal task completion |
 
+## LM Studio plugin
+
+The `fetch_url` and `research_url` tools also ship as a standalone
+[LM Studio](https://lmstudio.ai) plugin at
+[`webbrain/web-tools`](https://lmstudio.ai/webbrain/web-tools), for
+users who want web-fetching tool-use inside LM Studio chats without
+running the full browser extension. Pure Node, no headless browser.
+
+```bash
+lms clone webbrain/web-tools
+```
+
+Source: [`lmstudio-plugin/`](./lmstudio-plugin/).
+
 ## Slash Commands
 
 WebBrain accepts a small set of slash commands as the first thing on a line in the input box:
