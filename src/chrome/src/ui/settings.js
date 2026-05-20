@@ -368,7 +368,7 @@ if (btnTestCaptcha) {
     captchaTestResult.style.color = 'var(--text2)';
     const res = await sendToBackground('test_capsolver_balance', { apiKey: key });
     if (res.ok) {
-      flashCaptchaResult('ok', t('st.captcha.balance_ok', { balance: Number(res.balance).toFixed(4) }));
+      flashCaptchaResult('ok', t('st.captcha.balance_ok', { balance: `$${Number(res.balance).toFixed(4)}` }));
     } else {
       flashCaptchaResult('fail', t('st.captcha.balance_fail', { error: res.error }));
     }

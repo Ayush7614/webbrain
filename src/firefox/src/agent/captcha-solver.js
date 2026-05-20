@@ -145,20 +145,9 @@ const DETECT_CODE = `(() => {
     try { if (f.contentDocument) docs.push(f.contentDocument); } catch {}
   }
   for (const d of docs) {
-    const recap = d.querySelector('.g-recaptcha[data-sitekey], div[data-sitekey][data-callback], div[id^="g-recaptcha"]');
-    if (recap) {
-      const sitekey = recap.getAttribute('data-sitekey');
-      if (sitekey) {
-        const size = recap.getAttribute('data-size');
-        const action = recap.getAttribute('data-action') || null;
-        return {
-          type: action ? 'recaptcha_v3' : 'recaptcha_v2',
-          websiteKey: sitekey,
-          isInvisible: size === 'invisible',
-          ...(action ? { pageAction: action } : {}),
-        };
-      }
-    }
+    // Provider-specific widgets are checked BEFORE the generic reCAPTCHA
+    // fallback so a Turnstile/hCaptcha widget with data-sitekey + data-callback
+    // doesn't get misclassified as reCAPTCHA.
     const hcap = d.querySelector('.h-captcha[data-sitekey], div[data-hcaptcha-widget-id]');
     if (hcap) {
       const sitekey = hcap.getAttribute('data-sitekey') || hcap.getAttribute('data-hcaptcha-sitekey');
@@ -171,6 +160,20 @@ const DETECT_CODE = `(() => {
     if (turn) {
       const sitekey = turn.getAttribute('data-sitekey') || turn.getAttribute('data-turnstile-sitekey');
       if (sitekey) return { type: 'turnstile', websiteKey: sitekey };
+    }
+    const recap = d.querySelector('.g-recaptcha[data-sitekey], div[id^="g-recaptcha"][data-sitekey]');
+    if (recap) {
+      const sitekey = recap.getAttribute('data-sitekey');
+      if (sitekey) {
+        const size = recap.getAttribute('data-size');
+        const action = recap.getAttribute('data-action') || null;
+        return {
+          type: action ? 'recaptcha_v3' : 'recaptcha_v2',
+          websiteKey: sitekey,
+          isInvisible: size === 'invisible',
+          ...(action ? { pageAction: action } : {}),
+        };
+      }
     }
     if (d.querySelector('script[src*="challenges.cloudflare.com/turnstile"]') ||
         d.querySelector('iframe[src*="challenges.cloudflare.com"]')) {

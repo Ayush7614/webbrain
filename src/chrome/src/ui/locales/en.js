@@ -183,7 +183,7 @@ export default {
   'st.captcha.cleared': 'Cleared.',
   'st.captcha.checking': 'Checking balance…',
   'st.captcha.need_key': 'Enter an API key first.',
-  'st.captcha.balance_ok': 'OK — balance: ${balance}',
+  'st.captcha.balance_ok': 'OK — balance: {balance}',
   'st.captcha.balance_fail': 'Failed: {error}',
   'st.captcha.security_html': '<strong>Heads-up:</strong> the API key is stored <strong>in plaintext</strong> in browser local storage. CapSolver charges your account for every solve; the agent will only call it when a CAPTCHA actually blocks a step (max once per encounter — it won\'t retry on failure). Some sites\' terms of service prohibit automated CAPTCHA solving; use your judgement.',
 
