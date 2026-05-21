@@ -15,7 +15,8 @@
     "downloads",
     "unlimitedStorage",
     "offscreen",
-    "privateNetworkAccess"
+    "privateNetworkAccess",
+    "tabCapture"
   ],
   "host_permissions": [
     "<all_urls>",

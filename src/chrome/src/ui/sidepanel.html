@@ -35,6 +35,15 @@
             <line x1="12" y1="19" x2="20" y2="19"/>
           </svg>
         </button>
+        <button id="btn-record" data-i18n-title="sp.btn.record" aria-haspopup="true" aria-expanded="false">
+          <!-- Default: filled circle (record). Switches to a square (stop) while recording. -->
+          <svg id="btn-record-icon-idle" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="6"/>
+          </svg>
+          <svg id="btn-record-icon-active" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+            <rect x="6" y="6" width="12" height="12" rx="2"/>
+          </svg>
+        </button>
         <button id="btn-settings" data-i18n-title="sp.btn.settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
@@ -54,6 +63,36 @@
     <div id="inspection-banner" class="hidden">
       <div class="inspection-dot"></div>
       <span data-i18n="sp.inspection"></span>
+    </div>
+
+    <!-- Recording controls: options popover (idle) + live banner (active).
+         Both anchored near the toolbar; only one is visible at a time. -->
+    <div id="record-popover" class="hidden" role="dialog" aria-modal="false" data-i18n-aria-label="sp.record.options.title">
+      <div class="record-popover-title" data-i18n="sp.record.options.title"></div>
+      <label class="record-opt">
+        <input type="checkbox" id="record-opt-video" checked>
+        <span data-i18n="sp.record.options.video"></span>
+      </label>
+      <label class="record-opt">
+        <input type="checkbox" id="record-opt-mic" checked>
+        <span data-i18n="sp.record.options.mic"></span>
+      </label>
+      <label class="record-opt">
+        <input type="checkbox" id="record-opt-transcribe">
+        <span data-i18n="sp.record.options.transcribe"></span>
+      </label>
+      <p class="record-consent" data-i18n="sp.record.consent_reminder"></p>
+      <div class="record-popover-actions">
+        <button class="btn-secondary" id="btn-record-cancel" data-i18n="sp.record.cancel"></button>
+        <button class="btn-primary record-start-btn" id="btn-record-start" data-i18n="sp.record.start"></button>
+      </div>
+    </div>
+
+    <div id="recording-banner" class="hidden" role="status" aria-live="polite">
+      <span class="recording-dot" aria-hidden="true"></span>
+      <span class="recording-label" data-i18n="sp.record.banner_label"></span>
+      <span class="recording-timer" id="recording-timer">00:00</span>
+      <button id="btn-recording-stop" class="recording-stop" data-i18n="sp.record.stop"></button>
     </div>
 
     <!-- Chat Messages -->

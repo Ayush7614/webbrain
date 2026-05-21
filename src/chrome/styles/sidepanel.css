@@ -926,3 +926,119 @@ body {
   border-top: 1px dashed var(--border);
 }
 
+
+/* ─── Tab Recorder (v7.4) ─────────────────────────────────────────── */
+
+/* Record button reuses the toolbar button style; the active state recolors
+   to a recording red so the user can see at a glance whether they're
+   capturing. */
+#btn-record { color: var(--text-secondary); }
+#btn-record:hover { color: var(--text-primary); }
+#btn-record.active { color: #ff4136; }
+#btn-record .hidden { display: none; }
+
+/* Options popover. Floats under the toolbar; closes on outside click. */
+#record-popover {
+  position: absolute;
+  top: 48px;
+  right: 12px;
+  z-index: 30;
+  width: 260px;
+  background: var(--bg-card, #1e2746);
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  padding: 14px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+  font-size: 13px;
+}
+#record-popover.hidden { display: none; }
+.record-popover-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.record-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+.record-opt input[type="checkbox"] { accent-color: var(--accent, #6c63ff); cursor: pointer; }
+.record-consent {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  background: rgba(255, 65, 54, 0.08);
+  border-left: 2px solid #ff4136;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.record-popover-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.record-popover-actions button {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.record-popover-actions .btn-secondary {
+  background: var(--bg-input, #1a2240);
+  color: var(--text-primary, #e8e8e8);
+}
+.record-popover-actions .btn-primary,
+.record-popover-actions .record-start-btn {
+  background: #ff4136;
+  color: #fff;
+}
+.record-popover-actions .record-start-btn:hover { background: #e63b32; }
+
+/* Live recording banner — sits below the inspection banner. Red bg so the
+   user can't miss it, with a pulsing dot. */
+#recording-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(255, 65, 54, 0.12);
+  border-bottom: 1px solid rgba(255, 65, 54, 0.3);
+  font-size: 12px;
+  color: var(--text-primary, #e8e8e8);
+}
+#recording-banner.hidden { display: none; }
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff4136;
+  animation: rec-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+.recording-label { flex: 1; font-weight: 600; }
+.recording-timer { font-variant-numeric: tabular-nums; font-weight: 600; color: #ff4136; }
+.recording-stop {
+  background: #ff4136;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.recording-stop:hover { background: #e63b32; }
+
+@media (prefers-reduced-motion: reduce) {
+  .recording-dot { animation: none; }
+}
