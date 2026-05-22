@@ -422,13 +422,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       let stopMessage = '';
       if (loopCheck.kind === 'stop' || coordCheck.kind === 'stop') {
         effectiveKind = 'stop';
+        // Show the model's actual args, not _checkCoordClickLoop's 5px
+        // bucket — for fractional inputs like (0.911, 0.331) the bucket
+        // rounds to (0, 0) and the message reads as if we'd clicked the
+        // top-left corner, hiding what really happened.
         stopMessage = coordCheck.kind === 'stop'
-          ? `Stopped: I clicked at (or near) coordinates (${coordCheck.x}, ${coordCheck.y}) multiple times and the page never responded. That position is hitting empty space, an overlay, or the wrong element. Please give a different instruction or check the page yourself.`
+          ? `Stopped: I clicked at (or near) coordinates (${fnArgs.x}, ${fnArgs.y}) multiple times and the page never responded. That position is hitting empty space, an overlay, or the wrong element. Please give a different instruction or check the page yourself.`
           : loopCheck.message;
       } else if (loopCheck.kind === 'nudge' || coordCheck.kind === 'nudge') {
         effectiveKind = 'nudge';
         nudgeWarning = coordCheck.kind === 'nudge'
-          ? `[COORDINATE CLICK WARNING: You've clicked at or near (${coordCheck.x}, ${coordCheck.y}) several times with no visible page change. The click may be missing its target. Try: (a) call get_interactive_elements to find a real selector, (b) click({text: "..."}) to target by visible text, or (c) take a fresh screenshot and look more carefully at element positions. Try a different approach before clicking these coordinates again.]`
+          ? `[COORDINATE CLICK WARNING: You've clicked at or near (${fnArgs.x}, ${fnArgs.y}) several times with no visible page change. The click may be missing its target. Try: (a) call get_interactive_elements to find a real selector, (b) click({text: "..."}) to target by visible text, or (c) take a fresh screenshot and look more carefully at element positions. Try a different approach before clicking these coordinates again.]`
           : loopCheck.warning;
       }
 
@@ -2199,6 +2203,24 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const action = actionMap[name];
     if (!action) {
       return { error: `Unknown tool: ${name}` };
+    }
+
+    // ── Normalized-coord guard for click({x, y}) ────────────────────────
+    // Some models pass {x: 0.91, y: 0.33} thinking coords are normalized
+    // (0–1 fractions of the viewport). The click handler takes CSS pixels
+    // — so 0.91 hits the very top-left of the page, the click misses, the
+    // model retries the same values, and we burn 8 attempts before the
+    // coord-loop detector trips. Reject up front so the model pivots to
+    // click_ax / click({text}) on the first try.
+    if (name === 'click' && args?.x != null && args?.y != null) {
+      const xn = Number(args.x);
+      const yn = Number(args.y);
+      if (Number.isFinite(xn) && Number.isFinite(yn) && xn >= 0 && xn <= 1 && yn >= 0 && yn <= 1) {
+        return {
+          success: false,
+          error: `Coordinates (${args.x}, ${args.y}) look like normalized values (0–1 fractions of the viewport), not CSS pixels. The click tool expects CSS pixels (e.g. {x: 437, y: 156}). Prefer click_ax({ref_id}) after get_accessibility_tree or click({text: "..."}) over pixel clicks — they don't depend on screenshot resolution. If you must use pixels, take a fresh screenshot and pass integer pixel coordinates from the image.`,
+        };
+      }
     }
 
     // PDF redirect. Firefox's built-in PDF viewer is a privileged page
