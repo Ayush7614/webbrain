@@ -9,6 +9,8 @@
     "unlimitedStorage",
     "tabs",
     "tabGroups",
+    "clipboardWrite",
+    "clipboardRead",
     "<all_urls>"
   ],
   "content_security_policy": "script-src 'self'; object-src 'self'; connect-src * data: blob: http://* ws://*;",

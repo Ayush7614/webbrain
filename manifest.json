@@ -7,7 +7,9 @@
     "sidePanel",
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "clipboardWrite",
+    "clipboardRead"
   ],
   "host_permissions": [
     "<all_urls>"
