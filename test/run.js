@@ -1545,6 +1545,18 @@ test('parseA1: range reversed (C10:A1) is normalized', () => {
   const r = parseA1('C10:A1');
   assert.deepEqual(r, { sheet: null, row: 0, col: 0, rowCount: 10, colCount: 3 });
 });
+test('parseA1: absolute single cell $A$1 is accepted', () => {
+  const r = parseA1('$A$1');
+  assert.deepEqual(r, { sheet: null, row: 0, col: 0, rowCount: 1, colCount: 1 });
+});
+test('parseA1: mixed absolute single cell A$1 is accepted', () => {
+  const r = parseA1('A$1');
+  assert.deepEqual(r, { sheet: null, row: 0, col: 0, rowCount: 1, colCount: 1 });
+});
+test('parseA1: mixed absolute range $B2:C$10 is accepted', () => {
+  const r = parseA1('$B2:C$10');
+  assert.deepEqual(r, { sheet: null, row: 1, col: 1, rowCount: 9, colCount: 2 });
+});
 test('parseA1: lowercase input is uppercased', () => {
   const r = parseA1('a1:c10');
   assert.deepEqual(r, { sheet: null, row: 0, col: 0, rowCount: 10, colCount: 3 });
@@ -1596,6 +1608,10 @@ test('parseA1: sheet prefix Sheet2!A1:C3', () => {
 test("parseA1: quoted sheet prefix 'My Sheet'!A1", () => {
   const r = parseA1("'My Sheet'!A1");
   assert.equal(r.sheet, 'My Sheet');
+});
+test("parseA1: quoted sheet prefix with absolute cell 'My Sheet'!$A$1", () => {
+  const r = parseA1("'My Sheet'!$A$1");
+  assert.deepEqual(r, { sheet: 'My Sheet', row: 0, col: 0, rowCount: 1, colCount: 1 });
 });
 test("parseA1: escaped quote in sheet name 'It''s'!A1", () => {
   const r = parseA1("'It''s'!A1");

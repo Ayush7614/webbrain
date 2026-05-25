@@ -78,7 +78,11 @@ export function detectSheetSite(url) {
 // input so the caller can surface it to the model verbatim.
 // ─────────────────────────────────────────────────────────────────────────
 
-const A1_PATTERN = /^([A-Z]+)?(\d+)?(?::([A-Z]+)?(\d+)?)?$/;
+// Accept both relative and absolute A1 references. The `$` markers only lock
+// rows/columns in spreadsheet formulas; for read/write selection coordinates
+// they do not change the zero-based row/col we return, so the regex captures
+// only the column letters and row digits while ignoring optional `$` prefixes.
+const A1_PATTERN = /^\$?([A-Z]+)?\$?(\d+)?(?::\$?([A-Z]+)?\$?(\d+)?)?$/;
 
 /**
  * Split "Sheet!A1:B2" into { sheet, body }, with proper handling of
