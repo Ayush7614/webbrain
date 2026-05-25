@@ -731,24 +731,140 @@ window.SocialMediaDownloader = (() => {
     return '.bin';
   };
 
-  const saveMse = async ({ prefix = 'mse', minBytes = 1 } = {}) => {
+  // Group captured SourceBuffers by their parent MediaSource. Each
+  // MediaSource ≈ one stream on the page — typically one reel on
+  // infinite-feed viewers like Instagram /reels/, where the player
+  // preloads neighbours as the user scrolls. Without grouping,
+  // "download this reel" once produced 29 files (15 video + 14 audio,
+  // one per preloaded neighbour). Orphan buffers (appendBuffer fired
+  // before our addSourceBuffer hook) become their own group since we
+  // can't attribute them to a specific stream.
+  const _groupMseBuffers = (minBytes) => {
     const state = _mseStateRef();
+    const groups = []; // { url, entries: [bufferEntry], totalBytes }
+    const seen = new Set();
+    for (const [, msEntry] of state.mediaSources) {
+      const entries = [];
+      let totalBytes = 0;
+      for (const sb of msEntry.buffers) {
+        const e = state.buffers.get(sb);
+        if (!e || e.bytes < minBytes) continue;
+        entries.push(e);
+        totalBytes += e.bytes;
+        seen.add(e);
+      }
+      if (entries.length > 0) groups.push({ url: msEntry.url, entries, totalBytes });
+    }
+    const orphanEntries = [];
+    let orphanBytes = 0;
+    for (const [, entry] of state.buffers) {
+      if (seen.has(entry)) continue;
+      if (entry.bytes < minBytes) continue;
+      orphanEntries.push(entry);
+      orphanBytes += entry.bytes;
+    }
+    if (orphanEntries.length > 0) {
+      groups.push({ url: null, entries: orphanEntries, totalBytes: orphanBytes });
+    }
+    return groups;
+  };
+
+  // Pick the "primary" stream when the page captured multiple. Instagram
+  // (and similar infinite-feed viewers) keeps adjacent preloaded reels
+  // mounted as their own <video> elements with their own MediaSources,
+  // so "is the MediaSource attached to any <video>" doesn't narrow at
+  // all — every captured group is. We need a tighter signal for "the
+  // one the user is watching". Probe in priority order:
+  //   1. video is actively playing AND its bounding rect intersects
+  //      the viewport (Instagram autoplays the focused reel; preloaded
+  //      neighbours are paused);
+  //   2. video bounding rect intersects the viewport (user paused, but
+  //      it's still the one on screen);
+  //   3. any <video> in the DOM (last resort).
+  // Within the narrowest non-empty tier we tie-break by total bytes —
+  // longer playback ≈ the one the user actually watched. Bytes alone
+  // are NOT used as the primary signal: an off-screen neighbour that
+  // happened to preload more frames than the focused reel would
+  // otherwise win.
+  const _pickPrimaryMseGroup = (groups) => {
+    if (groups.length <= 1) return groups[0];
+    const byUrl = new Map();
+    for (const g of groups) {
+      if (g.url) byUrl.set(g.url, g);
+    }
+    const playing = new Set();
+    const visible = new Set();
+    const anyDom = new Set();
+    try {
+      if (typeof document !== 'undefined') {
+        const vw = (typeof window !== 'undefined' && window.innerWidth) || 0;
+        const vh = (typeof window !== 'undefined' && window.innerHeight) || 0;
+        for (const v of document.querySelectorAll('video')) {
+          const g = byUrl.get(v.currentSrc) || byUrl.get(v.src);
+          if (!g) continue;
+          anyDom.add(g);
+          let inView = false;
+          try {
+            const r = v.getBoundingClientRect();
+            inView = r.width > 0 && r.height > 0 &&
+                     r.bottom > 0 && r.top < vh &&
+                     r.right > 0 && r.left < vw;
+          } catch (_) { /* detached <video> — leave inView=false */ }
+          if (inView) {
+            visible.add(g);
+            if (v.paused === false) playing.add(g);
+          }
+        }
+      }
+    } catch (_) { /* detached doc — fall through to size heuristic */ }
+    const candidates =
+      playing.size > 0 ? [...playing] :
+      visible.size > 0 ? [...visible] :
+      anyDom.size > 0 ? [...anyDom] :
+      groups;
+    candidates.sort((a, b) => b.totalBytes - a.totalBytes);
+    return candidates[0];
+  };
+
+  // mode mirrors collect()'s resolution so saveMse() doesn't break the
+  // documented `auto` semantics:
+  //   'main'  → keep only the primary stream
+  //   'all'   → keep every captured stream
+  //   'auto'  → main on a single-content URL (e.g. /reel/<id>),
+  //             all on a feed/timeline page (profile.isSingle()).
+  // Without auto resolving via the active profile, a feed page that
+  // captured several MSE streams would silently drop most of them on
+  // the default call. Default 'all' preserves the pre-v4 contract for
+  // any external caller of saveMse() directly (no profile assumed).
+  const saveMse = async ({ prefix = 'mse', minBytes = 1, mode = 'all' } = {}) => {
+    const groups = _groupMseBuffers(minBytes);
+    let primaryOnly;
+    if (mode === 'main') primaryOnly = true;
+    else if (mode === 'all') primaryOnly = false;
+    else { // 'auto' or anything unrecognised → follow the profile
+      try { primaryOnly = !!activeProfile().isSingle(); }
+      catch (_) { primaryOnly = false; }
+    }
+    const toSave = (primaryOnly && groups.length > 1)
+      ? [_pickPrimaryMseGroup(groups)]
+      : groups;
     let i = 1;
     const saved = [];
-    for (const [, entry] of state.buffers) {
-      if (entry.bytes < minBytes) continue;
-      const merged = new Uint8Array(entry.bytes);
-      let off = 0;
-      for (const c of entry.chunks) { merged.set(c, off); off += c.length; }
-      const kind = /audio/i.test(entry.mime) ? 'audio' : 'video';
-      const ext = _mseExtForMime(entry.mime);
-      const fname = `${filenameSafe(prefix)}_${kind}_${String(i).padStart(2, '0')}${ext}`;
-      triggerBlobDownload(
-        new Blob([merged], { type: entry.mime || 'application/octet-stream' }),
-        fname
-      );
-      saved.push({ filename: fname, bytes: entry.bytes, mime: entry.mime });
-      i++;
+    for (const group of toSave) {
+      for (const entry of group.entries) {
+        const merged = new Uint8Array(entry.bytes);
+        let off = 0;
+        for (const c of entry.chunks) { merged.set(c, off); off += c.length; }
+        const kind = /audio/i.test(entry.mime) ? 'audio' : 'video';
+        const ext = _mseExtForMime(entry.mime);
+        const fname = `${filenameSafe(prefix)}_${kind}_${String(i).padStart(2, '0')}${ext}`;
+        triggerBlobDownload(
+          new Blob([merged], { type: entry.mime || 'application/octet-stream' }),
+          fname
+        );
+        saved.push({ filename: fname, bytes: entry.bytes, mime: entry.mime });
+        i++;
+      }
     }
     if (saved.length >= 2) {
       console.log(

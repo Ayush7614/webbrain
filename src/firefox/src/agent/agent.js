@@ -1930,6 +1930,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 try {
                   mseSavedFiles = await window.SocialMediaDownloader.saveMse({
                     prefix: (window.location && window.location.hostname || 'mse').replace(/^www\\./, ''),
+                    mode: ${JSON.stringify(opts.mode)},
                   });
                 } catch (e) {
                   mseSaveError = (e && e.message) || String(e);
