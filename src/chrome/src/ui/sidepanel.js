@@ -184,7 +184,6 @@ const TOOL_KEYS = {
   extract_data: 'tool.extract_data',
   wait_for_element: 'tool.wait_for_element',
   get_selection: 'tool.get_selection',
-  execute_js: 'tool.execute_js',
   new_tab: 'tool.new_tab',
   screenshot: 'tool.screenshot',
   done: 'tool.done',
@@ -1141,7 +1140,7 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 // Page inspection banner — shown when agent starts interacting with the page
-const PAGE_TOOLS = new Set(['read_page', 'get_interactive_elements', 'click', 'type_text', 'scroll', 'extract_data', 'wait_for_element', 'get_selection', 'execute_js', 'screenshot']);
+const PAGE_TOOLS = new Set(['read_page', 'get_interactive_elements', 'click', 'type_text', 'scroll', 'extract_data', 'wait_for_element', 'get_selection', 'screenshot']);
 let inspectionBannerShown = false;
 
 function showInspectionBanner(toolName) {

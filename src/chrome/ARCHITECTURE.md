@@ -1,6 +1,6 @@
 # WebBrain Chrome Extension — Architecture
 
-> Version 8.1.6 · Manifest V3 · Service Worker background
+> Version 8.2.0 · Manifest V3 · Service Worker background
 
 ## High-Level Overview
 
@@ -320,7 +320,9 @@ When `click({text})` or `click({selector})` finds multiple matches, the error pa
 `get_accessibility_tree`, `read_page` (legacy prose), `screenshot`, `get_interactive_elements` (legacy indexed list), `get_selection`, `extract_data`, `get_shadow_dom`, `get_frames`
 
 ### Interaction
-`click_ax`, `type_ax`, `set_field`, `hover` (CDP-trusted, for reveal-on-hover menus), `drag_drop` (CDP-trusted pointer sequence, for Trello/Linear-style reordering), `click` (by text/selector/index/coords — legacy), `type_text`, `press_keys`, `scroll`, `navigate`, `new_tab`, `wait_for_element`, `wait_for_stable` (DOM mutations + network idle), `execute_js`, `iframe_read`, `iframe_click`, `iframe_type`, `upload_file`
+`click_ax`, `type_ax`, `set_field`, `hover` (CDP-trusted, for reveal-on-hover menus), `drag_drop` (CDP-trusted pointer sequence, for Trello/Linear-style reordering), `click` (by text/selector/index/coords — legacy), `type_text`, `press_keys`, `scroll`, `navigate`, `new_tab`, `wait_for_element`, `wait_for_stable` (DOM mutations + network idle), `iframe_read`, `iframe_click`, `iframe_type`, `upload_file`
+
+> **Note:** `execute_js` was removed from the Chrome MV3 tool schema — `new Function()` is blocked by the extension_pages CSP and always throws EvalError. The agent uses `read_page`, `click`, `type_text`, `scroll`, and other fine-grained tools instead. `execute_js` is still available on Firefox MV2.
 
 ### Network / files
 `fetch_url`, `research_url`, `list_downloads`, `read_downloaded_file`, `download_resource_from_page`, `download_files`
@@ -396,7 +398,7 @@ Three independent detectors, strongest action wins:
 
 1. **General repeat** — last 6 tool calls by (name + args hash + outcome). Nudge at 3 identical or ABAB. Stop at 8 nudges without 2 consecutive healthy calls between.
 2. **Coordinate click** — 5-pixel bucketing. Nudge at 5 same-bucket clicks. Stop at 8.
-3. **Navigation** — snapshot URL before `click`/`navigate`/`execute_js`/`iframe_click`, compare 200 ms later. Unexpected change → `[NAVIGATION OCCURRED]` warning.
+3. **Navigation** — snapshot URL before `click`/`navigate`/`iframe_click`, compare 200 ms later. Unexpected change → `[NAVIGATION OCCURRED]` warning.
 
 ---
 

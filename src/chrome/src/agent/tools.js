@@ -324,20 +324,10 @@ export const AGENT_TOOLS = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'execute_js',
-      description: 'Execute custom JavaScript code on the page and return the result. Use for complex operations not covered by other tools.',
-      parameters: {
-        type: 'object',
-        properties: {
-          code: { type: 'string', description: 'JavaScript code to execute' },
-        },
-        required: ['code'],
-      },
-    },
-  },
+  // execute_js removed from Chrome MV3 — `new Function()` is blocked by
+  // the extension_pages CSP and always throws EvalError. The agent copes
+  // by using read_page, click, type_text, scroll, and other fine-grained
+  // tools instead. Kept on Firefox MV2 where eval is still allowed.
   {
     type: 'function',
     function: {
@@ -885,7 +875,6 @@ Available tools:
 - extract_data: Extract tables, headings, or images
 - wait_for_element: Wait for an element to appear
 - get_selection: Get highlighted text
-- execute_js: Run custom JavaScript
 - new_tab: Open a new tab
 - clarify: Pause and ask the user a question. Use ONLY for material ambiguity that you cannot resolve by reading the page (e.g. "my API key" on a site with multiple plugins that each have one). Do NOT use to confirm correct actions; do NOT call before every step. Budget 1-2 per run, max.
 - done: Signal task completion
@@ -970,7 +959,7 @@ DON'T REDO WORK YOU'VE ALREADY DONE — read this:
 - Watch for the loop: doubt → re-navigate to source → re-fetch / re-download → end up further from the goal. If you're about to navigate to a URL or path you've already used this session, STOP and read your scratchpad first.
 
 UI vs API — read this carefully:
-- For ANY action that creates, modifies, deletes, sends, submits, buys, transfers, posts, or publishes anything: ALWAYS go through the visible UI of the current page. NEVER call REST/GraphQL/API endpoints directly via \`fetch_url\` with POST/PUT/PATCH/DELETE, NEVER use \`execute_js\` to call \`fetch()\` with mutation methods, NEVER attempt to "call the API directly to save time".
+- For ANY action that creates, modifies, deletes, sends, submits, buys, transfers, posts, or publishes anything: ALWAYS go through the visible UI of the current page. NEVER call REST/GraphQL/API endpoints directly via \`fetch_url\` with POST/PUT/PATCH/DELETE, NEVER attempt to "call the API directly to save time".
 - The user wants to see what's happening. They want to verify before clicking the final button. They want the action to look exactly like a human did it through the page, not like a script ran in the background. UI flows also generally Just Work with the user's existing session, while API endpoints often require separate tokens the user hasn't configured.
 - TWO exceptions where API mutations are allowed:
   (1) The user explicitly says "use the API" or "call the endpoint directly" or "POST to /foo" in their message — do what they asked.
@@ -1060,10 +1049,10 @@ SCROLLING — read this:
 - After filling visible fields, always scroll down to check for more fields before submitting.
 
 SOCIAL MEDIA DOWNLOADS — read this:
-- When the user asks to download images or videos from Facebook, Instagram, X/Twitter, LinkedIn, Reddit, Pinterest, or YouTube (thumbnails), call \`download_social_media\` — it is a SINGLE tool call that handles the per-site DOM, picks the right resolution, and saves to the Downloads folder. Do NOT inspect the page with \`get_accessibility_tree\` + \`execute_js\` + \`download_file\` to figure it out yourself; the tool already knows.
+- When the user asks to download images or videos from Facebook, Instagram, X/Twitter, LinkedIn, Reddit, Pinterest, or YouTube (thumbnails), call \`download_social_media\` — it is a SINGLE tool call that handles the per-site DOM, picks the right resolution, and saves to the Downloads folder. Do NOT inspect the page with \`get_accessibility_tree\` + \`download_file\` to figure it out yourself; the tool already knows.
 - Defaults: on single-content pages (e.g. /photo/, /p/, /reel/, /status/.../photo/, /pin/, /comments/) it grabs the main item; pass \`scroll:true\` to walk a feed/profile/timeline and capture everything that lazy-loads.
 - After it returns, optionally call \`list_downloads\` to surface the saved filenames for the user. Some CDNs (notably media.licdn.com) block CORS and the tool will open the media in a new tab as fallback — that is expected behavior, not a failure.
-- The tool may return a \`recommendation\` field with shape \`{ kind, message }\`. This means SMD knowingly cannot handle the request well — most often YouTube full video (Widevine DRM + signatureCipher), an MSE blob the player hasn't loaded yet, or a site outside SMD's supported list. When it appears, RELAY \`recommendation.message\` to the user verbatim in your reply — it points them at the right external CLI tool (\`yt-dlp\` for video, \`gallery-dl\` for images) with a copy-pasteable command. Do NOT try to work around it with \`execute_js\`, \`get_accessibility_tree\`, or repeated tool calls — the recommendation exists precisely because those paths cannot help. Exception: \`kind: "mse_capture_available"\` is the one case where you SHOULD follow up — it means the MSE recorder buffered bytes while the page was open, and the message tells you to call \`await SocialMediaDownloader.saveMse()\` via \`execute_js\` to download them.
+- The tool may return a \`recommendation\` field with shape \`{ kind, message }\`. This means SMD knowingly cannot handle the request well — most often YouTube full video (Widevine DRM + signatureCipher), an MSE blob the player hasn't loaded yet, or a site outside SMD's supported list. When it appears, RELAY \`recommendation.message\` to the user verbatim in your reply — it points them at the right external CLI tool (\`yt-dlp\` for video, \`gallery-dl\` for images) with a copy-pasteable command. Do NOT try to work around it with \`get_accessibility_tree\` or repeated tool calls — the recommendation exists precisely because those paths cannot help.
 
 LISTINGS & PAGINATION — read this:
 - Listing / search-result pages (URLs with query params like ?page=, ?p=, ?sd=, ?offset=, ?after=, &cursor=; or pages that show many product/result cards with Next/Sonraki/Suivant/下一页 controls): EXTRACT first, paginate second.
