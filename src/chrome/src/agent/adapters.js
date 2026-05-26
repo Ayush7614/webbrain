@@ -199,7 +199,8 @@ const ADAPTERS = [
     notes: `
 - Member-only articles show a paywall partway through — the agent sees "Read more" or a sign-up gate, not the full text.
 - The clap button increments per click up to 50; long-press equivalent is multiple clicks.
-- Highlights are inline annotations; hovering text shows the highlight popover.`,
+- Highlights are inline annotations; hovering text shows the highlight popover.
+- Editor (medium.com/new-story and /p/<id>/edit): the whole article is ONE contenteditable "textbox" containing an H1 (title) followed by paragraphs (body) as sibling blocks. The a11y tree exposes it as one ref_id even though it visually looks like multiple fields. DO NOT call set_field or type_text({selector: 'div[contenteditable]'}) on the outer textbox — that replaces the entire article (title AND body) with one string. Instead: click the "Title" placeholder, type the title, press Enter to start the body paragraph, then type the body. Use press_keys({key: "Enter"}) between blocks, not newlines inside one type_text call.`,
   },
   {
     name: 'substack',

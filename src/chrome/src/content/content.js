@@ -698,10 +698,14 @@
       };
     }
 
-    // Stale click detection: warn if the same element is clicked again
+    // Stale click detection: warn if the same element is clicked again.
+    // Skip for editable targets — re-clicking a text field / contenteditable
+    // is legitimate (positions cursor / re-focuses) and "no page change" is
+    // the expected outcome there, not a failure signal.
+    const isEditableTarget = el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
     const ident = `${el.tagName}|${(el.innerText || '').slice(0, 50)}|${location.href}`;
     let warning;
-    if (_lastClickIdent === ident) {
+    if (_lastClickIdent === ident && !isEditableTarget) {
       warning = 'Same element clicked again with no page change. Try click({x, y}) with coordinates from a screenshot, or click({index: N}) from get_interactive_elements.';
     }
     _lastClickIdent = ident;

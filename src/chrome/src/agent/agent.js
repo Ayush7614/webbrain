@@ -4303,11 +4303,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             };
           }
 
-          // Stale click detection
+          // Stale click detection — skip for editable targets, where re-clicking
+          // is legitimate (positions cursor / re-focuses field) and "no page change"
+          // is the expected outcome, not a failure signal.
+          const postEditable = await cdpClient.evaluate(tabId, `
+            (() => {
+              const ae = document.activeElement;
+              if (!ae) return false;
+              if (ae.isContentEditable) return true;
+              const tag = ae.tagName;
+              return tag === 'INPUT' || tag === 'TEXTAREA';
+            })()
+          `);
+          const isEditableTarget = postEditable?.result?.value === true;
           const clickIdent = `${info.tag}|${(info.text || '').slice(0, 50)}`;
           const prevIdent = this._lastCdpClickIdent.get(tabId);
           this._lastCdpClickIdent.set(tabId, clickIdent);
-          const warning = (prevIdent === clickIdent)
+          const warning = (prevIdent === clickIdent && !isEditableTarget)
             ? 'Same element clicked again with no page change. Try click({x, y}) with coordinates from a screenshot, or click({index: N}) from get_interactive_elements.'
             : undefined;
 
