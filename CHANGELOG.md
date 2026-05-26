@@ -4,6 +4,18 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / `manifest.json` version.
 
+## [8.1.0] - 2026-05-26
+
+### Added
+- Added first-launch onboarding wizard: a 3-step walkthrough covering what WebBrain does, Act mode safety warnings, and LLM provider setup.
+- Added MiniMax and Alibaba Cloud (Qwen) as new cloud providers.
+- Added model suggestion dropdowns for all cloud providers with a "Custom..." option for free-form entry.
+
+### Changed
+- Settings page now opens on the Providers tab by default.
+- Updated model suggestions and placeholders across all cloud providers to current models.
+- Hidden the Claude Pro/Max subscription provider card until OAuth flow is fixed.
+
 ## [8.0.0] - 2026-05-25
 
 ### Added
