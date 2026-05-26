@@ -555,7 +555,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // /allow-api for this tab. Inject only once per "allowed run" to avoid
     // bloating every subsequent turn.
     if (this.apiAllowedTabs.has(tabId) && !this.apiAllowedInjected.has(tabId)) {
-      contextLine += `[USER OVERRIDE — /allow-api: For this conversation the user has explicitly authorized you to use API mutations (POST/PUT/PATCH/DELETE via fetch_url, or fetch() with mutation methods via execute_js) when you judge API to be more reliable than UI for a specific step. The default UI-first rule still applies — only reach for the API when UI has actually failed or is genuinely unworkable. Before any destructive API call (anything that creates, deletes, transfers, or charges), state the URL, method, and payload in plain text in your response so the user can see what you're about to do.]\n\n`;
+      contextLine += `[USER OVERRIDE — /allow-api: For this conversation the user has explicitly authorized you to use API mutations (POST/PUT/PATCH/DELETE via fetch_url) when you judge API to be more reliable than UI for a specific step. The default UI-first rule still applies — only reach for the API when UI has actually failed or is genuinely unworkable. Before any destructive API call (anything that creates, deletes, transfers, or charges), state the URL, method, and payload in plain text in your response so the user can see what you're about to do.]\n\n`;
       this.apiAllowedInjected.add(tabId);
     }
 
@@ -698,7 +698,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // URL before these and re-check after, so we can warn the model when an
     // unintended navigation happens (the most common cause of "model keeps
     // executing the original plan on a totally different page").
-    const NAV_PRONE_TOOLS = new Set(['click', 'navigate', 'execute_js', 'iframe_click']);
+    const NAV_PRONE_TOOLS = new Set(['click', 'navigate', 'iframe_click']);
     const navNotices = []; // accumulated for injection after the loop
 
     for (const tc of toolCalls) {
@@ -4944,7 +4944,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       'wait_for_element': 'wait_for_element',
       'wait_for_stable': 'wait_for_stable',
       'get_selection': 'get_selection',
-      'execute_js': 'execute_js',
     };
 
     const action = actionMap[name];
@@ -4982,7 +4981,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           name === 'press_keys' || name === 'scroll' ||
           name === 'get_accessibility_tree' || name === 'get_interactive_elements' ||
           name === 'extract_data' || name === 'wait_for_element' || name === 'wait_for_stable' ||
-          name === 'get_selection' || name === 'execute_js'
+          name === 'get_selection'
         ) {
           return {
             success: false,
