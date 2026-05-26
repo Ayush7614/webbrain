@@ -161,7 +161,7 @@ Key difference: Chrome uses Manifest V3 (service worker, `chrome.scripting`, `si
 | `solve_captcha` | -- | Yes | -- | Solve CAPTCHAs via CapSolver API (optional, requires API key) |
 | `done` | Yes | Yes | Yes | Signal task completion |
 
-**Compact mode** is a reduced tool set + shorter system prompt designed for small local models (2B–8B). It cuts the schema from 40+ tools to 20, reducing decision surface and hallucination. Enable it per-provider in Settings (checkbox on llama.cpp, Ollama, LM Studio — on by default for Ollama and LM Studio).
+**Compact mode** is a reduced tool set + shorter system prompt designed for small local models (2B–8B). It cuts the schema from 40+ tools to 20, reducing decision surface and hallucination. Enable it per-provider in Settings (checkbox on llama.cpp, Ollama, LM Studio — off by default).
 
 > **Shadow DOM note:** The accessibility tree only traverses light DOM. On Web Component-heavy pages (Stripe, Salesforce, Shopify), use `get_interactive_elements` (pierces open shadow roots) or `get_shadow_dom` / `shadow_dom_query` for targeted reads.
 
