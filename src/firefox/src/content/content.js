@@ -875,10 +875,39 @@
 
   let _lastTypeFieldIdent = null;
 
-  /**
-   * Type text into an input/textarea.
-   */
+  let _deasciifierLoaded = false;
+  function _loadDeasciifier() {
+    if (_deasciifierLoaded || window.__turkishDeasciifier) {
+      _deasciifierLoaded = true;
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = browser.runtime.getURL('vendor/turkish-deasciifier.js');
+      s.onload = () => { _deasciifierLoaded = true; resolve(); };
+      s.onerror = () => reject(new Error('Failed to load Turkish deasciifier'));
+      (document.head || document.documentElement).appendChild(s);
+    });
+  }
+
+  function _applyLangTransform(text, lang) {
+    if (lang === 'tr-deasciify' && window.__turkishDeasciifier) {
+      return window.__turkishDeasciifier.deasciify(text);
+    }
+    return text;
+  }
+
   function typeText(params) {
+    if (params.lang) {
+      return _loadDeasciifier().then(() => {
+        params.text = _applyLangTransform(params.text, params.lang);
+        return _typeTextInner(params);
+      }).catch(e => ({ success: false, error: e.message }));
+    }
+    return _typeTextInner(params);
+  }
+
+  function _typeTextInner(params) {
     let el;
     if (params.selector) {
       el = document.querySelector(params.selector);
@@ -1384,6 +1413,13 @@
         }
       },
       'type_ax': () => {
+        if (msg.params?.lang) {
+          return _loadDeasciifier().then(() => {
+            msg.params.text = _applyLangTransform(msg.params.text, msg.params.lang);
+            delete msg.params.lang;
+            return handlers['type_ax']();
+          }).catch(e => ({ success: false, error: e.message }));
+        }
         try {
           const { ref_id, text, clear } = msg.params || {};
           if (typeof ref_id !== 'string') return { success: false, error: 'ref_id (string, e.g. "ref_42") is required' };
@@ -1447,6 +1483,11 @@
       },
       'set_field': async () => {
         try {
+          if (msg.params?.lang) {
+            await _loadDeasciifier();
+            msg.params.text = _applyLangTransform(msg.params.text, msg.params.lang);
+            delete msg.params.lang;
+          }
           const { ref_id, text, clear = true, submit = false } = msg.params || {};
           if (typeof ref_id !== 'string') return { success: false, error: 'ref_id (string, e.g. "ref_42") is required' };
           if (typeof text !== 'string') return { success: false, error: 'text (string) is required' };

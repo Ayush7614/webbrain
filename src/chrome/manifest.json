@@ -75,7 +75,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["vendor/pdfjs/pdf.mjs", "vendor/pdfjs/pdf.worker.mjs"],
+      "resources": ["vendor/pdfjs/pdf.mjs", "vendor/pdfjs/pdf.worker.mjs", "vendor/turkish-deasciifier.js"],
       "matches": ["<all_urls>"]
     }
   ]
