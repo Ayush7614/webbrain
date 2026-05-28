@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'Ajustes de WebBrain',
   'st.subtitle': 'Configura tus proveedores de LLM y preferencias de visualización · v{version}',
-  'st.tab.display': 'Visualización',
+  'st.tab.display': 'General',
   'st.tab.providers': 'Proveedores',
   'st.tab.vision': 'Visión',
   'st.tab.profile': 'Perfil',

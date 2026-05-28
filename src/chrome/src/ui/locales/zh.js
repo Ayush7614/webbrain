@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'WebBrain 设置',
   'st.subtitle': '配置你的 LLM 提供商和显示偏好 · v{version}',
-  'st.tab.display': '显示',
+  'st.tab.display': '通用',
   'st.tab.providers': '提供商',
   'st.tab.vision': '视觉',
   'st.tab.profile': '个人资料',

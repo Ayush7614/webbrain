@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'Pengaturan WebBrain',
   'st.subtitle': 'Konfigurasikan penyedia LLM dan preferensi tampilan · v{version}',
-  'st.tab.display': 'Tampilan',
+  'st.tab.display': 'Umum',
   'st.tab.providers': 'Penyedia',
   'st.tab.vision': 'Visi',
   'st.tab.profile': 'Profil',

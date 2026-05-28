@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'WebBrain 설정',
   'st.subtitle': 'LLM 제공자와 표시 설정을 구성합니다 · v{version}',
-  'st.tab.display': '표시',
+  'st.tab.display': '일반',
   'st.tab.providers': '제공자',
   'st.tab.vision': '비전',
   'st.tab.profile': '프로필',

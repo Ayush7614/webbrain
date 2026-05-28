@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'Tetapan WebBrain',
   'st.subtitle': 'Konfigurasi pembekal LLM dan keutamaan paparan anda · v{version}',
-  'st.tab.display': 'Paparan',
+  'st.tab.display': 'Umum',
   'st.tab.providers': 'Pembekal',
   'st.tab.vision': 'Penglihatan',
   'st.tab.profile': 'Profil',

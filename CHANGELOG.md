@@ -4,6 +4,44 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / `manifest.json` version.
 
+## [8.5.0] - 2026-05-28
+
+### Fixed
+- Comprehensive bug audit covering 65+ fixes across Chrome and Firefox builds.
+- Preserved run-guard state on conversation clear so an in-flight agent run can still be stopped cleanly.
+- Extended PDF read timeout through the response body phase, not just the connection phase.
+
+## [8.4.0] - 2026-05-27
+
+### Changed
+- Merged `download_file` into `download_files` so a single tool handles both single-URL and array cases (max 3 concurrent).
+- Compact-mode tool allowlist is now scoped to Act mode only; Ask mode keeps the full tool surface even when compact prompts are enabled.
+
+### Fixed
+- Suppressed stale-click warnings on editable targets (e.g. contenteditable Medium editors) where the click is intentional.
+- `downloadFiles` now passes the user-supplied filename through to the download instead of falling back to the URL slug.
+- Compact-mode allowlist is now enforced on text-parsed tool calls too, not only structured tool calls.
+- `solve_captcha` is now part of the compact tool set so it stays available in compact mode.
+
+## [8.3.0] - 2026-05-27
+
+### Changed
+- Compact mode is now fully opt-in: it never auto-enables based on model size heuristics. Users must check the box per-provider in Settings.
+
+### Documentation
+- Clarified in README and settings copy that compact mode is opt-in only and not auto-enabled.
+
+## [8.2.2] - 2026-05-26
+
+### Fixed
+- Restricted deasciifier loading to `lang: "tr-deasciify"` so the ~175KB pattern table isn't pulled in for non-Turkish typing.
+- Loaded the deasciifier in the content-script isolated world to avoid leaking globals into page scripts.
+
+## [8.2.1] - 2026-05-26
+
+### Fixed
+- Patch release for deasciification edge cases discovered shortly after 8.2.0.
+
 ## [8.2.0] - 2026-05-26
 
 ### Added

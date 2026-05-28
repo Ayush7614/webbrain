@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'WebBrain 設定',
   'st.subtitle': 'LLM プロバイダーと表示設定を構成 · v{version}',
-  'st.tab.display': '表示',
+  'st.tab.display': '一般',
   'st.tab.providers': 'プロバイダー',
   'st.tab.vision': '画像認識',
   'st.tab.profile': 'プロフィール',

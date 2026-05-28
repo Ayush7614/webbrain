@@ -220,41 +220,7 @@ The default UI-first rule exists because API actions are invisible (you don't se
 
 ## What's New
 
-### 6.1.0
-
-- **Native PDF reading.** Chrome's and Firefox's built-in PDF viewers are privileged pages our content scripts cannot inject into, so the previous behaviour was for the agent to click-loop on the viewer chrome (sidebar, page-number input) until the user stopped it — one observed run burned 17 steps / 184 seconds / 345k input tokens producing nothing. v6.1.0 fixes this with a new `read_pdf` tool that fetches the PDF binary directly and parses it with a vendored `pdfjs-dist` (~3 MB lazy-loaded on first PDF read). `read_page` against a PDF tab now transparently redirects to `read_pdf`; click / type / get_accessibility_tree return a clear error pointing the model at `read_pdf`.
-- **Claude PDF passthrough (Tier 2).** When the active provider is Anthropic Claude, `read_pdf` ALSO attaches the raw PDF bytes as a native `document` content block on the follow-up user message — the model gets the full layout, tables, and embedded images, not just the plain-text extraction. The text extraction still runs (so the model can quote passages), the document attachment is additive. Capped at 16 MB binary to leave room for the rest of the conversation.
-- **file:// PDFs.** For local PDF files, Chrome requires the user to enable "Allow access to file URLs" at chrome://extensions per-extension; the tool surfaces a descriptive error explaining this rather than silently failing.
-
-### 6.0.1
-
-- **Firefox parity for the on-page agent indicator and tab grouping.** The pulsing purple border + "Stop WebBrain" floating button now appear on Firefox while the agent is running, identical to the Chrome experience. The browser action click also drops the source tab into a colored "WebBrain" tab group on Firefox 142+ (the version that introduced the `browser.tabGroups` API), and the agent's `new_tab` tool joins spawned tabs to the same group. Older Firefox versions silently skip the grouping step.
-- **What's NOT ported to Firefox:** sidebar-visibility scoping. Firefox's `browser.sidebarAction` is a window-level toggle with no per-tab `enabled` flag, so the Chrome behaviour where the panel hides on non-WebBrain tabs has no clean equivalent. Firefox sidebar continues to follow user toggle.
-
-### 6.0.0
-
-- **On-page agent indicator (Chrome).** While the agent is acting on a tab, the page now shows a soft purple inset glow around the viewport plus a "Stop WebBrain" floating button at the bottom — same UX pattern as Claude-for-Chrome. Clicking Stop aborts the run without you having to switch back to the side panel. The indicator hides itself during screenshot capture so it doesn't end up in the images sent to the vision model.
-- **Group-scoped side panel visibility (Chrome).** Clicking the WebBrain action now puts the source tab into a "WebBrain" tab group; the side panel is shown only for tabs in that group. Switch to any tab outside the group → panel hides. Drag the tab out of the group → panel hides. Mirrors how Claude-for-Chrome handles sidebar scope and replaces the older per-tab opt-in Set, which left the panel "sticky" across tab switches.
-  - Adds `tabs` and `tabGroups` permissions (Chrome will surface a permissions notice on auto-update).
-  - Tabs the agent opens via `new_tab` or `target=_blank` redirects automatically join the same group.
-
-### 5.x
-
-- **Token-conscious screenshots.** All viewport and full-page screenshots are now resized to fit a vision-token budget (≤1568 tokens, ≤1.4 MB base64) before being sent to a vision model — uses CDP-side `clip.scale` for capture-time downscaling, with iterative JPEG-quality fallback (0.75 → 0.10) for the byte ceiling. Pathological full-page captures drop from ~19.6k tokens to ~750.
-- **Multilingual UI** in 5 languages (English, Spanish, French, Turkish, Chinese).
-- **Vision-model split-provider mode.** Pair a fast text-only planner with a separate vision-capable model; screenshots get a structured 6-section caption from the vision model and only the text reaches the planner.
-- **Profile auto-fill** for low-stakes signup forms — opt-in plaintext bio (name, work email, throwaway password) injected into the agent's system prompt.
-- **Cookie banner & paywall guidance** built into the universal preamble — agent dismisses OneTrust/Cookiebot/Didomi/Quantcast/Funding-Choices banners automatically and refuses to bypass paywalls.
-- **Site adapters** for ~25 high-traffic sites (GitHub, Stripe, Gmail, AWS console, NYT/WSJ/FT/Bloomberg/Economist paywalls, etc.).
-
-### 4.2.0 (from 1.x)
-
-- **Safety-first API behavior** via `/allow-api` per-conversation override (UI-first for mutations by default)
-- **Cross-origin iframe interaction tools** (`iframe_read`, `iframe_click`, `iframe_type`) for embedded forms and widgets
-- **Network research tools** (`fetch_url`, `research_url`) for fast read-only data retrieval
-- **Download workflow tools** (`download_file`, `download_files`, `list_downloads`, `read_downloaded_file`)
-- **PDF reading tool** (`read_pdf`) for direct PDF extraction when viewer pages block DOM access
-- **Trace viewer and quality-of-life upgrades** including step-limit continuation and stronger context controls
+See [CHANGELOG.md](./CHANGELOG.md) for the full version history. Recent highlights: native PDF reading with Claude passthrough (8.x), 65+ bug fixes in 8.5.0, compact mode going fully opt-in (8.3.0), Turkish deasciification (8.2.x), on-page agent indicator and tab-group-scoped side panel (6.0.x).
 
 ## Roadmap
 

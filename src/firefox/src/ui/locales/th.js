@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'การตั้งค่า WebBrain',
   'st.subtitle': 'ตั้งค่าผู้ให้บริการ LLM และการแสดงผล · v{version}',
-  'st.tab.display': 'การแสดงผล',
+  'st.tab.display': 'ทั่วไป',
   'st.tab.providers': 'ผู้ให้บริการ',
   'st.tab.vision': 'การมองเห็น',
   'st.tab.profile': 'โปรไฟล์',

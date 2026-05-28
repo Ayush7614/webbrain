@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'إعدادات WebBrain',
   'st.subtitle': 'اضبط مزوّدي LLM وتفضيلات العرض · v{version}',
-  'st.tab.display': 'العرض',
+  'st.tab.display': 'عام',
   'st.tab.providers': 'المزوّدون',
   'st.tab.vision': 'الرؤية',
   'st.tab.profile': 'الملف الشخصي',

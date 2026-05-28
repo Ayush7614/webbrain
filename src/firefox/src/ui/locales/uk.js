@@ -78,7 +78,7 @@ export default {
 
   'st.title': 'Налаштування WebBrain',
   'st.subtitle': 'Налаштуйте провайдерів LLM та параметри відображення · v{version}',
-  'st.tab.display': 'Відображення',
+  'st.tab.display': 'Загальні',
   'st.tab.providers': 'Провайдери',
   'st.tab.vision': 'Зір',
   'st.tab.profile': 'Профіль',
