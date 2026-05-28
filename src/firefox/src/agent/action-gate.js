@@ -22,8 +22,6 @@
  * the actual confirmation pause around these answers.
  */
 
-import { isTopSite } from './top-sites.js';
-
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 // Visible button/link labels that denote a hard-to-reverse action. Generic
@@ -80,9 +78,36 @@ function looksLikeMutationJs(code) {
 }
 
 /**
+ * Heuristic: does this URL carry a data payload that could be exfiltrating
+ * page/conversation content? A bare navigation is reversible and low-harm —
+ * the real danger is data smuggled in the query/fragment to an endpoint the
+ * attacker reads (evil.io/?leak=<your data>). A clean URL (no query, or a
+ * short one) can't leak anything meaningful, so it isn't gated. This targets
+ * the actual exfil channel instead of proxying it through domain reputation.
+ */
+export function urlCarriesDataPayload(url) {
+  if (typeof url !== 'string') return false;
+  let qf = '';
+  try {
+    const u = new URL(url);
+    qf = (u.search || '') + (u.hash || '');
+  } catch {
+    const m = url.match(/[?#].*$/);
+    qf = m ? m[0] : '';
+  }
+  if (!qf) return false;
+  if (qf.length > 100) return true;                                  // long payload
+  if (/[A-Za-z0-9+/=_-]{40,}/.test(qf)) return true;                 // opaque blob / encoded token
+  if ((qf.match(/%[0-9a-fA-F]{2}/g) || []).length >= 8) return true; // heavy percent-encoding
+  return false;
+}
+
+/**
  * Classify a tool call. Returns null for benign/read-only calls, or a
  * { kind, target, detail, verb? } descriptor for consequential ones.
- *   kind 'navigate' — going to some origin (gated only if user didn't name it)
+ *   kind 'navigate' — navigating to a URL that carries a data payload (a
+ *                     possible exfil channel); bare/clean navigations are not
+ *                     classified, so they never prompt
  *   kind 'mutation' — a write-method network call (POST/PUT/PATCH/DELETE)
  *   kind 'submit'   — clicking a hard-to-reverse action button by visible text
  */
@@ -93,6 +118,9 @@ export function classifyConsequentialAction(name, args) {
     case 'new_tab': {
       const host = hostnameOf(args.url);
       if (!host) return null;
+      // Only gate navigations whose URL could be exfiltrating data. A clean
+      // navigation is low-harm and reversible — don't prompt for it.
+      if (!urlCarriesDataPayload(args.url)) return null;
       return { kind: 'navigate', target: host, detail: String(args.url) };
     }
     case 'fetch_url': {
@@ -174,19 +202,16 @@ export function actionKey(classification) {
  * The single decision the agent asks: must we pause for user confirmation
  * before running this tool call? Returns false (run it) when:
  *   - the call is benign (not classified consequential),
- *   - it's a navigation to a mainstream top-site domain (not a plausible
- *     exfil endpoint) — the NARROW, navigation-only allowlist relaxation,
  *   - it's an API mutation and the user set the /allow-api override,
  *   - the user's own instruction named the action.
  * Otherwise returns true → the agent pauses for an explicit Yes/No.
  *
- * The top-site skip applies to NAVIGATION ONLY by design. Submit/delete/pay
- * and API mutations are never waived by domain reputation — those are exactly
- * the high-value injection targets on trusted sites.
+ * Navigation only reaches here when its URL carries a data payload (see
+ * classifyConsequentialAction / urlCarriesDataPayload); a user-named
+ * destination still waives it via isUserAuthorized.
  */
 export function shouldConfirmAction(classification, { userText = '', apiAllowed = false } = {}) {
   if (!classification) return false;
-  if (classification.kind === 'navigate' && isTopSite(classification.target)) return false;
   if (classification.kind === 'mutation' && apiAllowed) return false;
   if (isUserAuthorized(userText, classification)) return false;
   return true;

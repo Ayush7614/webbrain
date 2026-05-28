@@ -43,23 +43,14 @@ const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
 );
 
 // action-gate.js is pure JS (security-critical Layer-3 confirmation logic).
-const { classifyConsequentialAction, isUserAuthorized, actionKey, shouldConfirmAction } = await import(
+const { classifyConsequentialAction, isUserAuthorized, actionKey, shouldConfirmAction, urlCarriesDataPayload } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/action-gate.js').replace(/\\/g, '/')
-);
-const { isTopSite } = await import(
-  'file://' + path.join(ROOT, 'src/firefox/src/agent/top-sites.js').replace(/\\/g, '/')
 );
 const {
   classifyConsequentialAction: classifyConsequentialActionCh,
   shouldConfirmAction: shouldConfirmActionCh,
 } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/agent/action-gate.js').replace(/\\/g, '/')
-);
-const { isTopSite: isTopSiteCh, TOP_SITES: TOP_SITES_CH } = await import(
-  'file://' + path.join(ROOT, 'src/chrome/src/agent/top-sites.js').replace(/\\/g, '/')
-);
-const { TOP_SITES: TOP_SITES_FX } = await import(
-  'file://' + path.join(ROOT, 'src/firefox/src/agent/top-sites.js').replace(/\\/g, '/')
 );
 
 // loop-bucket.js is pure JS — the URL-family loop-detector bucketing logic
@@ -1880,13 +1871,24 @@ test('destructive button labels are classified as submit', () => {
   }
 });
 
-test('navigate/new_tab classify with registrable host', () => {
-  assert.deepEqual(
-    classifyConsequentialAction('navigate', { url: 'https://www.evil.example/x' }),
-    { kind: 'navigate', target: 'evil.example', detail: 'https://www.evil.example/x' }
-  );
-  assert.equal(classifyConsequentialAction('new_tab', { url: 'https://github.com' }).kind, 'navigate');
+test('clean navigations are NOT gated; payload navigations are', () => {
+  // bare / short URLs are low-harm — not classified
+  assert.equal(classifyConsequentialAction('navigate', { url: 'https://github.com' }), null);
+  assert.equal(classifyConsequentialAction('navigate', { url: 'https://github.com/foo/bar' }), null);
+  assert.equal(classifyConsequentialAction('navigate', { url: 'https://x.com/?ref=home' }), null);
   assert.equal(classifyConsequentialAction('navigate', {}), null);
+  // URL carrying an exfil-sized payload IS classified
+  const leak = 'https://evil.example/collect?d=' + 'A'.repeat(120);
+  assert.equal(classifyConsequentialAction('navigate', { url: leak }).kind, 'navigate');
+  assert.equal(classifyConsequentialAction('new_tab', { url: leak }).kind, 'navigate');
+});
+
+test('urlCarriesDataPayload flags exfil-shaped URLs only', () => {
+  assert.equal(urlCarriesDataPayload('https://site.com/page'), false);
+  assert.equal(urlCarriesDataPayload('https://site.com/search?q=hello+world'), false);
+  assert.equal(urlCarriesDataPayload('https://evil.io/?leak=' + 'x'.repeat(120)), true);  // long
+  assert.equal(urlCarriesDataPayload('https://evil.io/?t=' + 'YWJjZGVm'.repeat(6)), true); // opaque blob
+  assert.equal(urlCarriesDataPayload('https://evil.io/?d=%41%42%43%44%45%46%47%48%49'), true); // heavy %-enc
 });
 
 test('mutation methods + mutation JS are classified', () => {
@@ -1896,15 +1898,15 @@ test('mutation methods + mutation JS are classified', () => {
   assert.equal(classifyConsequentialAction('execute_js', { code: "document.title" }), null);
 });
 
-test('user-named navigation is authorized (no prompt)', () => {
-  const c = classifyConsequentialAction('navigate', { url: 'https://github.com/foo' });
-  assert.equal(isUserAuthorized('go to github and open my repo', c), true);
-  assert.equal(isUserAuthorized('summarize this page', c), false);
+test('payload navigation: user-named host skips, unnamed host prompts', () => {
+  const c = classifyConsequentialAction('navigate', { url: 'https://github.com/x?d=' + 'A'.repeat(120) });
+  assert.equal(shouldConfirmAction(c, { userText: 'go to github and open my repo' }), false);
+  assert.equal(shouldConfirmAction(c, { userText: 'summarize this page' }), true);
 });
 
-test('injected navigation to an unnamed origin is NOT authorized', () => {
-  const c = classifyConsequentialAction('navigate', { url: 'https://attacker-exfil.io/?leak=1' });
-  assert.equal(isUserAuthorized('delete my old tweets', c), false);
+test('injected exfil navigation to an unnamed origin prompts', () => {
+  const c = classifyConsequentialAction('navigate', { url: 'https://attacker-exfil.io/?leak=' + 'x'.repeat(120) });
+  assert.equal(shouldConfirmAction(c, { userText: 'delete my old tweets' }), true);
 });
 
 test('verb synonyms authorize the matching destructive click', () => {
@@ -1927,32 +1929,15 @@ test('API mutations are never authorized by free text (only /allow-api)', () => 
 });
 
 test('actionKey is stable per kind+target', () => {
-  const a = classifyConsequentialAction('navigate', { url: 'https://github.com/a' });
-  const b = classifyConsequentialAction('navigate', { url: 'https://github.com/b' });
+  const pad = '?d=' + 'A'.repeat(120);
+  const a = classifyConsequentialAction('navigate', { url: 'https://github.com/a' + pad });
+  const b = classifyConsequentialAction('navigate', { url: 'https://github.com/b' + pad });
   assert.equal(actionKey(a), actionKey(b));
-  assert.notEqual(actionKey(a), actionKey(classifyConsequentialAction('navigate', { url: 'https://x.com' })));
+  assert.notEqual(actionKey(a), actionKey(classifyConsequentialAction('navigate', { url: 'https://x.com/' + pad })));
 });
 
-test('isTopSite matches registrable domain and subdomains, not lookalikes', () => {
-  assert.equal(isTopSite('google.com'), true);
-  assert.equal(isTopSite('docs.google.com'), true);
-  assert.equal(isTopSite('www.github.com'), true);
-  assert.equal(isTopSite('notgoogle.com'), false);
-  assert.equal(isTopSite('evil-google.com'), false);
-  // attacker domain embedding a top name must NOT match
-  assert.equal(isTopSite('google.com.attacker-exfil.io'), false);
-  assert.equal(isTopSite('attacker-exfil.io'), false);
-});
-
-test('navigation to a top site skips confirmation; unknown origin still prompts', () => {
-  const top = classifyConsequentialAction('navigate', { url: 'https://www.youtube.com/watch?v=x' });
-  assert.equal(shouldConfirmAction(top, { userText: 'summarize this page' }), false);
-  const evil = classifyConsequentialAction('navigate', { url: 'https://attacker-exfil.io/?leak=secrets' });
-  assert.equal(shouldConfirmAction(evil, { userText: 'summarize this page' }), true);
-});
-
-test('top-site allowlist does NOT waive submit/mutation gates', () => {
-  // "Send" on a top site (e.g. gmail) is the high-value injection target.
+test('submit/mutation gates fire regardless of site', () => {
+  // "Send" anywhere (e.g. gmail) is a high-value injection target.
   const send = classifyConsequentialAction('click', { text: 'Send' });
   assert.equal(shouldConfirmAction(send, { userText: 'what does this page say' }), true);
   const mut = classifyConsequentialAction('fetch_url', { url: 'https://api.github.com/x', method: 'POST' });
@@ -1972,7 +1957,7 @@ test('parity: chrome & firefox action-gate decide identically', () => {
   const cases = [
     ['read_page', {}, 'summarize'],
     ['navigate', { url: 'https://www.youtube.com/x' }, 'open this page'],
-    ['navigate', { url: 'https://attacker-exfil.io/?leak=1' }, 'delete my tweets'],
+    ['navigate', { url: 'https://attacker-exfil.io/?leak=' + 'x'.repeat(120) }, 'delete my tweets'],
     ['click', { text: 'Send' }, 'email bob the notes'],
     ['click', { text: 'Delete' }, 'what does this say'],
     ['fetch_url', { url: 'https://api.x.com', method: 'POST' }, 'post via api'],
@@ -1982,12 +1967,6 @@ test('parity: chrome & firefox action-gate decide identically', () => {
     const ch = shouldConfirmActionCh(classifyConsequentialActionCh(name, args), { userText });
     assert.equal(fx, ch, `gate drift for ${name} ${JSON.stringify(args)}`);
   }
-});
-
-test('parity: chrome & firefox top-sites lists are identical', () => {
-  assert.equal(TOP_SITES_CH.size, TOP_SITES_FX.size);
-  assert.equal(isTopSiteCh('docs.google.com'), isTopSite('docs.google.com'));
-  assert.equal(isTopSiteCh('attacker-exfil.io'), isTopSite('attacker-exfil.io'));
 });
 
 await run();
