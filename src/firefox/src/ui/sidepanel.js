@@ -842,6 +842,8 @@ function addMessage(role, content) {
   textEl.className = 'message-text';
   if (role === 'user') {
     textEl.textContent = content;
+  } else if (role === 'system') {
+    textEl.innerHTML = content || '';
   } else {
     textEl.innerHTML = content ? formatMarkdown(content) : '';
   }
