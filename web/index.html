@@ -1229,13 +1229,23 @@
       gap: 10px;
       margin-top: auto;
     }
-    .download-card .btn { width: 100%; justify-content: center; }
-    /* Chrome is the more popular browser so the Chrome card gets ~25% more
-       horizontal real estate than Firefox via flex-grow. Both cards stay
+    .download-card .btn {
+      width: 100%;
+      justify-content: center;
+      line-height: 1.35;
+    }
+    .download-card .btn svg { flex: 0 0 auto; }
+    .download-card-firefox .btn-primary {
+      overflow-wrap: normal;
+      word-break: normal;
+      hyphens: none;
+    }
+    /* Chrome still gets a little extra emphasis, but keep the Firefox card
+       wide enough that its install CTA does not wrap awkwardly. Both cards stay
        on a single row at all desktop/tablet widths; the mobile breakpoint
        below stacks them. */
     .download-card-chrome {
-      flex-grow: 1.25;
+      flex-grow: 1.12;
       padding: 38px 32px;
       border-color: rgba(0, 212, 255, 0.45);
     }
@@ -1994,14 +2004,14 @@
         </a>
       </div>
     </div>
-    <div class="download-card">
+    <div class="download-card download-card-firefox">
       <div class="browser-icon">🦊</div>
       <h3>Firefox</h3>
       <p>Manifest V2 · Firefox 109+</p>
       <div class="download-card-actions">
         <a href="https://addons.mozilla.org/en-US/firefox/addon/webbrain/" target="_blank" rel="noopener noreferrer" class="btn btn-primary" style="background: #ff9800;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download from Firefox Add-ons
+          Download from Firefox Add‑ons
         </a>
         <a href="https://github.com/esokullu/webbrain/tree/main/src/firefox" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
           View Firefox source
