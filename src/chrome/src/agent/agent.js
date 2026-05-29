@@ -25,7 +25,7 @@ import {
   stopTabRecording as recorderStop,
   getRecordingState as recorderGetState,
 } from '../recorder/host.js';
-import { Capability, CAPABILITY_LABEL, capabilityFor, hostForCapability, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
+import { Capability, CAPABILITY_LABEL, capabilityFor, hostForCapability, frameHostMatches, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
 
 /**
  * The WebBrain Agent — orchestrates multi-step LLM + tool-use loops.
@@ -3458,7 +3458,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // results is an array of {frameId, result} entries — one per frame.
         const frames = results
           .map(r => r.result)
-          .filter(r => r && (!urlFilter || (r.url && r.url.includes(urlFilter))));
+          .filter(r => r && (!urlFilter || frameHostMatches(r.url, urlFilter)));
         return { success: true, frameCount: frames.length, frames };
       } catch (e) {
         return { success: false, error: `Iframe read failed: ${e.message}` };
@@ -3476,8 +3476,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const results = await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: (sel, filter) => {
-            if (filter && !location.href.includes(filter)) {
-              return { ok: false, skipped: 'url-filter', url: location.href };
+            if (filter) {
+              // Match the frame by HOST (not a substring of the full URL), so
+              // urlFilter "stripe.com" can't match https://evil.example/?x=stripe.com.
+              let w = String(filter).toLowerCase().trim();
+              try { w = new URL(/^[a-z][a-z0-9+.\-]*:\/\//i.test(w) ? w : 'https://' + w).hostname; } catch (e) {}
+              w = w.replace(/^www\./, '');
+              const h = location.hostname.toLowerCase().replace(/^www\./, '');
+              if (w && h !== w && !h.endsWith('.' + w)) {
+                return { ok: false, skipped: 'url-filter', url: location.href };
+              }
             }
             try {
               const el = document.querySelector(sel);
@@ -3532,8 +3540,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const results = await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: (sel, txt, clr, filter) => {
-            if (filter && !location.href.includes(filter)) {
-              return { ok: false, skipped: 'url-filter', url: location.href };
+            if (filter) {
+              // Match the frame by HOST (not a substring of the full URL), so
+              // urlFilter "stripe.com" can't match https://evil.example/?x=stripe.com.
+              let w = String(filter).toLowerCase().trim();
+              try { w = new URL(/^[a-z][a-z0-9+.\-]*:\/\//i.test(w) ? w : 'https://' + w).hostname; } catch (e) {}
+              w = w.replace(/^www\./, '');
+              const h = location.hostname.toLowerCase().replace(/^www\./, '');
+              if (w && h !== w && !h.endsWith('.' + w)) {
+                return { ok: false, skipped: 'url-filter', url: location.href };
+              }
             }
             try {
               const el = document.querySelector(sel);

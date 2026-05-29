@@ -19,7 +19,7 @@ import {
 } from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
 import { solveCaptcha, detectCaptcha, injectToken } from './captcha-solver.js';
-import { Capability, CAPABILITY_LABEL, capabilityFor, hostForCapability, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
+import { Capability, CAPABILITY_LABEL, capabilityFor, hostForCapability, frameHostMatches, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
 
 /**
  * The WebBrain Agent — orchestrates multi-step LLM + tool-use loops.
@@ -2280,7 +2280,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           })()
         `;
         const results = await browser.tabs.executeScript(tabId, { code, allFrames: true });
-        const frames = (results || []).filter(r => r && (!urlFilter || (r.url && r.url.includes(urlFilter))));
+        const frames = (results || []).filter(r => r && (!urlFilter || frameHostMatches(r.url, urlFilter)));
         return { success: true, frameCount: frames.length, frames };
       } catch (e) {
         return { success: false, error: `Iframe read failed: ${e.message}` };
@@ -2295,7 +2295,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const code = `
           (() => {
             const filter = ${JSON.stringify(urlFilter)};
-            if (filter && !location.href.includes(filter)) return { ok: false, skipped: 'url-filter', url: location.href };
+            if (filter) {
+              // Match the frame by HOST, not a URL substring, so "stripe.com"
+              // can't match https://evil.example/?x=stripe.com.
+              let _w = String(filter).toLowerCase().trim();
+              try { _w = new URL(/^[a-z][a-z0-9+.\\-]*:\\/\\//i.test(_w) ? _w : 'https://' + _w).hostname; } catch (e) {}
+              _w = _w.replace(/^www\\./, '');
+              const _h = location.hostname.toLowerCase().replace(/^www\\./, '');
+              if (_w && _h !== _w && !_h.endsWith('.' + _w)) return { ok: false, skipped: 'url-filter', url: location.href };
+            }
             try {
               const el = document.querySelector(${JSON.stringify(selector)});
               if (!el) return { ok: false, url: location.href, reason: 'not-found' };
@@ -2331,7 +2339,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const code = `
           (() => {
             const filter = ${JSON.stringify(urlFilter)};
-            if (filter && !location.href.includes(filter)) return { ok: false, skipped: 'url-filter', url: location.href };
+            if (filter) {
+              // Match the frame by HOST, not a URL substring, so "stripe.com"
+              // can't match https://evil.example/?x=stripe.com.
+              let _w = String(filter).toLowerCase().trim();
+              try { _w = new URL(/^[a-z][a-z0-9+.\\-]*:\\/\\//i.test(_w) ? _w : 'https://' + _w).hostname; } catch (e) {}
+              _w = _w.replace(/^www\\./, '');
+              const _h = location.hostname.toLowerCase().replace(/^www\\./, '');
+              if (_w && _h !== _w && !_h.endsWith('.' + _w)) return { ok: false, skipped: 'url-filter', url: location.href };
+            }
             try {
               const el = document.querySelector(${JSON.stringify(selector)});
               if (!el) return { ok: false, url: location.href, reason: 'not-found' };

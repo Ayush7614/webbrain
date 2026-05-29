@@ -1,0 +1,104 @@
+# Manual test: capability × origin permission gate + Settings UI
+
+These two paths can't be covered by `test/run.js` (they need a live browser —
+the 3-option permission card and the Settings → Permissions tab are DOM/storage
+glue). Run this checklist after loading the unpacked extension before merging
+changes to the permission gate or its UI.
+
+Load the unpacked extension your usual dev way:
+- **Firefox:** `about:debugging` → This Firefox → Load Temporary Add-on → pick
+  `src/firefox/manifest.json`.
+- **Chrome:** `chrome://extensions` → Developer mode → Load unpacked → `src/chrome`.
+
+Helpers you'll reuse (run in the background/service-worker console, or the
+Settings page console):
+- **Inspect grants:** `await browser.storage.local.get('wb_permissions')`
+  (Firefox) / `chrome.storage.local.get('wb_permissions')` (Chrome).
+- **Reset grants:** `browser.storage.local.remove('wb_permissions')`, or
+  Settings → Permissions → Clear all.
+
+---
+
+## Test 1 — The 3-option permission card
+
+**Setup:** reset grants. Open the side panel, switch to **Act** mode, open a
+simple page with a visible clickable button.
+
+### 1a. Card renders correctly
+1. Tell the agent: *"click the <some visible button>"*.
+2. **Expect** a card: **"WebBrain wants to click / submit on \<host\>. Allow it?"**
+   with **three** buttons: `Allow once` · `Always allow on <host>` · `Don't allow`.
+3. **Check layout** — all three buttons visible, not clipped/overlapping/wrapping
+   badly. *(Main unknown: the card was built for 2-option clarify prompts.)*
+
+### 1b. "Allow once" proceeds and is turn-scoped  *(critical: must NOT act as deny)*
+1. Click **Allow once** → the click executes.
+2. In the **same** turn, prompt another click on the same site → **no second card**.
+3. Send a **new** message that clicks again → card **reappears** (new turn clears
+   once-grants).
+
+### 1c. "Always allow" persists
+1. Trigger the click again, click **Always allow on \<host\>** → click executes.
+2. Subsequent turns clicking on that host → **no card**.
+3. Console: `wb_permissions` contains
+   `{capability:'click', host:'<host>', action:'allow', duration:'always'}`.
+
+### 1d. "Don't allow" blocks
+1. Reset grants, trigger a gated action, click **Don't allow**.
+2. **Expect** the action does **not** happen; the agent reports it was denied /
+   asks how to proceed (it must not loop retrying).
+
+### 1e. Abort while card is open
+1. Trigger a card, then hit **Stop**.
+2. **Expect** the run ends cleanly ("Stopped by user"), no hang.
+
+---
+
+## Test 2 — Per-(capability, host) granularity
+1. Grant **Always allow** for `click` on site A (Test 1c).
+2. On site A, prompt a **type** action → **card appears** (different capability).
+3. Navigate to site B and prompt a click → **card appears** (different host).
+4. Prompt a navigation to a *new* host → a **navigate** card for that destination.
+
+Confirms a grant is scoped to exactly one capability+host, not a blanket pass.
+
+---
+
+## Test 3 — Permissions settings tab (revoke flow)
+
+**Setup:** grant 2–3 "Always allow" entries across different sites/capabilities.
+
+1. Open Settings (options page) → **Permissions** tab.
+2. **Expect** each grant on its own row — host as bold label,
+   **"Allowed to \<verb\>"** beneath (or **"⛔ Blocked from \<verb\>"** for a deny),
+   and a **Revoke** button; a **Clear all permissions** button at the bottom.
+3. **Revoke one row** → it disappears immediately; console shows it removed from
+   `wb_permissions`. *(Confirms the per-row revoke targets the right grant.)*
+4. **Live re-prompt:** back in the agent, trigger that exact capability on that
+   exact host → it **prompts again** (proves `storage.onChanged` → `hydrateFrom`
+   invalidated the in-memory grant without a reload).
+5. **Clear all** → list shows empty-state text and the Clear-all button hides.
+6. **Empty state from scratch:** with no grants, open the tab → empty-state text,
+   no rows.
+
+---
+
+## Test 4 — Persistence across reload
+1. Grant an "Always allow."
+2. Reload the extension (or restart the browser).
+3. Agent acts on that host → **no prompt**; Settings → Permissions still lists it.
+
+---
+
+## Pass criteria
+- Card shows 3 well-laid-out buttons (1a).
+- Allow-once and Always **proceed**; Don't-allow **blocks** (1b–1d).
+- Grants are per-capability+host (Test 2).
+- Permissions tab lists/revokes/clears correctly; a revoke causes an immediate
+  re-prompt (Test 3).
+- Grants persist across reload (Test 4).
+
+**Highest-risk item:** 1a/1b. If the clarify card mis-renders 3 buttons or
+returns an unexpected value, `_promptPermission` falls through to `'deny'`
+(fail-safe), so the symptom is "every action is blocked even when I click
+Allow." If that happens, the fix is in `renderClarifyCard` (`sidepanel.js`).

@@ -43,7 +43,7 @@ const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
 );
 
 // permission-gate.js is pure JS (deterministic capability × origin gate).
-const { Capability, capabilityFor, normalizeHost, hostForCapability, PermissionManager, UNTRUSTED_CONTENT_TOOLS } = await import(
+const { Capability, capabilityFor, normalizeHost, hostForCapability, frameHostMatches, PermissionManager, UNTRUSTED_CONTENT_TOOLS } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/permission-gate.js').replace(/\\/g, '/')
 );
 const {
@@ -1961,6 +1961,18 @@ test('hydrateFrom replaces always-grants but keeps once-grants (live revoke)', a
   pm.hydrateFrom([]); // new persisted snapshot is empty
   assert.equal(pm.check('a.com', Capability.CLICK).needsPrompt, true);  // revoked → re-prompts
   assert.equal(pm.check('b.com', Capability.TYPE).allowed, true);       // once-grant survives the turn
+});
+
+test('frameHostMatches: host-based, not substring (closes the ?next=stripe.com bypass)', () => {
+  // genuine frame
+  assert.equal(frameHostMatches('https://js.stripe.com/v3/', 'stripe.com'), true);   // subdomain
+  assert.equal(frameHostMatches('https://stripe.com/x', 'stripe.com'), true);        // exact
+  assert.equal(frameHostMatches('https://checkout.paypal.com/', 'https://checkout.paypal.com'), true);
+  // the attack: evil frame whose URL merely CONTAINS the filter string
+  assert.equal(frameHostMatches('https://evil.example/?next=stripe.com', 'stripe.com'), false);
+  assert.equal(frameHostMatches('https://stripe.com.evil.example/', 'stripe.com'), false);
+  // no filter → matches anything
+  assert.equal(frameHostMatches('https://anything.com/', ''), true);
 });
 
 test('check: unknown (capability, host) needs a prompt', () => {

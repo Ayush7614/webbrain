@@ -145,6 +145,22 @@ export function normalizeHost(input) {
 }
 
 /**
+ * Does a frame's URL belong to the host named by `urlFilter`? Used to align
+ * iframe tool execution with the gate: the gate parses urlFilter to a host, so
+ * frame selection must match by HOST too — not a substring of the full URL.
+ * A substring match (location.href.includes("stripe.com")) would also match a
+ * hostile frame like https://evil.example/?next=stripe.com and run the action
+ * in the wrong origin. Matches the exact host or a subdomain of it.
+ */
+export function frameHostMatches(frameUrl, urlFilter) {
+  if (!urlFilter) return true;
+  const want = normalizeHost(urlFilter);
+  if (!want) return true;
+  const host = normalizeHost(frameUrl);
+  return host === want || host.endsWith('.' + want);
+}
+
+/**
  * Which host does this capability act on? Navigate/network target the
  * destination URL; click/type/execute/download/record target the current page.
  *
