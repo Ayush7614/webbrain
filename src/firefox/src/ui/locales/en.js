@@ -126,6 +126,14 @@ export default {
   'st.tab.profile': 'Profile',
   'st.tab.account': 'Account',
   'st.tab.captcha': 'CAPTCHA',
+  'st.tab.permissions': 'Permissions',
+
+  'st.perms.desc': 'Sites you have allowed WebBrain to act on. Each entry is one capability (click, type, navigate, run JavaScript, etc.) granted to a specific site. Remove any you no longer want — WebBrain will ask again next time it needs it.',
+  'st.perms.empty': 'No site permissions granted yet. WebBrain asks before it clicks, types, navigates, uploads, downloads, records, or runs code on a site, and remembers your choice here when you pick “Always allow”.',
+  'st.perms.allowed': 'Allowed to {verb}',
+  'st.perms.blocked': 'Blocked from {verb}',
+  'st.perms.revoke': 'Revoke',
+  'st.perms.clear_all': 'Clear all permissions',
 
   'st.account.not_signed_in': 'Not signed in',
   'st.account.sign_in': 'Sign In / Register',

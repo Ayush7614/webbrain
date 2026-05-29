@@ -4,6 +4,7 @@
 
 import { t, getLocale, setLocale, LANGUAGES } from './i18n.js';
 import { THEME_MODES, applyMode, loadMode, watch } from './theme.js';
+import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
@@ -108,6 +109,7 @@ if (languageSelect) {
     renderSubtitle();
     if (accountSection) renderAuthSection();
     if (providersContainer) renderProviders();
+    renderPermissions();
   });
 }
 
@@ -189,12 +191,72 @@ async function init() {
   if (captchaEnabledToggle) captchaEnabledToggle.checked = !!captchaStored.captchaSolverEnabled;
   if (captchaApiKeyInput) captchaApiKeyInput.value = captchaStored.capsolverApiKey || '';
 
+  // Load site permissions (capability × origin grants)
+  await renderPermissions();
+
   // Load providers
   const res = await sendToBackground('get_providers');
   providersData = res.providers;
   activeProviderId = res.active;
   renderProviders();
 }
+
+// --- Site permissions (capability × origin grants) ---
+
+const PERMISSIONS_KEY = 'wb_permissions';
+
+async function renderPermissions() {
+  const listEl = document.getElementById('permissions-list');
+  const actionsEl = document.getElementById('permissions-actions');
+  if (!listEl) return;
+
+  const stored = await chrome.storage.local.get(PERMISSIONS_KEY);
+  const grants = Array.isArray(stored[PERMISSIONS_KEY]) ? stored[PERMISSIONS_KEY] : [];
+
+  if (grants.length === 0) {
+    listEl.innerHTML = `<div class="setting-desc">${escapeHtml(t('st.perms.empty'))}</div>`;
+    if (actionsEl) actionsEl.style.display = 'none';
+    return;
+  }
+
+  // Stable display order: host, then capability.
+  grants.sort((a, b) =>
+    String(a.host || '').localeCompare(String(b.host || '')) ||
+    String(a.capability || '').localeCompare(String(b.capability || '')));
+
+  listEl.innerHTML = grants.map((g) => {
+    const verb = CAPABILITY_LABEL[g.capability] || g.capability;
+    const denied = g.action === 'deny';
+    const desc = denied ? t('st.perms.blocked', { verb }) : t('st.perms.allowed', { verb });
+    // host+capability uniquely identify a grant (record() dedupes per pair).
+    const id = `${g.capability} ${g.host}`;
+    return `
+      <div class="setting-row" style="align-items:center;">
+        <div class="setting-info">
+          <div class="setting-label">${denied ? '⛔ ' : ''}${escapeHtml(String(g.host || ''))}</div>
+          <div class="setting-desc">${escapeHtml(desc)}</div>
+        </div>
+        <button class="btn-secondary" data-revoke="${escapeHtml(id)}">${escapeHtml(t('st.perms.revoke'))}</button>
+      </div>`;
+  }).join('');
+
+  if (actionsEl) actionsEl.style.display = 'flex';
+
+  listEl.querySelectorAll('[data-revoke]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const [capability, host] = String(btn.dataset.revoke).split(' ');
+      const cur = (await chrome.storage.local.get(PERMISSIONS_KEY))[PERMISSIONS_KEY] || [];
+      const next = cur.filter((g) => !(g.capability === capability && g.host === host));
+      await chrome.storage.local.set({ [PERMISSIONS_KEY]: next });
+      renderPermissions();
+    });
+  });
+}
+
+document.getElementById('btn-clear-all-permissions')?.addEventListener('click', async () => {
+  await chrome.storage.local.set({ [PERMISSIONS_KEY]: [] });
+  renderPermissions();
+});
 
 // --- Auth ---
 
