@@ -1925,6 +1925,23 @@ test('hostForCapability: navigate/network use target URL, others use current pag
   assert.equal(hostForCapability(Capability.TYPE, {}, 'https://cur.com'), 'cur.com');
 });
 
+test('iframe actions are gated on the frame host (urlFilter), not the top page', () => {
+  const top = 'https://merchant.com/checkout';
+  // Embedded Stripe iframe targeted by urlFilter → charge stripe.com, NOT merchant.com
+  assert.equal(
+    hostForCapability(Capability.CLICK, { urlFilter: 'js.stripe.com', selector: '#pay' }, top, 'iframe_click'),
+    'js.stripe.com'
+  );
+  assert.equal(
+    hostForCapability(Capability.TYPE, { urlFilter: 'https://checkout.paypal.com/x' }, top, 'iframe_type'),
+    'checkout.paypal.com'
+  );
+  // No urlFilter → can't identify the frame, fall back to the current host
+  assert.equal(hostForCapability(Capability.CLICK, {}, top, 'iframe_click'), 'merchant.com');
+  // A normal (non-iframe) click still uses the current page host
+  assert.equal(hostForCapability(Capability.CLICK, { ref_id: 'ref_1' }, top, 'click'), 'merchant.com');
+});
+
 test('check: unknown (capability, host) needs a prompt', () => {
   const pm = new PermissionManager();
   const v = pm.check('github.com', Capability.CLICK);

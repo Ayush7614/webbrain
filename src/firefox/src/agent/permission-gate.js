@@ -155,7 +155,17 @@ export function normalizeHost(input) {
  * empty and fell back to the current host, letting a current-site grant
  * authorize a cross-origin navigation / exfiltration.
  */
-export function hostForCapability(capability, args, currentUrlOrHost) {
+export function hostForCapability(capability, args, currentUrlOrHost, toolName) {
+  args = args || {};
+  // iframe_click / iframe_type run in ALL frames and select a (possibly
+  // cross-origin) frame via `urlFilter` — e.g. a Stripe/PayPal iframe embedded
+  // on merchant.com. Charge the permission to the FRAME host, not the top page,
+  // so a grant for the embedding site does not silently authorize actions
+  // inside the payment/login provider. No urlFilter → can't identify the frame,
+  // fall back to the current host.
+  if (toolName === 'iframe_click' || toolName === 'iframe_type') {
+    return normalizeHost(args.urlFilter) || normalizeHost(currentUrlOrHost);
+  }
   if (capability === Capability.NAVIGATE || capability === Capability.NETWORK) {
     const raw = args && args.url;
     if (typeof raw === 'string' && raw) {
