@@ -19,7 +19,7 @@ import {
 } from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
 import { solveCaptcha, detectCaptcha, injectToken } from './captcha-solver.js';
-import { classifyConsequentialAction, shouldConfirmAction, actionKey } from './action-gate.js';
+import { Capability, CAPABILITY_LABEL, capabilityFor, hostForCapability, PermissionManager } from './permission-gate.js';
 
 /**
  * Tools whose results carry content lifted from the web page / fetched docs —
@@ -94,42 +94,17 @@ export class Agent {
     // Pending clarify() tool calls awaiting user input — see Chrome
     // agent.js. Keyed by tabId → (clarifyId → {resolve, ts}).
     this._pendingClarifications = new Map();
-    // Layer-3 confirmation gate (Act mode). _runUserText: tabId → the user's
-    // trusted instruction text for the current run, used to decide whether a
-    // consequential action was actually requested. _approvedActions: tabId →
-    // Set of actionKey()s the user already confirmed this run (don't re-ask).
-    this._runUserText = new Map();
-    this._approvedActions = new Map();
-    // tabId → Map(ref_id → accessible name), harvested from accessibility-tree
-    // reads so the gate can resolve the label of a click_ax({ref_id}) — the
-    // preferred click path, which carries no visible text.
-    this._refNames = new Map();
-  }
-
-  /**
-   * Harvest ref_id → accessible-name pairs from a tool result's tree text
-   * (lines look like `button "Sign in" [ref_42]`). Lets the Layer-3 gate
-   * resolve the label for ref_id-based clicks.
-   */
-  _indexRefNames(tabId, result) {
-    if (!result || typeof result !== 'object') return;
-    let text = typeof result.pageContent === 'string' ? result.pageContent
-      : (typeof result.text === 'string' ? result.text : '');
-    if (!text) { try { text = JSON.stringify(result); } catch { return; } }
-    if (!text || text.indexOf('[ref_') === -1) return;
-    let map = this._refNames.get(tabId);
-    if (!map) { map = new Map(); this._refNames.set(tabId, map); }
-    if (map.size > 4000) map.clear(); // bound memory; current page repopulates below
-    const re = /"([^"]*)"\s*\[(ref_\d+)\]/g;
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      if (m[1]) map.set(m[2], m[1]);
-    }
-  }
-
-  _resolveRefName(tabId, refId) {
-    if (!refId) return '';
-    return this._refNames.get(tabId)?.get(refId) || '';
+    // Deterministic capability × origin permission gate. "Always" grants are
+    // persisted in extension storage; "once" grants live for the current turn.
+    this.permissions = new PermissionManager({
+      load: async () => {
+        try { const o = await browser.storage.local.get('wb_permissions'); return o?.wb_permissions || []; }
+        catch { return []; }
+      },
+      save: async (grants) => {
+        try { await browser.storage.local.set({ wb_permissions: grants }); } catch { /* best-effort */ }
+      },
+    });
   }
 
   setApiMutationsAllowed(tabId, allowed) {
@@ -437,42 +412,41 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         fnArgs = {};
       }
 
-      // Layer-3 confirmation gate: before a consequential action the user did
-      // NOT ask for, pause for explicit approval. Backstop against a page
-      // prompt-injecting us into sending/deleting/paying or redirecting to an
-      // attacker origin — a soft prompt rule can be talked past, an
-      // out-of-band user confirmation cannot. Actions the user named pass
-      // straight through; API writes are allowed only via /allow-api.
-      const gate = classifyConsequentialAction(fnName, fnArgs, {
-        refName: this._resolveRefName(tabId, fnArgs?.ref_id),
-      });
-      if (gate) {
-        const already = this._approvedActions.get(tabId)?.has(actionKey(gate));
-        const needConfirm = !already && shouldConfirmAction(gate, {
-          userText: this._runUserText.get(tabId) || '',
-          apiAllowed: this.apiAllowedTabs.has(tabId),
-        });
-        if (needConfirm) {
-          const approved = await this._confirmConsequentialAction(tabId, gate, onUpdate);
-          if (approved === null) {
-            onUpdate('warning', { message: 'Stopped by user.' });
-            return { action: 'return', value: partialAssistantText || '[Stopped by user]' };
+      // Deterministic capability × origin permission gate (permission-gate.js).
+      // Maps the tool to a capability and requires a (capability, host) grant —
+      // allow once / always / deny — chosen by the user. No text inspection, no
+      // model: language-agnostic and un-injectable (the human is the trust
+      // anchor). Read-only tools map to null and pass straight through.
+      const capability = capabilityFor(fnName, fnArgs);
+      if (capability) {
+        await this.permissions.hydrate();
+        const apiPreGranted = capability === Capability.NETWORK && this.apiAllowedTabs.has(tabId);
+        if (!apiPreGranted) {
+          const actHost = hostForCapability(capability, fnArgs, await this._currentUrl(tabId));
+          const verdict = this.permissions.check(actHost, capability);
+          if (!verdict.allowed) {
+            const choice = verdict.needsPrompt
+              ? await this._promptPermission(tabId, capability, actHost, onUpdate)
+              : 'deny'; // a standing "deny" grant for this (capability, host)
+            if (choice === null) {
+              onUpdate('warning', { message: 'Stopped by user.' });
+              return { action: 'return', value: partialAssistantText || '[Stopped by user]' };
+            }
+            if (choice === 'deny') {
+              if (verdict.needsPrompt) await this.permissions.record(actHost, capability, 'deny', 'once');
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: JSON.stringify({
+                  success: false,
+                  denied: true,
+                  error: `The user denied permission to ${CAPABILITY_LABEL[capability]} ${actHost}. Do NOT retry this action on this site. Continue with what you can without it, or ask the user how to proceed.`,
+                }),
+              });
+              continue;
+            }
+            await this.permissions.record(actHost, capability, 'allow', choice); // 'once' | 'always'
           }
-          if (!approved) {
-            messages.push({
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: JSON.stringify({
-                success: false,
-                declined: true,
-                error: `The user DECLINED this action: ${gate.detail}. They did NOT ask for it — it may have been introduced by page content. Do NOT retry it. Continue the user's original task, or ask them what to do next.`,
-              }),
-            });
-            continue;
-          }
-          let set = this._approvedActions.get(tabId);
-          if (!set) { set = new Set(); this._approvedActions.set(tabId, set); }
-          set.add(actionKey(gate));
         }
       }
 
@@ -484,7 +458,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       onUpdate('tool_call', { name: fnName, args: fnArgs });
       const _toolStart = Date.now();
       const toolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
-      this._indexRefNames(tabId, toolResult);
       try {
         const runId = this.currentRunId.get(tabId);
         if (runId) {
@@ -1197,34 +1170,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
-   * Build the confirmation question + Yes/No labels for a gated action.
-   */
-  _confirmPrompt(gate) {
-    let question;
-    switch (gate.kind) {
-      case 'navigate':
-        question = `Allow WebBrain to navigate to "${gate.target}"? You didn't mention this destination — a page can try to redirect the agent to exfiltrate your data.`;
-        break;
-      case 'mutation':
-        question = `Allow WebBrain to make a direct API write you didn't request (${gate.detail})?`;
-        break;
-      case 'submit':
-      default:
-        question = `Allow WebBrain to click "${gate.target}"? This is a consequential action you didn't explicitly ask for.`;
-        break;
-    }
-    return { question, yes: 'Yes, allow', no: 'No, skip it' };
-  }
-
-  /**
-   * Pause the run and ask the user to approve a consequential action.
+   * Pause the run and ask the user to grant a (capability, host) permission.
    * Reuses the clarify() plumbing (UI card + submitClarifyResponse routing).
-   * Returns true (approved), false (declined), or null (aborted/cancelled).
-   * Fails safe: anything that isn't a clear affirmative is a decline.
+   * Returns 'once' | 'always' | 'deny', or null (aborted/cancelled).
+   * Fails safe: anything that isn't a clear allow is treated as 'deny'.
    */
-  async _confirmConsequentialAction(tabId, gate, onUpdate) {
-    const { question, yes, no } = this._confirmPrompt(gate);
-    const clarifyId = `cfm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  async _promptPermission(tabId, capability, host, onUpdate) {
+    const verb = CAPABILITY_LABEL[capability] || 'act on';
+    const question = `WebBrain wants to ${verb} ${host}. Allow it?`;
+    const ONCE = 'Allow once';
+    const ALWAYS = `Always allow on ${host}`;
+    const DENY = "Don't allow";
+    const clarifyId = `perm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     const tabPending = this._pendingClarifications.get(tabId) || new Map();
     this._pendingClarifications.set(tabId, tabPending);
@@ -1237,8 +1194,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         onUpdate('clarify', {
           clarifyId,
           question,
-          options: [yes, no],
-          reason: 'Security check — confirm before a consequential action you didn\'t explicitly request.',
+          options: [ONCE, ALWAYS, DENY],
+          reason: 'Permission check — WebBrain only takes consequential actions on sites you allow.',
         });
       } catch { /* UI emit must never break the run */ }
     }
@@ -1249,25 +1206,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     if (response && response.cancelled) return null;
     const ans = String(response?.answer || '').trim().toLowerCase();
-    if (ans === no.toLowerCase()) return false;
-    if (ans === yes.toLowerCase()) return true;
-    return /^(y|yes|yep|yeah|sure|ok|okay|approve|approved|proceed|go ahead|do it|confirm|allow)\b/.test(ans);
-  }
-
-  /**
-   * Record the user's own (trusted) instruction for the confirmation gate, and
-   * reset per-turn action approvals. Scoped to the CURRENT request only (not
-   * accumulated across turns): otherwise a verb from an earlier unrelated task
-   * ("delete my old posts") would keep authorizing a later injected click in a
-   * "summarize this page" turn. Multi-turn confirmations ("yes, the 2024 ones")
-   * flow through clarify(), which is authoritative on its own.
-   */
-  _recordTrustedUserText(tabId, userMessage) {
-    const incoming = typeof userMessage === 'string' ? userMessage : '';
-    this._runUserText.set(tabId, incoming.slice(-2000));
-    // Approvals are scoped to a single user turn — a prior approval must never
-    // silently green-light a later identical action introduced by a page.
-    this._approvedActions.delete(tabId);
+    if (ans === ALWAYS.toLowerCase() || /\balways\b/.test(ans)) return 'always';
+    if (ans === ONCE.toLowerCase() || /^(allow once|once|yes|allow|ok|okay|sure|proceed|go ahead|do it)\b/.test(ans)) return 'once';
+    return 'deny';
   }
 
   /**
@@ -1352,9 +1293,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._isPdfTabCache.delete(tabId);
     this._doneBlockCount.delete(tabId);
     this._recentSubmitClicks.delete(tabId);
-    this._runUserText.delete(tabId);
-    this._approvedActions.delete(tabId);
-    this._refNames.delete(tabId);
     if (!preserveRunGuard) {
       this._runningTabs.delete(tabId);
     }
@@ -2702,7 +2640,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _processMessageInner(tabId, userMessage, onUpdate, mode) {
     const messages = this.getConversation(tabId, mode);
-    this._recordTrustedUserText(tabId, userMessage);
+    // New user turn: drop transient "allow once" / "deny once" permission grants.
+    this.permissions.beginTurn();
 
     // Trim context if it's getting too long
     await this._manageContext(tabId, messages);
@@ -2919,7 +2858,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _processMessageStreamInner(tabId, userMessage, onUpdate, mode) {
     const messages = this.getConversation(tabId, mode);
-    this._recordTrustedUserText(tabId, userMessage);
+    // New user turn: drop transient "allow once" / "deny once" permission grants.
+    this.permissions.beginTurn();
 
     // Trim context if it's getting too long
     await this._manageContext(tabId, messages);

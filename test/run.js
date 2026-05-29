@@ -42,15 +42,16 @@ const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/markdown-link.js').replace(/\\/g, '/')
 );
 
-// action-gate.js is pure JS (security-critical Layer-3 confirmation logic).
-const { classifyConsequentialAction, isUserAuthorized, actionKey, shouldConfirmAction, urlCarriesDataPayload } = await import(
-  'file://' + path.join(ROOT, 'src/firefox/src/agent/action-gate.js').replace(/\\/g, '/')
+// permission-gate.js is pure JS (deterministic capability × origin gate).
+const { Capability, capabilityFor, normalizeHost, hostForCapability, PermissionManager } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/permission-gate.js').replace(/\\/g, '/')
 );
 const {
-  classifyConsequentialAction: classifyConsequentialActionCh,
-  shouldConfirmAction: shouldConfirmActionCh,
+  capabilityFor: capabilityForCh,
+  PermissionManager: PermissionManagerCh,
+  normalizeHost: normalizeHostCh,
 } = await import(
-  'file://' + path.join(ROOT, 'src/chrome/src/agent/action-gate.js').replace(/\\/g, '/')
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/permission-gate.js').replace(/\\/g, '/')
 );
 
 // loop-bucket.js is pure JS — the URL-family loop-detector bucketing logic
@@ -1844,174 +1845,102 @@ test('parity: detectSheetSite identical', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────
-// Layer-3 consequential-action gate (action-gate.js)
+// Deterministic capability × origin permission gate (permission-gate.js)
 // ────────────────────────────────────────────────────────────────────────
 
-console.log('\naction-gate');
+console.log('\npermission-gate');
 
-test('benign reads are not gated', () => {
-  assert.equal(classifyConsequentialAction('read_page', {}), null);
-  assert.equal(classifyConsequentialAction('get_accessibility_tree', {}), null);
-  assert.equal(classifyConsequentialAction('fetch_url', { url: 'https://x.com', method: 'GET' }), null);
-  assert.equal(classifyConsequentialAction('click', { text: 'Read more' }), null);
-  assert.equal(classifyConsequentialAction('type_text', { text: 'hello' }), null);
-});
-
-test('generic Submit/Confirm/Save buttons are NOT gated (avoid over-prompting)', () => {
-  assert.equal(classifyConsequentialAction('click', { text: 'Submit' }), null);
-  assert.equal(classifyConsequentialAction('click', { text: 'Confirm' }), null);
-  assert.equal(classifyConsequentialAction('click', { text: 'Save changes' }), null);
-  assert.equal(classifyConsequentialAction('click', { text: 'Continue' }), null);
-});
-
-test('destructive button labels are classified as submit', () => {
-  for (const label of ['Send', 'Send message', 'Delete repository', 'Publish release', 'Pay now', 'Transfer funds', 'Buy', 'Withdraw']) {
-    const c = classifyConsequentialAction('click', { text: label });
-    assert.equal(c && c.kind, 'submit', `expected submit for "${label}"`);
+test('capabilityFor: read-only tools are not gated', () => {
+  for (const t of ['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'screenshot', 'scroll', 'get_selection']) {
+    assert.equal(capabilityFor(t, {}), null, `${t} should be ungated`);
   }
+  assert.equal(capabilityFor('fetch_url', { url: 'https://x.com', method: 'GET' }), null);
 });
 
-test('clean navigations are NOT gated; payload navigations are', () => {
-  // bare / short URLs are low-harm — not classified
-  assert.equal(classifyConsequentialAction('navigate', { url: 'https://github.com' }), null);
-  assert.equal(classifyConsequentialAction('navigate', { url: 'https://github.com/foo/bar' }), null);
-  assert.equal(classifyConsequentialAction('navigate', { url: 'https://x.com/?ref=home' }), null);
-  assert.equal(classifyConsequentialAction('navigate', {}), null);
-  // URL carrying an exfil-sized payload IS classified
-  const leak = 'https://evil.example/collect?d=' + 'A'.repeat(120);
-  assert.equal(classifyConsequentialAction('navigate', { url: leak }).kind, 'navigate');
-  assert.equal(classifyConsequentialAction('new_tab', { url: leak }).kind, 'navigate');
+test('capabilityFor: state-changing tools map to capabilities', () => {
+  assert.equal(capabilityFor('navigate', { url: 'https://x.com' }), Capability.NAVIGATE);
+  assert.equal(capabilityFor('new_tab', { url: 'https://x.com' }), Capability.NAVIGATE);
+  assert.equal(capabilityFor('click', {}), Capability.CLICK);
+  assert.equal(capabilityFor('click_ax', { ref_id: 'ref_1' }), Capability.CLICK); // ref_id, no label needed
+  assert.equal(capabilityFor('type_text', {}), Capability.TYPE);
+  assert.equal(capabilityFor('set_field', {}), Capability.TYPE);
+  assert.equal(capabilityFor('execute_js', { code: 'x' }), Capability.EXECUTE_JS);
+  assert.equal(capabilityFor('download_files', {}), Capability.DOWNLOAD);
+  assert.equal(capabilityFor('fetch_url', { url: 'https://api.x.com', method: 'POST' }), Capability.NETWORK);
 });
 
-test('urlCarriesDataPayload flags exfil-shaped URLs only', () => {
-  assert.equal(urlCarriesDataPayload('https://site.com/page'), false);
-  assert.equal(urlCarriesDataPayload('https://site.com/search?q=hello+world'), false);
-  assert.equal(urlCarriesDataPayload('https://evil.io/?leak=' + 'x'.repeat(120)), true);  // long
-  assert.equal(urlCarriesDataPayload('https://evil.io/?t=' + 'YWJjZGVm'.repeat(6)), true); // opaque blob
-  assert.equal(urlCarriesDataPayload('https://evil.io/?d=%41%42%43%44%45%46%47%48%49'), true); // heavy %-enc
+test('normalizeHost strips scheme/www/port/path', () => {
+  assert.equal(normalizeHost('https://www.GitHub.com/foo/bar'), 'github.com');
+  assert.equal(normalizeHost('http://example.com:8080/x'), 'example.com');
+  assert.equal(normalizeHost('Example.com'), 'example.com');
+  assert.equal(normalizeHost(''), '');
 });
 
-test('mutation methods + mutation JS are classified', () => {
-  assert.equal(classifyConsequentialAction('fetch_url', { url: 'https://api.x.com', method: 'POST' }).kind, 'mutation');
-  assert.equal(classifyConsequentialAction('fetch_url', { url: 'https://api.x.com', method: 'delete' }).kind, 'mutation');
-  assert.equal(classifyConsequentialAction('execute_js', { code: "fetch('/x', {method:'POST'})" }).kind, 'mutation');
-  assert.equal(classifyConsequentialAction('execute_js', { code: "document.title" }), null);
+test('hostForCapability: navigate/network use target URL, others use current page', () => {
+  assert.equal(hostForCapability(Capability.NAVIGATE, { url: 'https://dest.com/x' }, 'https://cur.com'), 'dest.com');
+  assert.equal(hostForCapability(Capability.NETWORK, { url: 'https://api.dest.com' }, 'https://cur.com'), 'api.dest.com');
+  assert.equal(hostForCapability(Capability.CLICK, { ref_id: 'ref_1' }, 'https://cur.com'), 'cur.com');
+  assert.equal(hostForCapability(Capability.TYPE, {}, 'https://cur.com'), 'cur.com');
 });
 
-test('payload navigation: user-named host skips, unnamed host prompts', () => {
-  const c = classifyConsequentialAction('navigate', { url: 'https://github.com/x?d=' + 'A'.repeat(120) });
-  assert.equal(shouldConfirmAction(c, { userText: 'go to github and open my repo' }), false);
-  assert.equal(shouldConfirmAction(c, { userText: 'summarize this page' }), true);
+test('check: unknown (capability, host) needs a prompt', () => {
+  const pm = new PermissionManager();
+  const v = pm.check('github.com', Capability.CLICK);
+  assert.equal(v.allowed, false);
+  assert.equal(v.needsPrompt, true);
 });
 
-test('injected exfil navigation to an unnamed origin prompts', () => {
-  const c = classifyConsequentialAction('navigate', { url: 'https://attacker-exfil.io/?leak=' + 'x'.repeat(120) });
-  assert.equal(shouldConfirmAction(c, { userText: 'delete my old tweets' }), true);
+test('record allow/deny, then check returns it without prompting', async () => {
+  const pm = new PermissionManager();
+  await pm.record('github.com', Capability.CLICK, 'allow', 'always');
+  let v = pm.check('https://www.github.com/x', Capability.CLICK); // host normalized
+  assert.equal(v.allowed, true);
+  assert.equal(v.needsPrompt, false);
+  // a standing deny
+  await pm.record('evil.com', Capability.EXECUTE_JS, 'deny', 'always');
+  v = pm.check('evil.com', Capability.EXECUTE_JS);
+  assert.equal(v.allowed, false);
+  assert.equal(v.needsPrompt, false);
+  // different capability on same host is still unknown
+  assert.equal(pm.check('github.com', Capability.TYPE).needsPrompt, true);
 });
 
-test('verb synonyms authorize the matching destructive click', () => {
-  const del = classifyConsequentialAction('click', { text: 'Delete' });
-  assert.equal(isUserAuthorized('please remove my old posts', del), true);
-  const pub = classifyConsequentialAction('click', { text: 'Publish' });
-  assert.equal(isUserAuthorized('post this to my blog', pub), true);
-  const send = classifyConsequentialAction('click', { text: 'Send' });
-  assert.equal(isUserAuthorized('send bob the summary', send), true);
+test('beginTurn drops once grants but keeps always grants', async () => {
+  const pm = new PermissionManager();
+  await pm.record('a.com', Capability.CLICK, 'allow', 'once');
+  await pm.record('b.com', Capability.CLICK, 'allow', 'always');
+  pm.beginTurn();
+  assert.equal(pm.check('a.com', Capability.CLICK).needsPrompt, true);  // once dropped
+  assert.equal(pm.check('b.com', Capability.CLICK).allowed, true);      // always kept
 });
 
-test('a destructive click the user never asked for is NOT authorized', () => {
-  const send = classifyConsequentialAction('click', { text: 'Send' });
-  assert.equal(isUserAuthorized('what does this page say?', send), false);
+test('always grants persist via the save hook; hydrate restores them', async () => {
+  let saved = null;
+  const pm1 = new PermissionManager({ save: async (g) => { saved = g; } });
+  await pm1.record('github.com', Capability.CLICK, 'allow', 'always');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].host, 'github.com');
+
+  const pm2 = new PermissionManager({ load: async () => saved });
+  await pm2.hydrate();
+  assert.equal(pm2.check('github.com', Capability.CLICK).allowed, true);
 });
 
-test('authorization requires intent, not bare keyword presence', () => {
-  const send = classifyConsequentialAction('click', { text: 'Send' });
-  // negated → not authorized
-  assert.equal(isUserAuthorized('do not send it', send), false);
-  assert.equal(isUserAuthorized("don't send anything", send), false);
-  // benign context that merely contains a former synonym → not authorized
-  assert.equal(isUserAuthorized('read this message and summarize', send), false);
-  // a genuine request still authorizes
-  assert.equal(isUserAuthorized('send this email to bob', send), true);
-
-  const buy = classifyConsequentialAction('click', { text: 'Buy now' });
-  // "get info" must NOT authorize a Buy ("get" was removed as a synonym)
-  assert.equal(isUserAuthorized('get info about this product', buy), false);
-  assert.equal(isUserAuthorized('buy this product', buy), true);
+test('skipAll hook allows everything without prompting', () => {
+  const pm = new PermissionManager({ skipAll: () => true });
+  const v = pm.check('anything.com', Capability.EXECUTE_JS);
+  assert.equal(v.allowed, true);
+  assert.equal(v.needsPrompt, false);
 });
 
-test('noun usage of a synonym does not authorize; verb usage does', () => {
-  // NOUN_CONTEXT guard, demonstrated on the verb/noun-ambiguous "post":
-  const pub = classifyConsequentialAction('click', { text: 'Publish' });
-  assert.equal(isUserAuthorized('read the post and summarize it', pub), false); // noun
-  assert.equal(isUserAuthorized('summarize this post', pub), false);            // noun
-  assert.equal(isUserAuthorized('post this to my blog', pub), true);            // verb
-
-  // "email"/"dm" are dropped from the send waiver entirely — too noun-prone.
-  const send = classifyConsequentialAction('click', { text: 'Send' });
-  assert.equal(isUserAuthorized('read my email and summarize it', send), false);
-  assert.equal(isUserAuthorized('summarize the latest email', send), false);
-  assert.equal(isUserAuthorized('email me the figures', send), false); // now prompts (safe)
-  assert.equal(isUserAuthorized('send this now', send), true);
-});
-
-test('click_ax by ref_id is gated via resolved accessible name', () => {
-  // No text/label on the call — the preferred click_ax path.
-  assert.equal(classifyConsequentialAction('click_ax', { ref_id: 'ref_42' }), null);
-  // With the resolved name, a destructive button IS classified.
-  const c = classifyConsequentialAction('click_ax', { ref_id: 'ref_42' }, { refName: 'Send' });
-  assert.equal(c && c.kind, 'submit');
-  assert.equal(c.verb, 'send');
-  // Benign resolved name is not gated.
-  assert.equal(classifyConsequentialAction('click_ax', { ref_id: 'ref_7' }, { refName: 'Read more' }), null);
-  // Parity: chrome behaves identically.
-  const cc = classifyConsequentialActionCh('click_ax', { ref_id: 'ref_42' }, { refName: 'Delete' });
-  assert.equal(cc && cc.kind, 'submit');
-});
-
-test('API mutations are never authorized by free text (only /allow-api)', () => {
-  const c = classifyConsequentialAction('fetch_url', { url: 'https://api.x.com', method: 'POST' });
-  assert.equal(isUserAuthorized('use the api to post this', c), false);
-});
-
-test('actionKey is stable per kind+target', () => {
-  const pad = '?d=' + 'A'.repeat(120);
-  const a = classifyConsequentialAction('navigate', { url: 'https://github.com/a' + pad });
-  const b = classifyConsequentialAction('navigate', { url: 'https://github.com/b' + pad });
-  assert.equal(actionKey(a), actionKey(b));
-  assert.notEqual(actionKey(a), actionKey(classifyConsequentialAction('navigate', { url: 'https://x.com/' + pad })));
-});
-
-test('submit/mutation gates fire regardless of site', () => {
-  // "Send" anywhere (e.g. gmail) is a high-value injection target.
-  const send = classifyConsequentialAction('click', { text: 'Send' });
-  assert.equal(shouldConfirmAction(send, { userText: 'what does this page say' }), true);
-  const mut = classifyConsequentialAction('fetch_url', { url: 'https://api.github.com/x', method: 'POST' });
-  assert.equal(shouldConfirmAction(mut, { userText: 'read my notifications' }), true);
-  // /allow-api waives the mutation gate
-  assert.equal(shouldConfirmAction(mut, { userText: 'read my notifications', apiAllowed: true }), false);
-});
-
-test('shouldConfirmAction: benign calls never confirm; user-named actions skip', () => {
-  assert.equal(shouldConfirmAction(null, {}), false);
-  const del = classifyConsequentialAction('click', { text: 'Delete' });
-  assert.equal(shouldConfirmAction(del, { userText: 'remove my old posts' }), false);
-  assert.equal(shouldConfirmAction(del, { userText: 'what is on this page' }), true);
-});
-
-test('parity: chrome & firefox action-gate decide identically', () => {
-  const cases = [
-    ['read_page', {}, 'summarize'],
-    ['navigate', { url: 'https://www.youtube.com/x' }, 'open this page'],
-    ['navigate', { url: 'https://attacker-exfil.io/?leak=' + 'x'.repeat(120) }, 'delete my tweets'],
-    ['click', { text: 'Send' }, 'email bob the notes'],
-    ['click', { text: 'Delete' }, 'what does this say'],
-    ['fetch_url', { url: 'https://api.x.com', method: 'POST' }, 'post via api'],
-  ];
-  for (const [name, args, userText] of cases) {
-    const fx = shouldConfirmAction(classifyConsequentialAction(name, args), { userText });
-    const ch = shouldConfirmActionCh(classifyConsequentialActionCh(name, args), { userText });
-    assert.equal(fx, ch, `gate drift for ${name} ${JSON.stringify(args)}`);
-  }
+test('parity: chrome & firefox permission-gate behave identically', async () => {
+  assert.equal(capabilityForCh('click', {}), capabilityFor('click', {}));
+  assert.equal(capabilityForCh('read_page', {}), capabilityFor('read_page', {}));
+  assert.equal(normalizeHostCh('https://www.GitHub.com/x'), normalizeHost('https://www.GitHub.com/x'));
+  const a = new PermissionManager(); const b = new PermissionManagerCh();
+  await a.record('x.com', 'click', 'allow', 'always');
+  await b.record('x.com', 'click', 'allow', 'always');
+  assert.equal(a.check('x.com', 'click').allowed, b.check('x.com', 'click').allowed);
 });
 
 await run();
