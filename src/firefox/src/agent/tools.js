@@ -996,6 +996,12 @@ LISTINGS & PAGINATION — read this:
  * the shadow-DOM and frame-introspection tools, full_page_screenshot (heavy,
  * vision-gated), and download_resource_from_page (download_social_media +
  * download_files cover the common cases).
+ *
+ * NOTE: this is the Firefox build, whose AGENT_TOOLS does NOT implement
+ * upload_file, record_tab, or stop_recording (Chrome-only). They are
+ * deliberately absent here so mid neither advertises nor steers toward tools
+ * Firefox can't execute. Keep this list in sync with AGENT_TOOLS, not with the
+ * Chrome mid set.
  */
 export const MID_TOOL_NAMES = new Set([
   'get_accessibility_tree', 'click_ax', 'type_ax', 'set_field',
@@ -1005,9 +1011,8 @@ export const MID_TOOL_NAMES = new Set([
   'new_tab', 'done', 'clarify',
   'iframe_read', 'iframe_click', 'iframe_type',
   'fetch_url', 'research_url', 'list_downloads', 'read_downloaded_file',
-  'download_files', 'upload_file', 'download_social_media',
+  'download_files', 'download_social_media',
   'scratchpad_write', 'verify_form', 'solve_captcha',
-  'record_tab', 'stop_recording',
 ]);
 
 /**
@@ -1038,11 +1043,10 @@ TOOLS — use only these:
 - extract_data: tables/headings/images/links. get_selection: highlighted text. read_pdf: read a PDF.
 - wait_for_element({selector}) / wait_for_stable({quietMs}): wait for an element / for the page to go quiet after an action.
 - iframe_read / iframe_click / iframe_type ({urlFilter, selector, text}): interact inside cross-origin iframes (Stripe, payment widgets, embeds).
-- fetch_url({url}) / research_url({url}): read OTHER URLs (not the active tab). list_downloads, download_files, read_downloaded_file, upload_file({filePath, selector}): file workflows.
+- fetch_url({url}) / research_url({url}): read OTHER URLs (not the active tab). list_downloads, download_files, read_downloaded_file: file workflows.
 - download_social_media: one-shot image/video download from supported social sites.
 - verify_form: check a form's field values before submitting. scratchpad_write({text}): pin facts that survive context summarization.
 - clarify({question}): ask the user only when materially blocked/ambiguous (budget 1-2 per run). solve_captcha: once, only when CapSolver is configured.
-- record_tab / stop_recording: record the current tab (video + audio) when the user asks to "record".
 - done({summary}): signal completion — verify success first.
 
 DEFAULT LOOP:
