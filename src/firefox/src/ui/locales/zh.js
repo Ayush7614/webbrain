@@ -1,5 +1,14 @@
 // Simplified Chinese (zh).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "允许一次",
+  'sp.perm.always_allow': "始终允许 {host}",
+  'sp.perm.dont_allow': "不允许",
+  'st.tab.permissions': "权限",
+  'st.perms.revoke': "撤销",
+  'st.perms.clear_all': "清除所有权限",
+  'st.perms.gate.label': "执行重要操作前询问",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': '未连接',

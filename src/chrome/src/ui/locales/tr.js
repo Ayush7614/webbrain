@@ -1,5 +1,14 @@
 // Turkish (tr).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Bir kez izin ver",
+  'sp.perm.always_allow': "{host} için her zaman izin ver",
+  'sp.perm.dont_allow': "İzin verme",
+  'st.tab.permissions': "İzinler",
+  'st.perms.revoke': "Kaldır",
+  'st.perms.clear_all': "Tüm izinleri temizle",
+  'st.perms.gate.label': "Önemli işlemlerden önce sor",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Bağlantı yok',

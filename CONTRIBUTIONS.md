@@ -200,6 +200,13 @@ and a good first PR if you want a code task.
 - No frameworks added without discussion. The whole extension is vanilla
   JS + CSS, intentionally.
 - `node test/run.js` runs the unit tests. Don't break them.
+- **Touching the agent's tools, page reads, or message-building?** Read
+  [`docs/prompt-injection-defense.md`](docs/prompt-injection-defense.md) first.
+  It explains what counts as untrusted page content, the two registries that
+  must stay exhaustive (`UNTRUSTED_CONTENT_TOOLS` and the capability map), and
+  the rule that page-derived bytes must go through `_wrapUntrusted` — not a
+  prose label. The unit tests check that tools are *listed*, not that you
+  classified them *correctly*.
 
 ---
 

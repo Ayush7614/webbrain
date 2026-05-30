@@ -1,5 +1,14 @@
 // Arabic (ar).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "السماح مرة واحدة",
+  'sp.perm.always_allow': "السماح دائمًا على {host}",
+  'sp.perm.dont_allow': "عدم السماح",
+  'st.tab.permissions': "الأذونات",
+  'st.perms.revoke': "إلغاء",
+  'st.perms.clear_all': "مسح كل الأذونات",
+  'st.perms.gate.label': "السؤال قبل الإجراءات المهمة",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'غير متصل',

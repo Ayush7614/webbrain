@@ -643,12 +643,24 @@ export async function downloadResourceFromPage(tabId, args = {}) {
             return { ok: false, error: 'failed to read blob URL: ' + e.message };
           }
         }
-        return { ok: true, url, isBlob: false };
+        // Flag cross-origin resources: the permission gate charged this
+        // download to the PAGE host, but a cross-origin resource is fetched
+        // from a different host — route those through download_files, which
+        // gates on the resource's own host.
+        let crossOrigin = false;
+        try { crossOrigin = new URL(url, location.href).origin !== location.origin; } catch (e) {}
+        return { ok: true, url, isBlob: false, crossOrigin };
       },
       args: [selector],
     });
     const r = results?.[0]?.result;
     if (!r?.ok) return { success: false, error: r?.error || 'extraction failed' };
+    if (!r.isBlob && r.crossOrigin) {
+      return {
+        success: false,
+        error: `This resource is hosted on a different origin than the page, so it can't be downloaded under the current site's permission. Use download_files({urls:["${r.url}"]}) instead — that path checks download permission for the resource's own host.`,
+      };
+    }
 
     const downloadId = await new Promise((resolve, reject) => {
       chrome.downloads.download({

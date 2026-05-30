@@ -1,5 +1,14 @@
 // Ukrainian (uk).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Дозволити один раз",
+  'sp.perm.always_allow': "Завжди дозволяти на {host}",
+  'sp.perm.dont_allow': "Не дозволяти",
+  'st.tab.permissions': "Дозволи",
+  'st.perms.revoke': "Відкликати",
+  'st.perms.clear_all': "Очистити всі дозволи",
+  'st.perms.gate.label': "Питати перед важливими діями",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Не підключено',

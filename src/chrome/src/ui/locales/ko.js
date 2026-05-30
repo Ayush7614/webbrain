@@ -1,5 +1,14 @@
 // Korean (ko).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "한 번 허용",
+  'sp.perm.always_allow': "{host}에서 항상 허용",
+  'sp.perm.dont_allow': "허용 안 함",
+  'st.tab.permissions': "권한",
+  'st.perms.revoke': "취소",
+  'st.perms.clear_all': "모든 권한 지우기",
+  'st.perms.gate.label': "중요한 작업 전에 확인",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': '연결 안 됨',

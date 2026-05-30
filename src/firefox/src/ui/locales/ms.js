@@ -1,5 +1,14 @@
 // Malay (ms).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Benarkan sekali",
+  'sp.perm.always_allow': "Sentiasa benarkan di {host}",
+  'sp.perm.dont_allow': "Jangan benarkan",
+  'st.tab.permissions': "Kebenaran",
+  'st.perms.revoke': "Batalkan",
+  'st.perms.clear_all': "Kosongkan semua kebenaran",
+  'st.perms.gate.label': "Tanya sebelum tindakan penting",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Tidak disambung',

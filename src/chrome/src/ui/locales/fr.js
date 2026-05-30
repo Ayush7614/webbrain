@@ -1,5 +1,14 @@
 // French (fr).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Autoriser une fois",
+  'sp.perm.always_allow': "Toujours autoriser sur {host}",
+  'sp.perm.dont_allow': "Ne pas autoriser",
+  'st.tab.permissions': "Autorisations",
+  'st.perms.revoke': "Révoquer",
+  'st.perms.clear_all': "Effacer toutes les autorisations",
+  'st.perms.gate.label': "Demander avant les actions importantes",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Déconnecté',

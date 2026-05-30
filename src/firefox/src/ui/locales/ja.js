@@ -1,5 +1,14 @@
 // Japanese (ja).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "今回のみ許可",
+  'sp.perm.always_allow': "{host} で常に許可",
+  'sp.perm.dont_allow': "許可しない",
+  'st.tab.permissions': "権限",
+  'st.perms.revoke': "取り消す",
+  'st.perms.clear_all': "すべての権限を消去",
+  'st.perms.gate.label': "重要な操作の前に確認する",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': '未接続',

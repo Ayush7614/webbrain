@@ -1,5 +1,14 @@
 // Filipino / Tagalog (tl).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Payagan minsan",
+  'sp.perm.always_allow': "Palaging payagan sa {host}",
+  'sp.perm.dont_allow': "Huwag payagan",
+  'st.tab.permissions': "Mga pahintulot",
+  'st.perms.revoke': "Bawiin",
+  'st.perms.clear_all': "I-clear ang lahat ng pahintulot",
+  'st.perms.gate.label': "Magtanong bago ang mahahalagang aksyon",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Hindi konektado',

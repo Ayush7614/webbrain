@@ -1,5 +1,14 @@
 // Indonesian (id).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Izinkan sekali",
+  'sp.perm.always_allow': "Selalu izinkan di {host}",
+  'sp.perm.dont_allow': "Jangan izinkan",
+  'st.tab.permissions': "Izin",
+  'st.perms.revoke': "Cabut",
+  'st.perms.clear_all': "Hapus semua izin",
+  'st.perms.gate.label': "Tanya sebelum tindakan penting",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Terputus',

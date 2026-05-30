@@ -42,6 +42,18 @@ const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/markdown-link.js').replace(/\\/g, '/')
 );
 
+// permission-gate.js is pure JS (deterministic capability × origin gate).
+const { Capability, capabilityFor, capabilitiesFor, normalizeHost, hostForCapability, requiredHosts, frameHostMatches, isNetworkMutation, PermissionManager, UNTRUSTED_CONTENT_TOOLS } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/permission-gate.js').replace(/\\/g, '/')
+);
+const {
+  capabilityFor: capabilityForCh,
+  PermissionManager: PermissionManagerCh,
+  normalizeHost: normalizeHostCh,
+} = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/permission-gate.js').replace(/\\/g, '/')
+);
+
 // loop-bucket.js is pure JS — the URL-family loop-detector bucketing logic
 // lives here so both agent.js and the tests can exercise the same code.
 const { resourceBucket, bucketArgsKey, URL_FAMILY_TOOLS } = await import(
@@ -1836,6 +1848,318 @@ test('parity: TSV roundtrip identical', () => {
 test('parity: detectSheetSite identical', () => {
   const urls = ['https://docs.google.com/spreadsheets/d/x/edit', 'https://example.com/', 'https://word-edit.officeapps.live.com/x/y'];
   for (const u of urls) assert.equal(detectSheetSite(u), detectSheetSiteFx(u));
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Deterministic capability × origin permission gate (permission-gate.js)
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\npermission-gate');
+
+test('capabilityFor: read-only tools are not gated', () => {
+  for (const t of ['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'screenshot', 'scroll', 'get_selection']) {
+    assert.equal(capabilityFor(t, {}), null, `${t} should be ungated`);
+  }
+});
+
+test('capabilityFor: outbound network egress is gated for ALL methods (exfil)', () => {
+  // a GET can exfiltrate data in its query string → must be gated, not just writes
+  assert.equal(capabilityFor('fetch_url', { url: 'https://evil.example/?q=secrets', method: 'GET' }), Capability.NETWORK);
+  assert.equal(capabilityFor('fetch_url', { url: 'https://x.com' }), Capability.NETWORK); // default GET
+  assert.equal(capabilityFor('research_url', { url: 'https://x.com' }), Capability.NETWORK);
+  assert.equal(capabilityFor('fetch_url', { url: 'https://api.x.com', method: 'POST' }), Capability.NETWORK);
+  // read_pdf({url}) fetches an arbitrary host with credentials:'include' → gate it;
+  // read_pdf with no url reads the active tab's own PDF → ungated.
+  assert.equal(capabilityFor('read_pdf', { url: 'https://evil.example/?q=secrets' }), Capability.NETWORK);
+  assert.equal(capabilityFor('read_pdf', {}), null);
+});
+
+test('isNetworkMutation: only write-method fetches (so /allow-api cannot waive GET exfil)', () => {
+  assert.equal(isNetworkMutation('fetch_url', { url: 'https://x.com', method: 'POST' }), true);
+  assert.equal(isNetworkMutation('research_url', { url: 'https://x.com', method: 'delete' }), true);
+  // GET (incl. default) is NOT a mutation — must still get a host prompt even under /allow-api
+  assert.equal(isNetworkMutation('fetch_url', { url: 'https://evil.example/?leak=x' }), false);
+  assert.equal(isNetworkMutation('fetch_url', { url: 'https://x.com', method: 'GET' }), false);
+  assert.equal(isNetworkMutation('navigate', { url: 'https://x.com' }), false);
+});
+
+test('capabilityFor: screenshot is read-only, but save:true is a download', () => {
+  assert.equal(capabilityFor('screenshot', {}), null);
+  assert.equal(capabilityFor('full_page_screenshot', {}), null);
+  assert.equal(capabilityFor('screenshot', { save: true }), Capability.DOWNLOAD);
+  assert.equal(capabilityFor('full_page_screenshot', { save: true }), Capability.DOWNLOAD);
+});
+
+test('capabilityFor: state-changing tools map to capabilities', () => {
+  assert.equal(capabilityFor('navigate', { url: 'https://x.com' }), Capability.NAVIGATE);
+  assert.equal(capabilityFor('new_tab', { url: 'https://x.com' }), Capability.NAVIGATE);
+  assert.equal(capabilityFor('click', {}), Capability.CLICK);
+  assert.equal(capabilityFor('click_ax', { ref_id: 'ref_1' }), Capability.CLICK); // ref_id, no label needed
+  assert.equal(capabilityFor('type_text', {}), Capability.TYPE);
+  assert.equal(capabilityFor('set_field', {}), Capability.TYPE);
+  assert.equal(capabilityFor('execute_js', { code: 'x' }), Capability.EXECUTE_JS);
+  assert.equal(capabilityFor('download_files', {}), Capability.DOWNLOAD);
+});
+
+test('capabilityFor: no side-effecting tool slips through ungated', () => {
+  // iframe + drag + upload + chrome download alias
+  assert.equal(capabilityFor('iframe_click', {}), Capability.CLICK);
+  assert.equal(capabilityFor('iframe_type', {}), Capability.TYPE);
+  assert.equal(capabilityFor('drag_drop', {}), Capability.CLICK);
+  assert.equal(capabilityFor('upload_file', {}), Capability.UPLOAD);
+  assert.equal(capabilityFor('download_file', {}), Capability.DOWNLOAD);
+});
+
+test('set_field with submit:true requires CLICK, not the weaker TYPE', () => {
+  assert.equal(capabilityFor('set_field', { ref_id: 'r', text: 'x' }), Capability.TYPE);
+  assert.equal(capabilityFor('set_field', { ref_id: 'r', text: 'x', submit: true }), Capability.CLICK);
+});
+
+test('capabilitiesFor: set_field({submit}) requires BOTH type and click', () => {
+  assert.deepEqual(capabilitiesFor('set_field', { text: 'x' }), [Capability.TYPE]);
+  assert.deepEqual(capabilitiesFor('set_field', { text: 'x', submit: true }), [Capability.TYPE, Capability.CLICK]);
+  // single-capability tools wrap to a 1-element array; read-only → []
+  assert.deepEqual(capabilitiesFor('click', {}), [Capability.CLICK]);
+  assert.deepEqual(capabilitiesFor('fetch_url', { url: 'https://x.com' }), [Capability.NETWORK]);
+  assert.deepEqual(capabilitiesFor('read_page', {}), []);
+});
+
+test('press_keys: Enter is a submit (CLICK); Tab/Escape are benign (null)', () => {
+  assert.equal(capabilityFor('press_keys', { key: 'Enter' }), Capability.CLICK);
+  assert.equal(capabilityFor('press_keys', { key: 'Escape' }), null);
+  assert.equal(capabilityFor('press_keys', { key: 'Tab' }), null);
+  assert.equal(capabilityFor('press_keys', {}), Capability.CLICK); // unknown → gate, fail safe
+});
+
+test('record_tab (tab + microphone capture) is gated', () => {
+  assert.equal(capabilityFor('record_tab', {}), Capability.RECORD);
+  assert.equal(capabilityForCh('record_tab', {}), Capability.RECORD);
+});
+
+test('navigation host resolves relative / protocol-relative against current page', () => {
+  const base = 'https://trusted.com/page';
+  // protocol-relative → the host the browser will actually load, NOT current
+  assert.equal(
+    hostForCapability(Capability.NAVIGATE, { url: '//attacker.example/x?leak=1' }, base),
+    'attacker.example'
+  );
+  // relative path stays same-origin
+  assert.equal(hostForCapability(Capability.NAVIGATE, { url: '/dashboard' }, base), 'trusted.com');
+  assert.equal(hostForCapability(Capability.NAVIGATE, { url: 'sub/page' }, base), 'trusted.com');
+  // absolute is unaffected
+  assert.equal(hostForCapability(Capability.NAVIGATE, { url: 'https://dest.com/y' }, base), 'dest.com');
+  // normalizeHost also handles bare protocol-relative input
+  assert.equal(normalizeHost('//evil.example/x'), 'evil.example');
+});
+
+test('normalizeHost strips scheme/www/port/path', () => {
+  assert.equal(normalizeHost('https://www.GitHub.com/foo/bar'), 'github.com');
+  assert.equal(normalizeHost('http://example.com:8080/x'), 'example.com');
+  assert.equal(normalizeHost('Example.com'), 'example.com');
+  assert.equal(normalizeHost(''), '');
+});
+
+test('hostForCapability: navigate/network use target URL, others use current page', () => {
+  assert.equal(hostForCapability(Capability.NAVIGATE, { url: 'https://dest.com/x' }, 'https://cur.com'), 'dest.com');
+  assert.equal(hostForCapability(Capability.NETWORK, { url: 'https://api.dest.com' }, 'https://cur.com'), 'api.dest.com');
+  assert.equal(hostForCapability(Capability.CLICK, { ref_id: 'ref_1' }, 'https://cur.com'), 'cur.com');
+  assert.equal(hostForCapability(Capability.TYPE, {}, 'https://cur.com'), 'cur.com');
+});
+
+test('iframe actions are gated on the frame host (urlFilter), not the top page', () => {
+  const top = 'https://merchant.com/checkout';
+  // Embedded Stripe iframe targeted by urlFilter → charge stripe.com, NOT merchant.com
+  assert.equal(
+    hostForCapability(Capability.CLICK, { urlFilter: 'js.stripe.com', selector: '#pay' }, top, 'iframe_click'),
+    'js.stripe.com'
+  );
+  assert.equal(
+    hostForCapability(Capability.TYPE, { urlFilter: 'https://checkout.paypal.com/x' }, top, 'iframe_type'),
+    'checkout.paypal.com'
+  );
+  // No urlFilter → host can't be identified → return '' so the agent fails closed
+  assert.equal(hostForCapability(Capability.CLICK, {}, top, 'iframe_click'), '');
+  // A normal (non-iframe) click still uses the current page host
+  assert.equal(hostForCapability(Capability.CLICK, { ref_id: 'ref_1' }, top, 'click'), 'merchant.com');
+});
+
+test('downloads are charged to the target URL host, not the current page', () => {
+  const top = 'https://trusted.com/page';
+  // download_files from an attacker URL → charge attacker.example, NOT trusted.com
+  assert.equal(
+    hostForCapability(Capability.DOWNLOAD, { url: 'https://attacker.example/payload.bin' }, top),
+    'attacker.example'
+  );
+  // a download with no url (e.g. download_resource_from_page) → current page
+  assert.equal(hostForCapability(Capability.DOWNLOAD, {}, top), 'trusted.com');
+});
+
+test('requiredHosts: download_files gates EVERY distinct host in urls[]', () => {
+  const top = 'https://trusted.com/page';
+  // a urls[] array spanning multiple hosts → one entry per distinct host
+  assert.deepEqual(
+    requiredHosts(Capability.DOWNLOAD, { urls: [
+      'https://a.example/1.bin',
+      'https://b.example/2.bin',
+      'https://www.a.example/3.bin', // dedupes with a.example
+    ] }, top).sort(),
+    ['a.example', 'b.example']
+  );
+  // single-host helper still works for navigate/click/etc.
+  assert.deepEqual(requiredHosts(Capability.CLICK, { ref_id: 'r' }, top), ['trusted.com']);
+  assert.deepEqual(requiredHosts(Capability.NAVIGATE, { url: 'https://dest.com/x' }, top), ['dest.com']);
+  // unidentifiable iframe target → [] so the caller fails closed
+  assert.deepEqual(requiredHosts(Capability.CLICK, {}, top, 'iframe_click'), []);
+});
+
+test('hydrateFrom replaces always-grants but keeps once-grants (live revoke)', async () => {
+  const pm = new PermissionManager();
+  await pm.record('a.com', Capability.CLICK, 'allow', 'always');
+  await pm.record('b.com', Capability.TYPE, 'allow', 'once');
+  // Simulate a Settings revoke of a.com's grant arriving via storage.onChanged
+  pm.hydrateFrom([]); // new persisted snapshot is empty
+  assert.equal(pm.check('a.com', Capability.CLICK).needsPrompt, true);  // revoked → re-prompts
+  assert.equal(pm.check('b.com', Capability.TYPE).allowed, true);       // once-grant survives the turn
+});
+
+test('frameHostMatches: host-based, not substring (closes the ?next=stripe.com bypass)', () => {
+  // genuine frame
+  assert.equal(frameHostMatches('https://js.stripe.com/v3/', 'stripe.com'), true);   // subdomain
+  assert.equal(frameHostMatches('https://stripe.com/x', 'stripe.com'), true);        // exact
+  assert.equal(frameHostMatches('https://checkout.paypal.com/', 'https://checkout.paypal.com'), true);
+  // the attack: evil frame whose URL merely CONTAINS the filter string
+  assert.equal(frameHostMatches('https://evil.example/?next=stripe.com', 'stripe.com'), false);
+  assert.equal(frameHostMatches('https://stripe.com.evil.example/', 'stripe.com'), false);
+  // no filter → matches anything
+  assert.equal(frameHostMatches('https://anything.com/', ''), true);
+});
+
+test('check: unknown (capability, host) needs a prompt', () => {
+  const pm = new PermissionManager();
+  const v = pm.check('github.com', Capability.CLICK);
+  assert.equal(v.allowed, false);
+  assert.equal(v.needsPrompt, true);
+});
+
+test('record allow/deny, then check returns it without prompting', async () => {
+  const pm = new PermissionManager();
+  await pm.record('github.com', Capability.CLICK, 'allow', 'always');
+  let v = pm.check('https://www.github.com/x', Capability.CLICK); // host normalized
+  assert.equal(v.allowed, true);
+  assert.equal(v.needsPrompt, false);
+  // a standing deny
+  await pm.record('evil.com', Capability.EXECUTE_JS, 'deny', 'always');
+  v = pm.check('evil.com', Capability.EXECUTE_JS);
+  assert.equal(v.allowed, false);
+  assert.equal(v.needsPrompt, false);
+  // different capability on same host is still unknown
+  assert.equal(pm.check('github.com', Capability.TYPE).needsPrompt, true);
+});
+
+test('once-grants are scoped per tab (concurrent runs do not leak/clear)', async () => {
+  const pm = new PermissionManager();
+  await pm.record('a.com', Capability.CLICK, 'allow', 'once', 1); // tab 1
+  // tab 2 must NOT inherit tab 1's once-grant
+  assert.equal(pm.check('a.com', Capability.CLICK, 2).needsPrompt, true);
+  assert.equal(pm.check('a.com', Capability.CLICK, 1).allowed, true);
+  // a new turn in tab 2 must NOT clear tab 1's still-valid grant
+  pm.beginTurn(2);
+  assert.equal(pm.check('a.com', Capability.CLICK, 1).allowed, true);
+  // tab 1's own new turn clears it
+  pm.beginTurn(1);
+  assert.equal(pm.check('a.com', Capability.CLICK, 1).needsPrompt, true);
+
+  // "always" grants stay global across tabs
+  await pm.record('b.com', Capability.TYPE, 'allow', 'always', 1);
+  assert.equal(pm.check('b.com', Capability.TYPE, 999).allowed, true);
+});
+
+test('beginTurn drops once grants but keeps always grants', async () => {
+  const pm = new PermissionManager();
+  await pm.record('a.com', Capability.CLICK, 'allow', 'once');
+  await pm.record('b.com', Capability.CLICK, 'allow', 'always');
+  pm.beginTurn();
+  assert.equal(pm.check('a.com', Capability.CLICK).needsPrompt, true);  // once dropped
+  assert.equal(pm.check('b.com', Capability.CLICK).allowed, true);      // always kept
+});
+
+test('always grants persist via the save hook; hydrate restores them', async () => {
+  let saved = null;
+  const pm1 = new PermissionManager({ save: async (g) => { saved = g; } });
+  await pm1.record('github.com', Capability.CLICK, 'allow', 'always');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].host, 'github.com');
+
+  const pm2 = new PermissionManager({ load: async () => saved });
+  await pm2.hydrate();
+  assert.equal(pm2.check('github.com', Capability.CLICK).allowed, true);
+});
+
+test('skipAll hook allows everything without prompting', () => {
+  const pm = new PermissionManager({ skipAll: () => true });
+  const v = pm.check('anything.com', Capability.EXECUTE_JS);
+  assert.equal(v.allowed, true);
+  assert.equal(v.needsPrompt, false);
+});
+
+test('parity: chrome & firefox permission-gate behave identically', async () => {
+  assert.equal(capabilityForCh('click', {}), capabilityFor('click', {}));
+  assert.equal(capabilityForCh('read_page', {}), capabilityFor('read_page', {}));
+  assert.equal(normalizeHostCh('https://www.GitHub.com/x'), normalizeHost('https://www.GitHub.com/x'));
+  const a = new PermissionManager(); const b = new PermissionManagerCh();
+  await a.record('x.com', 'click', 'allow', 'always');
+  await b.record('x.com', 'click', 'allow', 'always');
+  assert.equal(a.check('x.com', 'click').allowed, b.check('x.com', 'click').allowed);
+});
+
+// EXHAUSTIVENESS GUARD — the whole capability/untrusted model is only as
+// complete as its registries. This fails CI when a tool the model can call is
+// neither gated (capabilityFor), nor an untrusted-content reader
+// (UNTRUSTED_CONTENT_TOOLS), nor on the reviewed known-safe allowlist below.
+// Adding a new tool then forces a deliberate categorization instead of a
+// silent gate/Layer-1 bypass (the failure mode behind several PR findings).
+//
+// KNOWN_SAFE: tools that neither cause a gated side effect nor return
+// page-derived content. Each is a reviewed, deliberate exception — adding to
+// this list is a security decision, so keep the justification next to it.
+const KNOWN_SAFE_TOOLS = new Set([
+  'clarify',              // relays a question to the user (trusted user input)
+  'scratchpad_write',     // writes an internal agent note, not the page
+  // NOTE: hover and list_downloads were moved to UNTRUSTED_CONTENT_TOOLS — both
+  // return attacker-influenced bytes (hover: the element's accessible name;
+  // list_downloads: url + Content-Disposition filename). "Doesn't act
+  // dangerously" is not the test; "does its RESULT carry page-derived bytes" is.
+  'wait_for_stable',      // waits for the page to settle; returns status only
+  'stop_recording',       // stops capture (starting it is gated via record_tab)
+  // solve_captcha is not page-content; its side effects (spends CapSolver
+  // quota + injects a token into the page) are minor and bounded, and the only
+  // consequential follow-up — the submit — is separately gated. Left ungated to
+  // avoid friction on a precursor the user wants when blocked by a CAPTCHA;
+  // revisit if quota abuse becomes a real concern.
+  'solve_captcha',
+]);
+
+test('exhaustiveness: every model-exposed tool is classified', () => {
+  for (const [label, getTools, capFor] of [
+    ['firefox', getToolsForModeFx, capabilityFor],
+    ['chrome', getToolsForModeCh, capabilityForCh],
+  ]) {
+    const tools = getTools('act');
+    // Guard against a vacuous pass (e.g. getTools returning []).
+    assert.ok(tools.length >= 15, `[${label}] expected the act toolset, got ${tools.length} tools`);
+    for (const t of tools) {
+      const name = t.function?.name;
+      if (!name) continue;
+      const gated = capFor(name, {}) !== null;       // has a (possible) side effect
+      const untrustedRead = UNTRUSTED_CONTENT_TOOLS.has(name); // result is page-derived
+      const knownSafe = KNOWN_SAFE_TOOLS.has(name);
+      assert.ok(
+        gated || untrustedRead || knownSafe,
+        `[${label}] tool "${name}" is unclassified. Add it to capabilityFor() if it has a side effect, ` +
+        `UNTRUSTED_CONTENT_TOOLS if its result is page-derived, or the KNOWN_SAFE_TOOLS allowlist (with justification).`
+      );
+    }
+  }
 });
 
 await run();

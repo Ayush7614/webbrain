@@ -1,5 +1,14 @@
 // Thai (th).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "อนุญาตครั้งเดียว",
+  'sp.perm.always_allow': "อนุญาตเสมอบน {host}",
+  'sp.perm.dont_allow': "ไม่อนุญาต",
+  'st.tab.permissions': "สิทธิ์",
+  'st.perms.revoke': "เพิกถอน",
+  'st.perms.clear_all': "ล้างสิทธิ์ทั้งหมด",
+  'st.perms.gate.label': "ถามก่อนการดำเนินการสำคัญ",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'ไม่ได้เชื่อมต่อ',

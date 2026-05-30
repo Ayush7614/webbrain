@@ -1,5 +1,14 @@
 // Russian (ru).
 export default {
+  // Permission UI — standalone buttons + labels (rest falls back to English)
+  'sp.perm.allow_once': "Разрешить один раз",
+  'sp.perm.always_allow': "Всегда разрешать на {host}",
+  'sp.perm.dont_allow': "Не разрешать",
+  'st.tab.permissions': "Разрешения",
+  'st.perms.revoke': "Отозвать",
+  'st.perms.clear_all': "Очистить все разрешения",
+  'st.perms.gate.label': "Спрашивать перед важными действиями",
+
   'brand': 'WebBrain',
 
   'sp.status.disconnected': 'Отключено',
