@@ -72,8 +72,12 @@ Confirms a grant is scoped to exactly one capability+host, not a blanket pass.
 2. **Expect** each grant on its own row — host as bold label,
    **"Allowed to \<verb\>"** beneath (or **"⛔ Blocked from \<verb\>"** for a deny),
    and a **Revoke** button; a **Clear all permissions** button at the bottom.
-3. **Revoke one row** → it disappears immediately; console shows it removed from
-   `wb_permissions`. *(Confirms the per-row revoke targets the right grant.)*
+3. **Revoke one row** (with 2–3 grants present) → that **specific** row
+   disappears immediately, **the other rows stay listed**, and `wb_permissions`
+   in the console now contains **exactly the remaining grants** (the revoked
+   `{capability, host}` is gone, nothing else changed). *(This is the assertion
+   that guards the per-row revoke — the earlier NUL/delimiter bug made Revoke
+   remove nothing or the wrong grant.)*
 4. **Live re-prompt:** back in the agent, trigger that exact capability on that
    exact host → it **prompts again** (proves `storage.onChanged` → `hydrateFrom`
    invalidated the in-memory grant without a reload).
