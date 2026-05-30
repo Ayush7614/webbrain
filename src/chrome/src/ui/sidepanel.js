@@ -130,9 +130,16 @@ if (globalThis.chrome?.storage?.onChanged) {
 
       const detected = await Promise.all(localProviderIds.map(async (providerId) => {
         try {
+          // 8s, not 2.5s: on a cold first-run the localhost fetch can't go
+          // direct (Chrome MV3 blocks the service-worker → loopback request
+          // via Private Network Access), so fetchWithFallback has to spin up
+          // the offscreen proxy document and round-trip through it. That cold
+          // path routinely takes >2.5s, which made onboarding report "no
+          // models" for a server that the (un-timed) Settings model-load
+          // reaches fine. Give it room to match the Settings path.
           const res = await withTimeout(
             sendToBackground('list_provider_models', { providerId }),
-            2500
+            8000
           );
           if (res?.ok && Array.isArray(res.models)) {
             const choices = res.models

@@ -30,7 +30,7 @@ export default {
   'ob.tokens.local_status': '{count} yerel model bulundu.',
   'ob.tokens.none_status': 'Yerel model sunucusu algılanmadı.',
   'ob.tokens.detect_failed': 'Yerel model sunucuları kontrol edilemedi.',
-  'ob.tokens.none_blocked': 'Yerel model bulunamadı. LM Studio, Ollama veya llama.cpp çalışıyorsa sunucu ayarlarında CORS’u etkinleştirin (LM Studio’da "Enable CORS" seçeneğini açın) ve bu paneli yeniden açın.',
+  'ob.tokens.none_blocked': 'Yerel model bulunamadı. LM Studio, Ollama veya llama.cpp\'nin çalıştığından emin olun ve bu paneli yeniden açın. Çalışıyor ama yine de algılanmıyorsa sunucu ayarlarında CORS\'u etkinleştirin.',
   'ob.tokens.enabling': 'Seçilen yerel model etkinleştiriliyor...',
   'ob.tokens.enable_failed': 'Seçilen yerel model etkinleştirilemedi: {error}',
   'ob.tokens.option_lmstudio': 'LM Studio: modelleri ücretsiz olarak yerelde çalıştırın. LM Studio başlatın, bir model yükleyin ve WebBrain otomatik bağlansın.',
