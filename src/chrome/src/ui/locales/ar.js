@@ -30,6 +30,7 @@ export default {
   'ob.tokens.local_status': 'تم العثور على {count} نماذج محلية.',
   'ob.tokens.none_status': 'لم يتم اكتشاف خادم نماذج محلي.',
   'ob.tokens.detect_failed': 'تعذر فحص خوادم النماذج المحلية.',
+  'ob.tokens.none_blocked': 'لم يتم العثور على نماذج محلية. إذا كان LM Studio أو Ollama أو llama.cpp قيد التشغيل، فمكِّن CORS في إعدادات الخادم (في LM Studio، فعِّل "Enable CORS")، ثم أعد فتح هذه اللوحة.',
   'ob.tokens.enabling': 'جار تفعيل النموذج المحلي المحدد...',
   'ob.tokens.enable_failed': 'تعذر تفعيل النموذج المحلي المحدد: {error}',
   'ob.tokens.option_lmstudio': 'LM Studio: شغل النماذج محليا مجانا. ابدأ LM Studio، حمّل نموذجا، وسيتصل WebBrain تلقائيا.',

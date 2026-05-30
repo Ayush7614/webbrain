@@ -30,6 +30,7 @@ export default {
   'ob.tokens.local_status': 'พบโมเดลในเครื่อง {count} รายการ',
   'ob.tokens.none_status': 'ไม่พบเซิร์ฟเวอร์โมเดลในเครื่อง',
   'ob.tokens.detect_failed': 'ไม่สามารถตรวจสอบเซิร์ฟเวอร์โมเดลในเครื่องได้',
+  'ob.tokens.none_blocked': 'ไม่พบโมเดลในเครื่อง หากกำลังเรียกใช้ LM Studio, Ollama หรือ llama.cpp อยู่ ให้เปิดใช้งาน CORS ในการตั้งค่าเซิร์ฟเวอร์ (ใน LM Studio ให้เปิด "Enable CORS") แล้วเปิดแผงนี้อีกครั้ง',
   'ob.tokens.enabling': 'กำลังเปิดใช้โมเดลในเครื่องที่เลือก...',
   'ob.tokens.enable_failed': 'ไม่สามารถเปิดใช้โมเดลในเครื่องที่เลือกได้: {error}',
   'ob.tokens.option_lmstudio': 'LM Studio: รันโมเดลในเครื่องได้ฟรี เริ่ม LM Studio โหลดโมเดล แล้ว WebBrain จะเชื่อมต่อโดยอัตโนมัติ',

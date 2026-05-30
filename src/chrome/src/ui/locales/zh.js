@@ -30,6 +30,7 @@ export default {
   'ob.tokens.local_status': '找到 {count} 个本地模型。',
   'ob.tokens.none_status': '未检测到本地模型服务器。',
   'ob.tokens.detect_failed': '无法检查本地模型服务器。',
+  'ob.tokens.none_blocked': '未检测到本地模型。如果正在运行 LM Studio、Ollama 或 llama.cpp，请在其服务器设置中启用 CORS（在 LM Studio 中打开"Enable CORS"），然后重新打开此面板。',
   'ob.tokens.enabling': '正在启用所选本地模型...',
   'ob.tokens.enable_failed': '无法启用所选本地模型：{error}',
   'ob.tokens.option_lmstudio': 'LM Studio：免费在本地运行模型。启动 LM Studio，加载模型后 WebBrain 会自动连接。',

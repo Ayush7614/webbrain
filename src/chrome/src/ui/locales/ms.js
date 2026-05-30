@@ -30,6 +30,7 @@ export default {
   'ob.tokens.local_status': '{count} model tempatan ditemui.',
   'ob.tokens.none_status': 'Tiada pelayan model tempatan dikesan.',
   'ob.tokens.detect_failed': 'Tidak dapat menyemak pelayan model tempatan.',
+  'ob.tokens.none_blocked': 'Tiada model tempatan dikesan. Jika LM Studio, Ollama, atau llama.cpp sedang berjalan, dayakan CORS dalam tetapan pelayannya (dalam LM Studio, hidupkan "Enable CORS"), kemudian buka semula panel ini.',
   'ob.tokens.enabling': 'Mengaktifkan model tempatan yang dipilih...',
   'ob.tokens.enable_failed': 'Tidak dapat mengaktifkan model tempatan yang dipilih: {error}',
   'ob.tokens.option_lmstudio': 'LM Studio: jalankan model secara tempatan secara percuma. Mulakan LM Studio, muatkan model dan WebBrain akan bersambung secara automatik.',

@@ -133,23 +133,37 @@ if (globalThis.browser?.storage?.onChanged) {
             sendToBackground('list_provider_models', { providerId }),
             2500
           );
-          if (!res?.ok || !Array.isArray(res.models)) return [];
-          return res.models
-            .map((model) => (typeof model === 'string' ? model.trim() : ''))
-            .filter(Boolean)
-            .map((model) => ({
-              providerId,
-              providerLabel: providers[providerId]?.label || providerId,
-              model,
-            }));
-        } catch {
-          return [];
+          if (res?.ok && Array.isArray(res.models)) {
+            const choices = res.models
+              .map((model) => (typeof model === 'string' ? model.trim() : ''))
+              .filter(Boolean)
+              .map((model) => ({
+                providerId,
+                providerLabel: providers[providerId]?.label || providerId,
+                model,
+              }));
+            return { choices, error: null };
+          }
+          return { choices: [], error: res?.error || 'unknown error' };
+        } catch (e) {
+          return { choices: [], error: e?.message || String(e || 'timeout') };
         }
       }));
 
-      const choices = detected.flat();
+      const choices = detected.flatMap((d) => d.choices);
+      const errors = detected.map((d) => d.error).filter(Boolean);
       if (choices.length > 0) {
         showLocalChoices(choices);
+      } else if (errors.length > 0) {
+        // A local server was probed but unreadable. By far the most common
+        // cause is CORS being disabled on the local server (LM Studio /
+        // Ollama / llama.cpp): curl works but the browser blocks the
+        // cross-origin request. The browser reports "blocked" and "not
+        // running" as the same generic network error, so we can't tell them
+        // apart — the hint is phrased conditionally. Log the real underlying
+        // errors so they're visible in the console for debugging.
+        console.warn('[WebBrain] onboarding local-model scan failed:', errors);
+        showProviderFallback('ob.tokens.none_blocked');
       } else {
         showProviderFallback();
       }

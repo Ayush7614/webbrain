@@ -30,6 +30,7 @@ export default {
   'ob.tokens.local_status': '로컬 모델 {count}개를 찾았습니다.',
   'ob.tokens.none_status': '로컬 모델 서버가 감지되지 않았습니다.',
   'ob.tokens.detect_failed': '로컬 모델 서버를 확인할 수 없습니다.',
+  'ob.tokens.none_blocked': '로컬 모델이 감지되지 않았습니다. LM Studio, Ollama 또는 llama.cpp가 실행 중이라면 서버 설정에서 CORS를 활성화한 후(LM Studio에서는 "Enable CORS" 켜기) 이 패널을 다시 여세요.',
   'ob.tokens.enabling': '선택한 로컬 모델을 활성화하는 중...',
   'ob.tokens.enable_failed': '선택한 로컬 모델을 활성화할 수 없습니다: {error}',
   'ob.tokens.option_lmstudio': 'LM Studio: 모델을 무료로 로컬에서 실행합니다. LM Studio를 시작하고 모델을 불러오면 WebBrain이 자동으로 연결됩니다.',

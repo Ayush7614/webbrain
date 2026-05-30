@@ -30,6 +30,7 @@ export default {
   'ob.tokens.local_status': '{count} modèles locaux trouvés.',
   'ob.tokens.none_status': 'Aucun serveur de modèle local détecté.',
   'ob.tokens.detect_failed': 'Impossible de vérifier les serveurs de modèles locaux.',
+  'ob.tokens.none_blocked': 'Aucun modèle local détecté. Si LM Studio, Ollama ou llama.cpp est en cours d\'exécution, activez CORS dans les paramètres de son serveur (dans LM Studio, activez « Enable CORS »), puis rouvrez ce panneau.',
   'ob.tokens.enabling': 'Activation du modèle local sélectionné...',
   'ob.tokens.enable_failed': 'Impossible d activer le modèle local sélectionné : {error}',
   'ob.tokens.option_lmstudio': 'LM Studio : exécutez des modèles localement gratuitement. Lancez LM Studio, chargez un modèle, et WebBrain se connecte automatiquement.',
