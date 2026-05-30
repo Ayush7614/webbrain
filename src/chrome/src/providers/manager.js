@@ -1,6 +1,13 @@
 import { LlamaCppProvider } from './llamacpp.js';
 import { OpenAICompatibleProvider } from './openai.js';
 import { AnthropicProvider, AnthropicOAuthProvider } from './anthropic.js';
+// Static, NOT dynamic: this module runs in the MV3 service worker, where
+// `await import()` throws "import() is disallowed on ServiceWorkerGlobalScope".
+// The provider modules above already import this statically, so it's in the SW
+// bundle anyway. (A previous dynamic import here silently broke local model
+// detection — listProviderModels/testTranscriptionProvider threw before the
+// fetch ever ran, so onboarding reported "no models" for a reachable server.)
+import { fetchWithFallback } from './fetch-with-fallback.js';
 
 /**
  * Manages LLM provider instances and persists configuration.
@@ -397,7 +404,6 @@ export class ProviderManager {
     const headers = { 'Accept': 'application/json' };
     if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`;
     try {
-      const { fetchWithFallback } = await import('./fetch-with-fallback.js');
       const res = await fetchWithFallback(url, { method: 'GET', headers });
       if (!res.ok) {
         let body = '';
@@ -440,7 +446,6 @@ export class ProviderManager {
       : (/\/v1$/.test(rawBaseUrl) ? rawBaseUrl : `${rawBaseUrl}/v1`);
     if (!baseUrl) return { ok: false, error: 'Base URL is empty' };
     const url = id === 'ollama' ? `${baseUrl}/api/tags` : `${baseUrl}/models`;
-    const { fetchWithFallback } = await import('./fetch-with-fallback.js');
     try {
       const res = await fetchWithFallback(url, { method: 'GET' });
       if (!res.ok) {
