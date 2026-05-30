@@ -28,8 +28,9 @@ export const Capability = {
   EXECUTE_JS: 'execute_js',      // execute_js
   NETWORK: 'network_write',      // fetch_url / research_url with a write method
   DOWNLOAD: 'download',          // download_* tools
-  UPLOAD: 'upload',              // upload_file (selects a local file)
-  RECORD: 'record',              // record_tab (captures the tab + microphone)
+  // NOTE: no UPLOAD / RECORD here — upload_file and record_tab are Chrome-only
+  // (CDP file injection / tabCapture+OffscreenDocument). Firefox's AGENT_TOOLS
+  // does not implement them, so there is nothing to gate.
 };
 
 // Human-readable verb for the permission prompt: "WebBrain wants to <label> <host>".
@@ -40,8 +41,6 @@ export const CAPABILITY_LABEL = {
   [Capability.EXECUTE_JS]: 'run JavaScript on',
   [Capability.NETWORK]: 'make a network request to',
   [Capability.DOWNLOAD]: 'download files from',
-  [Capability.UPLOAD]: 'upload a file to',
-  [Capability.RECORD]: 'record the tab (and microphone) on',
 };
 
 /**
@@ -124,8 +123,6 @@ const TOOL_CAPABILITY = {
   type_ax: Capability.TYPE,
   iframe_type: Capability.TYPE,
   execute_js: Capability.EXECUTE_JS,
-  upload_file: Capability.UPLOAD,
-  record_tab: Capability.RECORD,
   download_file: Capability.DOWNLOAD,
   download_files: Capability.DOWNLOAD,
   download_resource_from_page: Capability.DOWNLOAD,
