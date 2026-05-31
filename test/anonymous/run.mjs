@@ -78,6 +78,7 @@ async function main() {
     if (interactiveSetup) {
       console.log('  Waiting for the browser to close...');
       await context.waitForEvent('close', { timeout: 0 });
+      if (!setupOnly) process.exitCode = 2;
     } else {
       console.log('  Non-interactive run detected; exiting instead of waiting forever.');
       console.log('  Run `npm run test:anonymous -- --setup` from a desktop terminal to configure the test profile.');
