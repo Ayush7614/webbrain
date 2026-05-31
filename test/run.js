@@ -1600,18 +1600,30 @@ test('_defaultConfigs: chrome and firefox share the same provider set', () => {
   }
 });
 
-test('OpenAI-compatible cloud/router streams request usage metadata', () => {
+test('OpenAI-compatible streams request usage metadata only for supporting providers', () => {
   for (const Provider of [OpenAIProviderCh, OpenAIProviderFx]) {
     for (const config of [
       { category: 'cloud', providerName: 'deepseek' },
-      { category: 'cloud', providerName: 'mistral' },
       { category: 'router', providerName: 'openrouter' },
       { providerName: 'openai' },
+      { category: 'cloud', providerName: 'custom', supportsStreamUsageOptions: true },
     ]) {
       const provider = new Provider(config);
       const body = { stream: true, stream_options: { custom: 'keep' } };
       provider._addStreamUsageOptions(body);
       assert.deepEqual(body.stream_options, { custom: 'keep', include_usage: true });
+    }
+
+    for (const config of [
+      { category: 'cloud', providerName: 'mistral' },
+      { category: 'cloud', providerName: 'custom' },
+      { category: 'router', providerName: 'custom-router' },
+      { category: 'cloud', providerName: 'openai', supportsStreamUsageOptions: false },
+    ]) {
+      const provider = new Provider(config);
+      const body = { stream: true };
+      provider._addStreamUsageOptions(body);
+      assert.equal(body.stream_options, undefined);
     }
   }
 });

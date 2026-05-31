@@ -85,13 +85,16 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
   }
 
   _shouldRequestStreamUsage() {
-    const providerName = this.config.providerName || '';
+    const providerName = (this.config.providerName || '').toLowerCase();
     if (this.config.category === 'local') return false;
     if (providerName === 'ollama' || providerName === 'lmstudio') return false;
-    return this.config.category === 'cloud'
-      || this.config.category === 'router'
-      || providerName === 'openai'
-      || providerName === 'openrouter';
+    if (this.config.supportsStreamUsageOptions != null) {
+      return !!this.config.supportsStreamUsageOptions;
+    }
+    if (!providerName && this.baseUrl === 'https://api.openai.com/v1') return true;
+    return providerName === 'openai'
+      || providerName === 'openrouter'
+      || providerName === 'deepseek';
   }
 
   _addStreamUsageOptions(body) {

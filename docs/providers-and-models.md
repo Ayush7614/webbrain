@@ -156,9 +156,10 @@ myprovider: {
   providerName: 'myprovider',
   baseUrl: 'https://api.myprovider.com/v1',
   model: 'my-model',
+  supportsStreamUsageOptions: false,
   apiKey: '',
   enabled: false,
 },
 ```
 
-Vision is auto-detected via model-name regex. If the provider has a known set of vision models, add them to the regex in `openai.js`.
+Vision is auto-detected via model-name regex. If the provider has a known set of vision models, add them to the regex in `openai.js`. Set `supportsStreamUsageOptions: true` only for providers that accept OpenAI-style `stream_options.include_usage`; leave it false when a provider returns usage without accepting that request field.
