@@ -4746,9 +4746,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // CDP's setFileInputFiles silently attaches a phantom 0-byte entry for
         // a missing path instead of throwing, and async uploaders clear/swap
         // the target input on `change`, so reading the target back can't tell
-        // "consumed a valid file" from "got a bad path". A throwaway probe
-        // input answers that authoritatively. Only block on a definitive
-        // "present but unreadable" verdict — a null/unknown probe falls
+        // "consumed a valid file" from "got a bad path". A detached isolated
+        // probe input answers that authoritatively without hitting delegated
+        // upload handlers on the page. Only block on a definitive
+        // "present but unreadable" verdict. A null/unknown probe falls
         // through so we never turn a possibly-good upload into a hard failure.
         const probe = await cdpClient.probeLocalFile(tabId, args.filePath);
         if (probe && probe.exists && probe.readable === false) {

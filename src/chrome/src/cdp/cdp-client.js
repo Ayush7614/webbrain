@@ -379,62 +379,60 @@ export class CDPClient {
 
   /**
    * Probe whether a local file path is readable, WITHOUT routing it through
-   * the page's real upload widget. Many uploaders (GitHub's include-fragment
-   * release-asset attacher, drag-drop zones) consume the file on the input's
-   * `change` event and then clear or swap the <input>, so reading the TARGET
-   * input back can't distinguish "consumed a valid file" from "got a bad
-   * path and there was never anything real to upload". We create a throwaway
-   * hidden <input type=file> that has no listeners of its own — it keeps
-   * whatever we set on it — set the path via CDP (which attaches a phantom
-   * 0-byte entry for a missing path instead of throwing), then try to read 1
-   * byte: a real file, even an empty one, reads fine; a missing/unreadable
-   * path rejects. The probe input is removed immediately. Returns {exists,
-   * readable, size}, or null if the probe could not run (caller should not
-   * block on null).
+   * the page's real upload widget. Many uploaders consume the file on the
+   * input's `change` event and then clear or swap the <input>, so reading the
+   * TARGET input back can't distinguish "consumed a valid file" from "got a
+   * bad path and there was never anything real to upload".
    *
-   * Isolation: DOM.setFileInputFiles synthesizes `input`/`change` events that
-   * BUBBLE, so a page with a delegated handler (e.g. `change` on document/a
-   * form matching any input[type=file], which auto-uploads the selection)
-   * could treat the probe as a real user pick and fire an upload before the
-   * requested element is ever set. To prevent that we install swallow
-   * listeners on the probe input itself (capture + bubble) that
-   * stopImmediatePropagation + preventDefault, so the synthesized events never
-   * escape to ancestor/delegated handlers.
+   * Create a detached probe input in an isolated world when Chrome allows it.
+   * If DOM.setFileInputFiles dispatches input/change, the event path is the
+   * detached element only; delegated page handlers on document, forms, or drop
+   * zones cannot treat the probe as a real user upload. Returns
+   * {exists, readable, size}, or null if the probe could not run.
    */
   async probeLocalFile(tabId, filePath) {
+    let objectId = null;
     try {
       await this.sendCommand(tabId, 'DOM.enable');
       await this.sendCommand(tabId, 'Runtime.enable');
+
+      let contextId = null;
+      try {
+        await this.sendCommand(tabId, 'Page.enable');
+        const frameTree = await this.sendCommand(tabId, 'Page.getFrameTree');
+        const frameId = frameTree?.frameTree?.frame?.id;
+        if (frameId) {
+          const isolated = await this.sendCommand(tabId, 'Page.createIsolatedWorld', {
+            frameId,
+            worldName: 'webbrain-upload-probe',
+            grantUniveralAccess: false,
+          });
+          contextId = isolated?.executionContextId || null;
+        }
+      } catch (e) {
+        contextId = null;
+      }
+
       const created = await this.sendCommand(tabId, 'Runtime.evaluate', {
         expression: `(() => {
           const i = document.createElement('input');
           i.type = 'file';
-          i.style.display = 'none';
           i.setAttribute('data-wb-upload-probe', '');
-          const swallow = (e) => { e.stopImmediatePropagation(); e.preventDefault(); };
-          i.addEventListener('change', swallow, true);
-          i.addEventListener('change', swallow, false);
-          i.addEventListener('input', swallow, true);
-          i.addEventListener('input', swallow, false);
-          document.documentElement.appendChild(i);
           return i;
         })()`,
+        ...(contextId ? { contextId } : {}),
       });
-      const objectId = created?.result?.objectId;
+      objectId = created?.result?.objectId || null;
       if (!objectId) return null;
       await this.sendCommand(tabId, 'DOM.setFileInputFiles', { objectId, files: [filePath] });
       const res = await this.sendCommand(tabId, 'Runtime.callFunctionOn', {
         functionDeclaration: `async function () {
-          try {
-            const f = this.files && this.files[0];
-            if (!f) return { exists: false, readable: null, size: 0 };
-            let readable = null;
-            try { await f.slice(0, 1).arrayBuffer(); readable = true; }
-            catch (e) { readable = false; }
-            return { exists: true, readable, size: f.size };
-          } finally {
-            this.remove();
-          }
+          const f = this.files && this.files[0];
+          if (!f) return { exists: false, readable: null, size: 0 };
+          let readable = null;
+          try { await f.slice(0, 1).arrayBuffer(); readable = true; }
+          catch (e) { readable = false; }
+          return { exists: true, readable, size: f.size };
         }`,
         objectId,
         returnByValue: true,
@@ -443,6 +441,10 @@ export class CDPClient {
       return res?.result?.value ?? null;
     } catch (e) {
       return null;
+    } finally {
+      if (objectId) {
+        try { await this.sendCommand(tabId, 'Runtime.releaseObject', { objectId }); } catch (e) {}
+      }
     }
   }
 
