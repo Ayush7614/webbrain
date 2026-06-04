@@ -100,7 +100,7 @@ ollama serve
 | Anthropic Claude | `https://api.anthropic.com` | 必需 | claude-sonnet-4-6 |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | 必需 | gemini-3.1-flash |
 | Mistral AI | `https://api.mistral.ai/v1` | 必需 | mistral-large-latest |
-| DeepSeek | `https://api.deepseek.com/v1` | 必需 | deepseek-chat |
+| DeepSeek | `https://api.deepseek.com/v1` | 必需 | deepseek-v4-flash |
 | xAI Grok | `https://api.x.ai/v1` | 必需 | grok-4.3 |
 | Nvidia NIM | `https://integrate.api.nvidia.com/v1` | 必需 | meta/llama-3.1-8b-instruct |
 | Groq | `https://api.groq.com/openai/v1` | 必需 | llama-3.3-70b-versatile |

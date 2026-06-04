@@ -43,7 +43,7 @@ class BaseLLMProvider {
 | `claude_subscription` | `anthropic_oauth` | cloud | `claude-sonnet-4-6` | Yes |
 | `gemini` | `openai` | cloud | `gemini-3.1-flash` | Model-name regex |
 | `mistral` | `openai` | cloud | `mistral-large-latest` | Model-name regex |
-| `deepseek` | `openai` | cloud | `deepseek-chat` | Model-name regex |
+| `deepseek` | `openai` | cloud | `deepseek-v4-flash` | Model-name regex |
 | `xai` (Grok) | `openai` | cloud | `grok-4.3` | Model-name regex |
 | `nvidia` (NIM) | `openai` | cloud | `meta/llama-3.1-8b-instruct` | Model-name regex |
 | `groq` | `openai` | cloud | `llama-3.3-70b-versatile` | Model-name regex |

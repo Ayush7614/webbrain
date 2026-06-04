@@ -800,8 +800,8 @@ function renderProviders() {
     deepseek: {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'sk-...' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'deepseek-chat',
-          suggestions: ['deepseek-chat', 'deepseek-reasoner'] },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'deepseek-v4-flash',
+          suggestions: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.deepseek.com/v1' },
         ...COST_ESTIMATE_FIELDS,
       ],

@@ -100,7 +100,7 @@ Cliquez sur l'icône d'engrenage ou accédez à la page Options de l'extension p
 | Anthropic Claude | `https://api.anthropic.com` | Requise | claude-sonnet-4-6 |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Requise | gemini-3.1-flash |
 | Mistral AI | `https://api.mistral.ai/v1` | Requise | mistral-large-latest |
-| DeepSeek | `https://api.deepseek.com/v1` | Requise | deepseek-chat |
+| DeepSeek | `https://api.deepseek.com/v1` | Requise | deepseek-v4-flash |
 | xAI Grok | `https://api.x.ai/v1` | Requise | grok-4.3 |
 | Nvidia NIM | `https://integrate.api.nvidia.com/v1` | Requise | meta/llama-3.1-8b-instruct |
 | Groq | `https://api.groq.com/openai/v1` | Requise | llama-3.3-70b-versatile |

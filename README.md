@@ -100,7 +100,7 @@ Click the gear icon or go to the extension's Options page to configure:
 | Anthropic Claude | `https://api.anthropic.com` | Required | claude-sonnet-4-6 |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Required | gemini-3.1-flash |
 | Mistral AI | `https://api.mistral.ai/v1` | Required | mistral-large-latest |
-| DeepSeek | `https://api.deepseek.com/v1` | Required | deepseek-chat |
+| DeepSeek | `https://api.deepseek.com/v1` | Required | deepseek-v4-flash |
 | xAI Grok | `https://api.x.ai/v1` | Required | grok-4.3 |
 | Nvidia NIM | `https://integrate.api.nvidia.com/v1` | Required | meta/llama-3.1-8b-instruct |
 | Groq | `https://api.groq.com/openai/v1` | Required | llama-3.3-70b-versatile |
