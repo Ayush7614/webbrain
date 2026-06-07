@@ -298,6 +298,17 @@ test('matches twitter.com and x.com', () => {
   assert.equal(getActiveAdapter('https://x.com/elonmusk')?.name, 'twitter');
 });
 
+test('matches youtube video URLs and includes transcript guidance', () => {
+  const a = getActiveAdapter('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.equal(a?.name, 'youtube');
+  assert.equal(getActiveAdapter('https://m.youtube.com/watch?v=dQw4w9WgXcQ')?.name, 'youtube');
+  assert.equal(getActiveAdapter('https://youtu.be/dQw4w9WgXcQ')?.name, 'youtube');
+  assert.match(a?.notes || '', /transcript/i);
+  assert.match(a?.notes || '', /ground the answer/i);
+  assert.match(a?.notes || '', /get_accessibility_tree/i);
+  assert.match(a?.notes || '', /Do NOT invent transcript URLs/i);
+});
+
 test('matches apple store pages', () => {
   assert.equal(getActiveAdapter('https://www.apple.com/shop/buy-mac/macbook-air')?.name, 'apple');
   assert.equal(getActiveAdapter('https://www.apple.com/uk/shop/refurbished')?.name, 'apple');
