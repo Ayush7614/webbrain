@@ -53,6 +53,7 @@ if (globalThis.browser?.storage?.onChanged) {
   let current = 0;
   let localScanStarted = false;
   let localModelChoices = [];
+  let cloudReady = false;
 
   function dismissOnboarding() {
     browser.storage.local.set({ onboardingComplete: true }).catch(() => {});
@@ -85,6 +86,7 @@ if (globalThis.browser?.storage?.onChanged) {
   }
 
   function showProviderFallback(statusKey = 'ob.tokens.none_status') {
+    cloudReady = false;
     localModelChoices = [];
     if (providerBody) providerBody.textContent = t('ob.tokens.body');
     providerList?.classList.remove('hidden');
@@ -95,6 +97,7 @@ if (globalThis.browser?.storage?.onChanged) {
   }
 
   function showLocalChoices(choices) {
+    cloudReady = false;
     localModelChoices = choices;
     if (providerBody) providerBody.textContent = t('ob.tokens.local_body');
     if (localModelSelect) {
@@ -113,6 +116,21 @@ if (globalThis.browser?.storage?.onChanged) {
     settingsBtn.disabled = false;
   }
 
+  function showCloudReady() {
+    cloudReady = true;
+    localModelChoices = [];
+    if (providerBody) {
+      providerBody.textContent = 'WebBrain Cloud is ready with a free daily allowance. Requests go through api.webbrain.one; debug and quota logs store metadata only by default, not prompt text, screenshots, or responses.';
+    }
+    if (providerStatus) {
+      providerStatus.innerHTML = 'Using WebBrain Cloud. <a href="https://webbrain.one/privacy" target="_blank" rel="noopener noreferrer">Privacy</a> | <a href="https://webbrain.one/subscribe" target="_blank" rel="noopener noreferrer">Subscribe</a>.';
+    }
+    providerList?.classList.add('hidden');
+    localModels?.classList.add('hidden');
+    settingsBtn.textContent = 'Start';
+    settingsBtn.disabled = false;
+  }
+
   async function scanLocalModels() {
     localModelChoices = [];
     settingsBtn.disabled = true;
@@ -123,7 +141,11 @@ if (globalThis.browser?.storage?.onChanged) {
     setProviderStatus('ob.tokens.scanning');
 
     try {
-      const { providers = {} } = await sendToBackground('get_providers');
+      const { providers = {}, active } = await sendToBackground('get_providers');
+      if (active === 'webbrain_cloud' && providers.webbrain_cloud?.enabled !== false) {
+        showCloudReady();
+        return;
+      }
       const localProviderIds = Object.keys(providers)
         .filter((id) => providers[id]?.category === 'local' || LOCAL_PROVIDER_ORDER.includes(id))
         .sort((a, b) => providerSortIndex(a) - providerSortIndex(b) || a.localeCompare(b));
@@ -211,6 +233,12 @@ if (globalThis.browser?.storage?.onChanged) {
   });
 
   settingsBtn.addEventListener('click', async () => {
+    if (cloudReady) {
+      dismissOnboarding();
+      inputEl?.focus();
+      return;
+    }
+
     if (localModelChoices.length > 0) {
       const selectedIndex = Number(localModelSelect?.value || 0);
       const choice = localModelChoices[selectedIndex] || localModelChoices[0];
@@ -338,7 +366,7 @@ async function init() {
   verboseMode = stored.verboseMode || false;
 
   await loadProviders();
-  await testConnection();
+  await testConnection({ skipWebBrainCloud: true });
   refreshRecommendedActions();
 
   browser.tabs.onActivated.addListener(async (info) => {
@@ -491,7 +519,20 @@ async function loadProviders() {
   }
 }
 
-async function testConnection() {
+function isWebBrainCloudProviderSelected() {
+  return providerSelect?.value === 'webbrain_cloud';
+}
+
+function markSelectedProviderUntested() {
+  statusDot.className = 'status-dot';
+  statusDot.title = providerSelect?.selectedOptions?.[0]?.textContent || providerSelect?.value || '';
+}
+
+async function testConnection(options = {}) {
+  if (options.skipWebBrainCloud && isWebBrainCloudProviderSelected()) {
+    markSelectedProviderUntested();
+    return;
+  }
   statusDot.className = 'status-dot connecting';
   try {
     const res = await sendToBackground('test_provider', {
