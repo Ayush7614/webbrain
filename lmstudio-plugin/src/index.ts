@@ -54,6 +54,18 @@ const fetchUrlTool = tool({
       .number()
       .optional()
       .describe("Request timeout in ms (default 30000, max 120000)."),
+    maxChars: z
+      .number()
+      .optional()
+      .describe(
+        "Maximum characters returned in the main text/json field after compaction. Defaults: 8000 for text/html, 16000 for JSON. Hard cap 50000.",
+      ),
+    compact: z
+      .boolean()
+      .optional()
+      .describe(
+        "Compact long text/json with a head/middle/tail extractive pass. Defaults to true. Set false for head-only truncation.",
+      ),
     allowPrivate: z
       .boolean()
       .optional()
@@ -64,7 +76,7 @@ const fetchUrlTool = tool({
           "model out of cloud-metadata services and the user's intranet.",
       ),
   },
-  implementation: async ({ url, method, headers, body, timeout, allowPrivate }) => {
+  implementation: async ({ url, method, headers, body, timeout, allowPrivate, maxChars, compact }) => {
     const result = await fetchUrl({
       url,
       method,
@@ -72,6 +84,8 @@ const fetchUrlTool = tool({
       body,
       timeout,
       allowPrivate,
+      maxChars,
+      compact,
     });
     // The implementation contract returns whatever string the LLM
     // should see in the tool result. JSON-stringify so the model gets
@@ -99,6 +113,18 @@ const researchUrlTool = tool({
       .number()
       .optional()
       .describe("Request timeout in ms (default 30000, max 120000)."),
+    maxChars: z
+      .number()
+      .optional()
+      .describe(
+        "Maximum characters returned in the article text after compaction. Default 16000, hard cap 60000.",
+      ),
+    compact: z
+      .boolean()
+      .optional()
+      .describe(
+        "Compact long article text with a head/middle/tail extractive pass. Defaults to true. Set false for head-only truncation.",
+      ),
     allowPrivate: z
       .boolean()
       .optional()
@@ -107,8 +133,8 @@ const researchUrlTool = tool({
           "Off by default.",
       ),
   },
-  implementation: async ({ url, timeout, allowPrivate }) => {
-    const result = await researchUrl({ url, timeout, allowPrivate });
+  implementation: async ({ url, timeout, allowPrivate, maxChars, compact }) => {
+    const result = await researchUrl({ url, timeout, allowPrivate, maxChars, compact });
     return JSON.stringify(result, null, 2);
   },
 });

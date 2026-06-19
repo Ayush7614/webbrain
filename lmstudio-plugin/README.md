@@ -5,12 +5,21 @@ no browser required:
 
 - **`fetch_url`** — raw HTTP fetch with content-type smarts. JSON gets
   pretty-printed, HTML is stripped to readable text + `<title>`,
-  plain text comes back verbatim, binaries are summarised instead of
-  inlined.
+  plain text comes back verbatim unless it is long enough to compact,
+  binaries are summarised instead of inlined.
 - **`research_url`** — same fetcher, biased toward "give me the
   article body, not the navigation chrome." Extracts `<main>` /
   `<article>`, drops header/nav/footer/aside before stripping tags.
   Best for news, blog posts, READMEs, Wikipedia, docs.
+
+Long text results are context-friendly by default. Instead of dumping
+the first N characters and losing everything after the cutoff, the tools
+run an LLM-free compaction pass that keeps the beginning, a few high-signal
+middle passages, and the ending. Results include `compacted:true` plus a
+`compaction` object when this happens. Pass `compact:false` for legacy
+head-only truncation, or `maxChars` to ask for a smaller/larger return
+budget (`fetch_url`: 8k text / 16k JSON by default, hard-capped at 50k;
+`research_url`: 16k by default, hard-capped at 60k).
 
 Pure Node — no Puppeteer, no Playwright, no headless Chromium.
 Same fetching logic the [WebBrain](https://webbrain.one) browser
