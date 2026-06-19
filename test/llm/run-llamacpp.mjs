@@ -191,8 +191,8 @@ function requestHeaders() {
 
 // Some local models (e.g. browser-use/bu-30b-a3b-preview) emit their tool call
 // as raw JSON in `content` instead of populating the OpenAI `tool_calls` field.
-// This handles the common shapes: <tool_call>{...}</tool_call>, naked JSON,
-// and ```json fenced blocks. Returns { name, args } or null.
+// This handles the common shapes: <tool_call>{...}</tool_call>, Cohere-style
+// action JSON, naked JSON, and ```json fenced blocks. Returns { name, args } or null.
 function extractToolCallFromContent(text) {
   if (!text || typeof text !== 'string') return null;
   let candidates = [];
@@ -200,13 +200,22 @@ function extractToolCallFromContent(text) {
   for (const m of text.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g)) {
     candidates.push(m[1]);
   }
-  // 2. ```json ... ``` fenced block
+  // 2. Native action wrapper used by Cohere/North templates.
+  for (const m of text.matchAll(/<\|START_ACTION\|>\s*([\s\S]*?)\s*<\|END_ACTION\|>/g)) {
+    candidates.push(m[1]);
+  }
+  // 3. ```json ... ``` fenced block
   for (const m of text.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/g)) {
     candidates.push(m[1]);
   }
-  // 3. The whole content as a JSON object
+  // 4. The whole content as JSON
   const trimmed = text.trim();
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) candidates.push(trimmed);
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    candidates.push(trimmed);
+  }
+  // 5. A trailing JSON action after reasoning/prose.
+  const trailingJson = trimmed.match(/(\[\s*\{[\s\S]*\}\s*\]|\{[\s\S]*\})\s*$/);
+  if (trailingJson) candidates.push(trailingJson[1]);
 
   for (const raw of candidates) {
     let obj;
@@ -223,10 +232,18 @@ function extractToolCallFromContent(text) {
 
 function normalizeToolCall(obj) {
   if (!obj || typeof obj !== 'object') return null;
+  if (Array.isArray(obj) && obj[0]) {
+    return normalizeToolCall(obj[0]);
+  }
   // Shape: {name, arguments|args|parameters}
   if (typeof obj.name === 'string') {
     const args = obj.arguments ?? obj.args ?? obj.parameters ?? {};
     return { name: obj.name, args: typeof args === 'string' ? safeParse(args) : args };
+  }
+  // Shape: {tool_name, parameters} (Cohere/North action JSON)
+  if (typeof obj.tool_name === 'string') {
+    const args = obj.arguments ?? obj.args ?? obj.parameters ?? {};
+    return { name: obj.tool_name, args: typeof args === 'string' ? safeParse(args) : args };
   }
   // Shape: {function: {name, arguments}}
   if (obj.function && typeof obj.function.name === 'string') {

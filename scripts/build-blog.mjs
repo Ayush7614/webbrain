@@ -505,6 +505,7 @@ function renderTable(lines, options) {
 function renderInline(value, options = {}) {
   const allowHtml = Boolean(options.allowHtml);
   const codeTokens = [];
+  const linkTokens = [];
   let text = String(value || '').replace(/`([^`\n]+)`/g, (_, code) => {
     const token = `@@CODE${codeTokens.length}@@`;
     codeTokens.push(`<code>${escHtml(code)}</code>`);
@@ -521,7 +522,9 @@ function renderInline(value, options = {}) {
   text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]+)")?\)/g, (_, label, url, title) => {
     const titleAttr = title ? ` title="${escAttr(title)}"` : '';
     const external = /^https?:\/\//i.test(url) ? ' target="_blank" rel="noopener"' : '';
-    return `<a href="${escAttr(url)}"${titleAttr}${external}>${label}</a>`;
+    const token = `@@LINK${linkTokens.length}@@`;
+    linkTokens.push(`<a href="${escAttr(url)}"${titleAttr}${external}>${label}</a>`);
+    return token;
   });
 
   text = text
@@ -532,6 +535,9 @@ function renderInline(value, options = {}) {
 
   codeTokens.forEach((html, index) => {
     text = text.replace(`@@CODE${index}@@`, html);
+  });
+  linkTokens.forEach((html, index) => {
+    text = text.replace(`@@LINK${index}@@`, html);
   });
 
   return text;
