@@ -2492,12 +2492,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _isAgentInjectedUserContent(content) {
-    const c = typeof content === 'string' ? content : '';
+    const c = this._messageText(content).trimStart();
     return c.startsWith('[Site guidance')
       || c.startsWith('[Site context changed')
       || c.startsWith('[Context window was trimmed')
       || c.startsWith('[Agent scratchpad')
-      || c.startsWith('[Agent progress ledger');
+      || c.startsWith('[Agent progress ledger')
+      || c.startsWith('[NAVIGATION OCCURRED')
+      || c.startsWith('[Auto-screenshot')
+      || c.startsWith('[UNTRUSTED CAPTURE')
+      || c.startsWith('[UNTRUSTED DOCUMENT');
   }
 
   _stripInjectedTaskContext(text) {
@@ -2522,7 +2526,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const m = messages[i];
       if (m.role !== 'user') continue;
       if (this._isAgentInjectedUserContent(m.content)) continue;
-      return this._stripInjectedTaskContext(this._messageText(m.content));
+      const text = this._stripInjectedTaskContext(this._messageText(m.content));
+      if (!text) continue;
+      return text;
     }
     return '';
   }
