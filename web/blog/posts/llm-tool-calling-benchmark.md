@@ -130,7 +130,7 @@ In the smallest weight class (under 2B parameters), Gemma 4-E2B clearly beats bo
 
 All benchmark data is open. The repo contains both spreadsheets and an interactive HTML explorer that lets you drill into per-task differences:
 
-- [github.com/esokullu/webbrain/tree/main/test/llm/analysis](https://github.com/esokullu/webbrain/tree/main/test/llm/analysis)
+- [github.com/webbrain-one/webbrain/tree/main/test/llm/analysis](https://github.com/webbrain-one/webbrain/tree/main/test/llm/analysis)
 
 Files included:
 

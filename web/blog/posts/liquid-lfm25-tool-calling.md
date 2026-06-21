@@ -155,7 +155,7 @@ If you don’t see that banner, the run is on the live (drifting) schema and the
 
 All data and the interactive explorer:
 
-- [github.com/esokullu/webbrain/tree/main/test/llm/analysis](https://github.com/esokullu/webbrain/tree/main/test/llm/analysis) — spreadsheets and the per-task HTML matrix
-- [freeze/baseline-2026-05-23.json](https://github.com/esokullu/webbrain/blob/main/test/llm/freeze/baseline-2026-05-23.json) — the snapshot the runner pins to
+- [github.com/webbrain-one/webbrain/tree/main/test/llm/analysis](https://github.com/webbrain-one/webbrain/tree/main/test/llm/analysis) — spreadsheets and the per-task HTML matrix
+- [freeze/baseline-2026-05-23.json](https://github.com/webbrain-one/webbrain/blob/main/test/llm/freeze/baseline-2026-05-23.json) — the snapshot the runner pins to
 
 Tags: #LFM2.5 #LiquidAI #SmallLanguageModel #ToolCalling #BrowserAgent #OnDeviceAI

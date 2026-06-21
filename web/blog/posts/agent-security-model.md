@@ -102,4 +102,4 @@ Here's the part we found most interesting, and we'll report it straight.
 
 That gap is the whole point. In a one-shot summary, "relay the attacker's instruction as a legit step" looks harmless. In a real multi-step agent loop, it's the reasoning step right before actually doing it. The defense doesn't make a big model safer — it was already fine — it makes a *small* model recognize an attack as an attack. And small local models are exactly what runs on consumer hardware, which is exactly what WebBrain is built around. The bigger the model, the less it needs us; the smaller, the more it does.
 
-If you want to poke at it: the injection corpus and the behavioral scenarios are in [the repo](https://github.com/esokullu/webbrain) under `test/security/` and `test/llm/`. Run them in a VM and try to break the boundary — that's the most useful thing you could send us.
+If you want to poke at it: the injection corpus and the behavioral scenarios are in [the repo](https://github.com/webbrain-one/webbrain) under `test/security/` and `test/llm/`. Run them in a VM and try to break the boundary — that's the most useful thing you could send us.

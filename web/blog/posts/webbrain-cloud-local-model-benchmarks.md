@@ -39,7 +39,7 @@ lede: >
 
 Until now, trying WebBrain seriously meant having one of two things ready: a local model server, or an API key for a hosted model provider. That is still the best setup for sustained use, but it is too much friction for a first look.
 
-The new cloud path removes that first-run blocker. Download and install the latest `main` branch from the [WebBrain GitHub repo](https://github.com/esokullu/webbrain), then run WebBrain as usual. You can use the built-in WebBrain Cloud route for a limited number of requests without configuring a local LLM or external API provider.
+The new cloud path removes that first-run blocker. Download and install the latest `main` branch from the [WebBrain GitHub repo](https://github.com/webbrain-one/webbrain), then run WebBrain as usual. You can use the built-in WebBrain Cloud route for a limited number of requests without configuring a local LLM or external API provider.
 
 This is not meant to be an unlimited hosted tier. The point is simpler: you should be able to install WebBrain, try the browser agent, and see whether the workflow makes sense before spending time on model setup.
 

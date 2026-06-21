@@ -430,7 +430,7 @@
     }
     @media (max-width: 420px) {
       .nav-inner { gap: 12px; }
-      .nav-links a[href="https://github.com/esokullu/webbrain"] { display: none; }
+      .nav-links a[href="https://github.com/webbrain-one/webbrain"] { display: none; }
       .theme-toggle { width: 28px; height: 28px; }
     }
   </style>
@@ -493,7 +493,7 @@
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
           </svg>
         </button>
-        <a href="https://github.com/esokullu/webbrain" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/webbrain-one/webbrain" target="_blank" rel="noopener">GitHub</a>
       </div>
     </div>
   </nav>
@@ -536,16 +536,16 @@
 <p><strong>Large models resist these injections on their own.</strong> Run the suite against a capable model and it simply doesn&#39;t take the bait, protected or not — these models appear to have been trained with this class of attack in mind. For them, our layer is a backstop, not a necessity.</p>
 <p><strong>Small models are a different story.</strong> A four-billion-parameter local model, with every defense stripped, didn&#39;t hard-execute an attack in our single-turn tests — but it did something telling: it started <strong>relaying the injected instruction to the user as if it were legitimate.</strong> In one case it listed &quot;fetch and run a script from an external URL&quot; as a real setup step in its answer, no warning attached. With the defense turned back on, the same model flagged that exact line as malicious and refused it.</p>
 <p>That gap is the whole point. In a one-shot summary, &quot;relay the attacker&#39;s instruction as a legit step&quot; looks harmless. In a real multi-step agent loop, it&#39;s the reasoning step right before actually doing it. The defense doesn&#39;t make a big model safer — it was already fine — it makes a <em>small</em> model recognize an attack as an attack. And small local models are exactly what runs on consumer hardware, which is exactly what WebBrain is built around. The bigger the model, the less it needs us; the smaller, the more it does.</p>
-<p>If you want to poke at it: the injection corpus and the behavioral scenarios are in <a href="https://github.com/esokullu/webbrain" target="_blank" rel="noopener">the repo</a> under <code>test/security/</code> and <code>test/llm/</code>. Run them in a VM and try to break the boundary — that&#39;s the most useful thing you could send us.</p>
+<p>If you want to poke at it: the injection corpus and the behavioral scenarios are in <a href="https://github.com/webbrain-one/webbrain" target="_blank" rel="noopener">the repo</a> under <code>test/security/</code> and <code>test/llm/</code>. Run them in a VM and try to break the boundary — that&#39;s the most useful thing you could send us.</p>
 
     <div class="author-box">
-      Written by <a href="https://emresokullu.com" target="_blank" rel="noopener">Emre Sokullu</a>. WebBrain is MIT-licensed and open on <a href="https://github.com/esokullu/webbrain" target="_blank" rel="noopener">GitHub</a>.
+      Written by <a href="https://emresokullu.com" target="_blank" rel="noopener">Emre Sokullu</a>. WebBrain is MIT-licensed and open on <a href="https://github.com/webbrain-one/webbrain" target="_blank" rel="noopener">GitHub</a>.
     </div>
   </article>
 
   <footer>
     <div>&copy; 2026 WebBrain &middot; <a href="/privacy">Privacy</a></div>
-    <div><a href="https://github.com/esokullu/webbrain" target="_blank" rel="noopener">GitHub</a></div>
+    <div><a href="https://github.com/webbrain-one/webbrain" target="_blank" rel="noopener">GitHub</a></div>
   </footer>
   <script>
     (function () {
