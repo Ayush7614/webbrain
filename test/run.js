@@ -2019,23 +2019,23 @@ test('scheduler validation rejects ambiguous, too-soon, and malformed schedules'
   const now = Date.UTC(2026, 0, 1, 12, 0, 0);
   for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
     assert.equal(SchedulerMod.validateResumeArgs({
-      after_seconds: 3,
+      after_seconds: 30,
       reason: 'wait for it',
       resume_instruction: 'try again',
     }, now).ok, true, `${label}: valid resume should pass`);
 
     assert.match(SchedulerMod.validateResumeArgs({
-      after_seconds: 3,
-      run_at: new Date(now + 3000).toISOString(),
+      after_seconds: 30,
+      run_at: new Date(now + 30000).toISOString(),
       reason: 'both',
       resume_instruction: 'bad',
     }, now).error, /exactly one/, `${label}: ambiguous time should fail`);
 
     assert.match(SchedulerMod.validateResumeArgs({
-      after_seconds: 2,
+      after_seconds: 29,
       reason: 'too soon',
       resume_instruction: 'bad',
-    }, now).error, /at least 3 seconds/, `${label}: too-soon resume time should fail`);
+    }, now).error, /at least 30 seconds/, `${label}: too-soon resume time should fail`);
 
     assert.equal(SchedulerMod.validateResumeArgs({
       after_seconds: 604800,

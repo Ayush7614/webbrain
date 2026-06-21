@@ -380,7 +380,7 @@ export const AGENT_TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          after_seconds: { type: 'number', description: 'Delay from now in seconds. Minimum 3, maximum 604800 (7 days). Provide exactly one of after_seconds or run_at.' },
+          after_seconds: { type: 'number', description: 'Delay from now in seconds. Minimum 30, maximum 604800 (7 days). Provide exactly one of after_seconds or run_at.' },
           run_at: { type: 'string', description: 'Absolute date/time to resume, preferably ISO 8601. Provide exactly one of run_at or after_seconds.' },
           reason: { type: 'string', description: 'Short reason for waiting, shown to the user and stored with the job.' },
           resume_instruction: { type: 'string', description: 'Concrete instruction for the future run. Include what to check first and what success/failure should mean.' },

@@ -3,7 +3,7 @@ export const SCHEDULED_TASKS_ENABLED_KEY = 'scheduledTasksEnabled';
 export const SCHEDULED_REQUIRE_CONFIRMATION_KEY = 'scheduledRequireConsequentialConfirmation';
 export const SCHEDULED_ALARM_PREFIX = 'wb_scheduled_job:';
 
-export const MIN_RESUME_DELAY_MS = 3 * 1000;
+export const MIN_RESUME_DELAY_MS = 30 * 1000;
 export const MIN_DELAY_MS = 60 * 1000;
 export const MAX_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 export const QUEUE_RETRY_MS = 30 * 1000;
