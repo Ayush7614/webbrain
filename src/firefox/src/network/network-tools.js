@@ -53,6 +53,7 @@ const PAGE_SOURCE_MAX_LIMIT = 7000;
 const PAGE_SOURCE_RESULT_MAX_CHARS = 8000;
 const PAGE_SOURCE_RESULT_SAFETY_CHARS = 200;
 const PAGE_SOURCE_ASSET_KINDS = ['stylesheets', 'scripts'];
+const PAGE_SOURCE_BODY_MAX_BYTES = 1000000;
 
 /**
  * Validate a URL before the agent fetches it.
@@ -290,6 +291,77 @@ export function slicePageSource(text, opts = {}) {
   };
 }
 
+export function isPageSourceTextContentType(contentType) {
+  const type = String(contentType || '').split(';', 1)[0].trim().toLowerCase();
+  if (!type) return true;
+  return type.startsWith('text/') ||
+    type.includes('html') ||
+    type.includes('xml') ||
+    type.includes('javascript') ||
+    type.includes('json') ||
+    type.includes('markdown') ||
+    type.includes('csv');
+}
+
+export function validatePageSourceResponseHeaders(headers, maxBytes = PAGE_SOURCE_BODY_MAX_BYTES) {
+  const contentType = String(headers?.get?.('content-type') || '').toLowerCase();
+  const sizeBytes = parseContentLength(headers?.get?.('content-length'));
+  const limit = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  if (!isPageSourceTextContentType(contentType)) {
+    return {
+      ok: false,
+      contentType,
+      sizeBytes,
+      error: `read_page_source only supports HTML/text responses; got ${contentType || 'non-text content'}. Use download_file for binary resources.`,
+    };
+  }
+  if (limit && sizeBytes != null && sizeBytes > limit) {
+    return {
+      ok: false,
+      contentType,
+      sizeBytes,
+      error: `read_page_source response is too large (${sizeBytes} bytes; max ${limit}). Use fetch_url for extracted text or download_file for the raw resource.`,
+    };
+  }
+  return { ok: true, contentType, sizeBytes };
+}
+
+export async function readPageSourceResponseText(res, maxBytes = PAGE_SOURCE_BODY_MAX_BYTES) {
+  const limit = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  if (!res?.body || typeof res.body.getReader !== 'function') {
+    const text = await res.text();
+    const bytesRead = new TextEncoder().encode(text).length;
+    return { text, bytesRead, exceeded: !!(limit && bytesRead > limit) };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let bytesRead = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+    if (limit && bytesRead + chunk.byteLength > limit) {
+      const allowed = Math.max(0, limit - bytesRead);
+      if (allowed > 0) {
+        text += decoder.decode(chunk.slice(0, allowed), { stream: true });
+      }
+      try { await reader.cancel(); } catch {}
+      return { text: text + decoder.decode(), bytesRead: limit, exceeded: true };
+    }
+    bytesRead += chunk.byteLength;
+    text += decoder.decode(chunk, { stream: true });
+  }
+  return { text: text + decoder.decode(), bytesRead, exceeded: false };
+}
+
+function parseContentLength(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+}
+
 export function constrainPageSourceResult(result, sourceLength = result?.originalLength, maxResultChars = PAGE_SOURCE_RESULT_MAX_CHARS) {
   const resultLimit = Math.max(0, Math.floor(Number(maxResultChars) || 0));
   if (!resultLimit) return result;
@@ -424,8 +496,34 @@ export async function readPageSource(url, opts = {}, ctx = {}) {
       }
     }
 
-    const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    const source = await res.text();
+    const headerCheck = validatePageSourceResponseHeaders(res.headers);
+    if (!headerCheck.ok) {
+      return {
+        success: false,
+        status: res.status,
+        contentType: headerCheck.contentType,
+        url: targetUrl,
+        finalUrl: res.url || targetUrl,
+        sizeBytes: headerCheck.sizeBytes,
+        error: headerCheck.error,
+      };
+    }
+
+    const read = await readPageSourceResponseText(res);
+    if (read.exceeded) {
+      return {
+        success: false,
+        status: res.status,
+        contentType: headerCheck.contentType,
+        url: targetUrl,
+        finalUrl: res.url || targetUrl,
+        sizeBytes: read.bytesRead,
+        error: `read_page_source response exceeded ${PAGE_SOURCE_BODY_MAX_BYTES} bytes while reading. Use fetch_url for extracted text or download_file for the raw resource.`,
+      };
+    }
+
+    const contentType = headerCheck.contentType;
+    const source = read.text;
     const slice = slicePageSource(source, opts);
     const assetUrls = extractPageSourceAssets(source, res.url || targetUrl);
     return constrainPageSourceResult({

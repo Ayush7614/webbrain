@@ -35,6 +35,8 @@ const {
   downloadFiles: downloadFilesCh,
   extractPageSourceAssets: extractPageSourceAssetsCh,
   slicePageSource: slicePageSourceCh,
+  validatePageSourceResponseHeaders: validatePageSourceResponseHeadersCh,
+  readPageSourceResponseText: readPageSourceResponseTextCh,
   constrainPageSourceResult: constrainPageSourceResultCh,
 } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/network/network-tools.js').replace(/\\/g, '/')
@@ -45,6 +47,8 @@ const {
   downloadFiles: downloadFilesFx,
   extractPageSourceAssets: extractPageSourceAssetsFx,
   slicePageSource: slicePageSourceFx,
+  validatePageSourceResponseHeaders: validatePageSourceResponseHeadersFx,
+  readPageSourceResponseText: readPageSourceResponseTextFx,
   constrainPageSourceResult: constrainPageSourceResultFx,
 } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/network/network-tools.js').replace(/\\/g, '/')
@@ -1317,6 +1321,42 @@ test('read_page_source result budget preserves continuation offsets', () => {
     assert.equal(fittedEscaped.maxChars, fittedEscaped.text.length, `${label}: maxChars should match budgeted source text`);
     assert.equal(fittedEscaped.nextOffset, fittedEscaped.text.length, `${label}: nextOffset should resume after delivered source text`);
     assert.equal(fittedEscaped.truncated, true, `${label}: shortened source should advertise continuation`);
+  }
+});
+
+test('read_page_source rejects binary and oversized bodies before buffering', async () => {
+  for (const [label, validate, readText] of [
+    ['chrome', validatePageSourceResponseHeadersCh, readPageSourceResponseTextCh],
+    ['firefox', validatePageSourceResponseHeadersFx, readPageSourceResponseTextFx],
+  ]) {
+    const binary = validate(new Headers({
+      'content-type': 'application/pdf',
+      'content-length': '42',
+    }), 1000);
+    assert.equal(binary.ok, false, `${label}: binary content-type should be rejected`);
+    assert.match(binary.error, /HTML\/text responses/);
+    assert.equal(binary.sizeBytes, 42);
+
+    const tooLarge = validate(new Headers({
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': '1001',
+    }), 1000);
+    assert.equal(tooLarge.ok, false, `${label}: oversized text response should be rejected from headers`);
+    assert.match(tooLarge.error, /too large/);
+    assert.equal(tooLarge.contentType, 'text/html; charset=utf-8');
+
+    const allowed = validate(new Headers({
+      'content-type': 'application/xhtml+xml',
+      'content-length': '1000',
+    }), 1000);
+    assert.equal(allowed.ok, true, `${label}: HTML/XML source should be allowed within the cap`);
+
+    const capped = await readText(new Response('abcdef', {
+      headers: { 'content-type': 'text/plain' },
+    }), 3);
+    assert.equal(capped.exceeded, true, `${label}: stream reader should stop at the byte cap`);
+    assert.equal(capped.text, 'abc');
+    assert.equal(capped.bytesRead, 3);
   }
 });
 
