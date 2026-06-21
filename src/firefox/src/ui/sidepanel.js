@@ -415,6 +415,7 @@ function scheduledJobActions(job) {
 }
 
 const SCHEDULED_VISIBLE_STATUSES = new Set(['pending', 'queued', 'paused', 'running', 'needs_user_input', 'failed']);
+const crossPanelScheduledJobIds = new Set();
 
 function visibleScheduledJobs(jobs = []) {
   return jobs.filter((job) => SCHEDULED_VISIBLE_STATUSES.has(job.status));
@@ -440,6 +441,13 @@ function findScheduledClarifyCard(jobId, clarifyId) {
   return null;
 }
 
+function findScheduledClarifyCardForJob(jobId) {
+  for (const card of messagesEl?.querySelectorAll?.('.clarify-card[data-scheduled-job-id]') || []) {
+    if (card.dataset.scheduledJobId === String(jobId)) return card;
+  }
+  return null;
+}
+
 function ensureScheduledClarifyCards(jobs = []) {
   if (!messagesEl) return;
   for (const job of jobs) {
@@ -448,6 +456,8 @@ function ensureScheduledClarifyCards(jobs = []) {
     const jobTabId = scheduledJobTabId(job);
     if (!isUrlTargetScheduledJob(job) && jobTabId != null && currentTabId != null && String(jobTabId) !== String(currentTabId)) continue;
     if (findScheduledClarifyCard(job.id, pending.clarifyId)) continue;
+    const isCrossPanel = isUrlTargetScheduledJob(job) && jobTabId != null && currentTabId != null && String(jobTabId) !== String(currentTabId);
+    if (isCrossPanel) crossPanelScheduledJobIds.add(String(job.id));
     renderClarifyCard({
       ...pending,
       scheduledJobId: job.id,
@@ -529,6 +539,7 @@ async function scheduledJobAction(action, jobId) {
 }
 
 function settleScheduledRun(event, job) {
+  if (job?.id) crossPanelScheduledJobIds.delete(String(job.id));
   if (currentAssistantEl) {
     finalizeSteps();
     const textEl = currentAssistantEl.querySelector('.message-text');
@@ -551,8 +562,13 @@ function handleScheduledJobEvent(data, tabId) {
   if (!event || !job) return;
 
   const sameTab = tabId == null || tabId === currentTabId;
-  const crossPanelScheduledClarify = event === 'needs_user_input' && isUrlTargetScheduledJob(job);
-  if (!sameTab && !crossPanelScheduledClarify) return;
+  const jobId = job?.id ? String(job.id) : '';
+  const terminalScheduledEvent = ['completed', 'failed'].includes(event);
+  const crossPanelScheduledEvent = isUrlTargetScheduledJob(job) && (
+    event === 'needs_user_input' ||
+    (terminalScheduledEvent && jobId && (crossPanelScheduledJobIds.has(jobId) || findScheduledClarifyCardForJob(jobId)))
+  );
+  if (!sameTab && !crossPanelScheduledEvent) return;
 
   const title = scheduledJobTitle(job);
   const safeTitle = escapeHtml(title);
