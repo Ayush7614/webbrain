@@ -2803,7 +2803,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!this._isGithubStargazersUrl(url)) return null;
 
     const observed = buildGithubStargazerProgressItems(
-      this.progressLedgers.get(tabId) || [],
+      this._currentTaskLedgerRows(tabId),
       pageContent,
       { excludedUsernames: this._excludedGithubUsernames(tabId) }
     );

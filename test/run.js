@@ -3982,6 +3982,37 @@ test('agent records GitHub stargazer observations into the progress ledger', asy
   }
 });
 
+test('agent ignores stale terminal follow rows when observing a new stargazer task', async () => {
+  const page = 'button "Follow alice" [ref_41]';
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 805;
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer except alice.' },
+    ]);
+    agent._currentUrl = async () => 'https://github.com/foo/bar/stargazers';
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'alice', label: 'alice', action: 'follow', status: 'skipped', reason: 'excluded by user request' }],
+    });
+    const oldTaskKey = agent.progressLedgers.get(tabId)[0].taskKey;
+
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer except alice.' },
+      { role: 'assistant', content: 'Skipped alice.' },
+      { role: 'user', content: 'Follow every stargazer on this page.' },
+    ]);
+    const result = { success: true, pageContent: page };
+    const note = await agent._recordProgressObservation(tabId, 'get_accessibility_tree', result);
+
+    assert.equal(note.addedPending, 1, `${AgentClass.name}: stale terminal row suppressed new pending follow row`);
+    const row = agent.progressLedgers.get(tabId).find(item => item.id === 'alice');
+    assert.equal(row.status, 'pending', `${AgentClass.name}: stale skipped row was not reopened for the new task`);
+    assert.notEqual(row.taskKey, oldTaskKey, `${AgentClass.name}: reopened row kept the stale task key`);
+  }
+});
+
 test('agent does not seed GitHub stargazer follow rows for read-only page reads', async () => {
   const page = `
     button "Follow ChJus" [ref_13]
