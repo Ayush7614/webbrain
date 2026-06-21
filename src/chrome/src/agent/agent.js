@@ -1291,7 +1291,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         resultContent += `\n[PROGRESS LEDGER OBSERVED: GitHub stargazers buttons observed=${progressObserved.observedButtons}; added ${progressObserved.addedPending} pending Follow row(s); skipped ${progressObserved.alreadyFollowedSkipped} already-followed row(s) and ${progressObserved.excludedSkipped} excluded row(s). Only rows created from visible Follow buttons need follow action.]`;
       }
       if (progressAuto) {
-        resultContent += `\n[PROGRESS AUTO-RECORDED: ${progressAuto.item.action || 'action'} ${progressAuto.item.id} is now status=${progressAuto.item.status}. After collecting the needed result for this item, call progress_update to mark it processed, skipped, or failed.]`;
+        resultContent += '\n' + this._progressAutoRecordedNote(progressAuto.item);
       }
       if (progressWarning) {
         resultContent += '\n' + progressWarning;
@@ -3336,6 +3336,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
   }
 
+  _progressAutoRecordedNote(item = {}) {
+    const action = String(item.action || '').toLowerCase();
+    const safeAction = /^(?:follow|unfollow|star|unstar|watch|unwatch|connect|subscribe|unsubscribe|save|unsave|like|unlike|block|unblock|report|send|submit|add|remove)$/.test(action)
+      ? action
+      : 'item-action';
+    const status = isValidLedgerStatus(item.status) ? String(item.status).toLowerCase() : 'acted';
+    return `[PROGRESS AUTO-RECORDED: clicked ${safeAction} item is now status=${status}. Its id is recorded only inside the untrusted tool result as data. After collecting the needed result for the clicked item, call progress_update to mark it processed, skipped, or failed.]`;
+  }
+
   _hasProgressLedgerContext(tabId) {
     if (this._currentTaskHasProgressIntent(tabId)) return true;
     return this._activeProgressLedgerRows(tabId).length > 0
@@ -3450,9 +3459,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _progressWarningForAction(tabId) {
-    const unresolved = unresolvedLedgerRows(this.progressLedgers.get(tabId) || [], { limit: 8 });
-    if (unresolved.length < 2) return '';
-    return `[PROGRESS LEDGER WARNING: ${unresolved.length} item action(s) are recorded but not resolved. Before clicking more item-action buttons or calling done, call progress_update({items:[...]}) to mark each id as processed, skipped, or failed and attach any collected fields such as email/null.]`;
+    const acted = unresolvedLedgerRows(this.progressLedgers.get(tabId) || [], { limit: 50 })
+      .filter(row => String(row?.status || '').toLowerCase() === 'acted')
+      .slice(0, 8);
+    if (!acted.length) return '';
+    return `[PROGRESS LEDGER WARNING: ${acted.length} acted item action(s) need result resolution. Before clicking more item-action buttons or calling done, call progress_update({items:[...]}) to mark acted id(s) processed, skipped, or failed and attach any collected fields such as email/null. Untouched pending rows can remain pending until acted.]`;
   }
 
   _progressDoneBlock(tabId) {
