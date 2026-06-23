@@ -903,6 +903,19 @@ function addScheduleField(form, labelText, control) {
   return label;
 }
 
+function replaceCachedScheduleComposer(tabId, composerId, html) {
+  const cached = tabChats.get(tabId);
+  if (typeof cached !== 'string' || !composerId) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = cached;
+  const form = wrapper.querySelector(`form.schedule-composer[data-composer-id="${composerId}"]`);
+  const textEl = form?.closest('.message')?.querySelector('.message-text');
+  if (!form || !textEl) return;
+  form.remove();
+  textEl.innerHTML = html;
+  persistTabChat(tabId, wrapper.innerHTML);
+}
+
 async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) {
   if (tabId == null) return;
   const initialScheduleUrl = await getCurrentScheduleUrl(tabId);
@@ -913,6 +926,7 @@ async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) 
   const form = document.createElement('form');
   form.className = 'schedule-composer';
   form.dataset.tabId = String(tabId);
+  form.dataset.composerId = `schedule-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const titleInput = document.createElement('input');
   titleInput.type = 'text';
@@ -1066,14 +1080,18 @@ async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) 
       if (res?.success === false || res?.ok === false || !res?.scheduledAt) {
         throw new Error(res?.error || 'Could not create scheduled job.');
       }
-      if (currentTabId !== tabId) return;
+      const createdHtml = t('sp.schedule_form.created', {
+        title: escapeHtml(title),
+        time: formatScheduledTime(res.scheduledAt),
+      });
+      if (currentTabId !== tabId) {
+        replaceCachedScheduleComposer(tabId, form.dataset.composerId, createdHtml);
+        return;
+      }
       form.remove();
       const textEl = msgEl.querySelector('.message-text');
       if (textEl) {
-        textEl.innerHTML = t('sp.schedule_form.created', {
-          title: escapeHtml(title),
-          time: formatScheduledTime(res.scheduledAt),
-        });
+        textEl.innerHTML = createdHtml;
       }
       await refreshScheduledJobs();
     } catch (err) {
