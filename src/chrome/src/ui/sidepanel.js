@@ -65,6 +65,14 @@ if (globalThis.chrome?.storage?.onChanged) {
     if (providerStatus) providerStatus.textContent = t(key, params);
   }
 
+  function openProviderSettings() {
+    try {
+      chrome.tabs.create({ url: chrome.runtime.getURL('src/ui/settings.html#providers') });
+    } catch {
+      chrome.runtime.openOptionsPage();
+    }
+  }
+
   function providerSortIndex(id) {
     const idx = LOCAL_PROVIDER_ORDER.indexOf(id);
     return idx === -1 ? LOCAL_PROVIDER_ORDER.length : idx;
@@ -124,11 +132,22 @@ if (globalThis.chrome?.storage?.onChanged) {
       providerBody.textContent = 'WebBrain Cloud is ready with a free daily allowance. Requests go through api.webbrain.one; debug and quota logs store metadata only by default, not prompt text, screenshots, or responses.';
     }
     if (providerStatus) {
-      const settingsUrl = chrome.runtime.getURL('src/ui/settings.html#providers');
-      providerStatus.innerHTML = `Using WebBrain Cloud. <a href="${settingsUrl}" target="_blank" rel="noopener noreferrer" id="ob-change-provider">Change</a>.`;
-      providerStatus.querySelector('#ob-change-provider')?.addEventListener('click', () => {
+      providerStatus.textContent = '';
+      const changeLink = document.createElement('a');
+      changeLink.href = chrome.runtime.getURL('src/ui/settings.html#providers');
+      changeLink.target = '_blank';
+      changeLink.rel = 'noopener noreferrer';
+      changeLink.textContent = 'Change';
+      changeLink.addEventListener('click', (event) => {
+        event.preventDefault();
+        openProviderSettings();
         dismissOnboarding();
       });
+      providerStatus.append(
+        document.createTextNode('Using WebBrain Cloud. '),
+        changeLink,
+        document.createTextNode('.')
+      );
     }
     providerList?.classList.add('hidden');
     localModels?.classList.add('hidden');
@@ -272,7 +291,7 @@ if (globalThis.chrome?.storage?.onChanged) {
       return;
     }
 
-    chrome.runtime.openOptionsPage();
+    openProviderSettings();
     dismissOnboarding();
   });
 
