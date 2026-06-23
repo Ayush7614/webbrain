@@ -827,6 +827,20 @@ function replaceCachedScheduleComposer(tabId, composerId, html) {
   tabChats.set(tabId, wrapper.innerHTML);
 }
 
+function updateCachedScheduleComposerError(tabId, composerId, message) {
+  const cached = tabChats.get(tabId);
+  if (typeof cached !== 'string' || !composerId) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = cached;
+  const form = wrapper.querySelector(`form.schedule-composer[data-composer-id="${composerId}"]`);
+  const submit = form?.querySelector('.schedule-submit');
+  const errorEl = form?.querySelector('.schedule-error');
+  if (!form || !submit || !errorEl) return;
+  submit.disabled = false;
+  errorEl.textContent = message || '';
+  tabChats.set(tabId, wrapper.innerHTML);
+}
+
 async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) {
   if (tabId == null) return;
   const initialScheduleUrl = await getCurrentScheduleUrl(tabId);
@@ -1006,6 +1020,10 @@ async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) 
       }
       await refreshScheduledJobs();
     } catch (err) {
+      if (currentTabId !== tabId) {
+        updateCachedScheduleComposerError(tabId, form.dataset.composerId, err.message);
+        return;
+      }
       submit.disabled = false;
       errorEl.textContent = err.message;
     }
