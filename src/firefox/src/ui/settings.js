@@ -925,7 +925,7 @@ function renderProviders() {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'API key' },
         { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'minimax-m2.7',
-          suggestions: ['minimax-m2.7', 'minimax-m2', 'minimax-text-01'] },
+          suggestions: ['minimax-m2.7', 'minimax-m3'] },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.minimax.chat/v1' },
         ...COST_ESTIMATE_FIELDS,
       ],
