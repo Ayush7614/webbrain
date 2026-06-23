@@ -1945,7 +1945,7 @@ test('sidepanel exposes schedule slash commands in both builds', () => {
     assert.match(panel, /function bindScheduleComposer\(form\) \{[\s\S]*?form\.dataset\.bound = 'true';[\s\S]*?form\.addEventListener\('submit', \(e\) => submitScheduleComposer\(e, form\)\);[\s\S]*?\}/, `${label}: schedule composer listeners should be reusable after serialized restore`);
     assert.match(panel, /bindScheduleComposer\(form\);[\s\S]*?content\.appendChild\(form\)/, `${label}: initial schedule composer render should use the reusable binder`);
     assert.match(panel, /create_scheduled_job'[\s\S]*?\{\s*tabId,[\s\S]*?job:/, `${label}: schedule form should create jobs for the captured tab`);
-    assert.match(panel, /const createdHtml = t\('sp\.schedule_form\.created'[\s\S]*?if \(currentTabId !== tabId\) \{[\s\S]*?replaceCachedScheduleComposer\(tabId, form\.dataset\.composerId, createdHtml\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?form\.remove\(\);/, `${label}: schedule form should update hidden cached composers instead of leaving stale disabled forms`);
+    assert.match(panel, /const createdHtml = tSystemHtml\('sp\.schedule_form\.created'[\s\S]*?if \(currentTabId !== tabId\) \{[\s\S]*?replaceCachedScheduleComposer\(tabId, form\.dataset\.composerId, createdHtml\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?form\.remove\(\);/, `${label}: schedule form should update hidden cached composers instead of leaving stale disabled forms`);
     assert.match(panel, /catch \(err\) \{[\s\S]*?if \(currentTabId !== tabId\) \{[\s\S]*?updateCachedScheduleComposerError\(tabId, form\.dataset\.composerId, err\.message\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?submit\.disabled = false;[\s\S]*?errorEl\.textContent = err\.message;/, `${label}: schedule form failures should update hidden cached composers instead of leaving disabled forms`);
     assert.match(panel, /renderScheduleComposer\(text\.slice\(mSchedule\[0\]\.length\)\.trim\(\), currentTabId\)/, `${label}: /schedule should pass the initiating tab into the async composer`);
     assert.match(panel, /urlInput\.value = initialScheduleUrl/, `${label}: schedule form should prefill URL targets from the active tab`);
@@ -2173,6 +2173,39 @@ test('sidepanel export keeps blob URLs alive until the download is committed', (
       /a\.click\(\);\s*URL\.revokeObjectURL\(url\);/,
       `${label}: export should not revoke the blob URL synchronously after click`,
     );
+  }
+});
+
+test('sidepanel escapes dynamic system-message interpolation before raw HTML insertion', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /function escapeHtml\(str\) \{[\s\S]*?String\(str == null \? '' : str\)/, `${label}: escapeHtml should normalize nullish values`);
+    assert.equal(panel.includes("replace(/[&<>\"']/g"), true, `${label}: escapeHtml should cover attribute-breaking quotes as well as HTML tags`);
+    assert.match(
+      panel,
+      /function tSystemHtml\(key, params\) \{[\s\S]*?Object\.entries\(params \|\| \{\}\)[\s\S]*?safeParams\[name\] = escapeHtml\(value\);[\s\S]*?return t\(key, safeParams\);[\s\S]*?\}/,
+      `${label}: dynamic system HTML helper missing`,
+    );
+    assert.doesNotMatch(
+      panel,
+      /addMessage\('system',\s*t\('[^']+',\s*\{/,
+      `${label}: system messages inserted as raw HTML must not interpolate unescaped params directly`,
+    );
+    for (const key of [
+      'sp.scheduled.created',
+      'sp.scheduled.needs_user_input',
+      'sp.schedule_form.created',
+      'sp.scratchpad.error',
+      'sp.compact.failed',
+      'sp.screenshot.error',
+      'sp.record.error',
+      'sp.vision.error',
+    ]) {
+      assert.match(panel, new RegExp(`tSystemHtml\\('${key.replace(/\./g, '\\.')}'`), `${label}: ${key} should escape dynamic params for system HTML`);
+    }
   }
 });
 

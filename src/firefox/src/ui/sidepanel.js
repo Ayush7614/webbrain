@@ -735,9 +735,8 @@ function handleScheduledJobEvent(data, tabId) {
   if (!sameTab && !crossPanelScheduledEvent) return;
 
   const title = scheduledJobTitle(job);
-  const safeTitle = escapeHtml(title);
   if (event === 'created') {
-    addMessage('system', t('sp.scheduled.created', { title: safeTitle, time: formatScheduledTime(job.nextRunAt || job.scheduledAt) }));
+    addMessage('system', tSystemHtml('sp.scheduled.created', { title, time: formatScheduledTime(job.nextRunAt || job.scheduledAt) }));
   } else if (event === 'running') {
     isProcessing = true;
     abortRequested = false;
@@ -761,7 +760,7 @@ function handleScheduledJobEvent(data, tabId) {
     } else {
       isProcessing = false;
       sendBtn.disabled = false;
-      addMessage('system', t('sp.scheduled.needs_user_input', { title: safeTitle }));
+      addMessage('system', tSystemHtml('sp.scheduled.needs_user_input', { title }));
       drainQueuedContextMenuPromptsAfterPendingTabSwitch();
     }
   }
@@ -923,8 +922,8 @@ async function submitScheduleComposer(e, form) {
     if (res?.success === false || res?.ok === false || !res?.scheduledAt) {
       throw new Error(res?.error || 'Could not create scheduled job.');
     }
-    const createdHtml = t('sp.schedule_form.created', {
-      title: escapeHtml(title),
+    const createdHtml = tSystemHtml('sp.schedule_form.created', {
+      title,
       time: formatScheduledTime(res.scheduledAt),
     });
     if (currentTabId !== tabId) {
@@ -1109,7 +1108,7 @@ async function showScratchpad(tabId = currentTabId) {
     addMessage('system', `${t('sp.scratchpad.title_html')}<pre class="scratchpad-dump">${escapeHtml(body)}</pre>`);
   } catch (e) {
     if (currentTabId !== tabId) return;
-    addMessage('system', t('sp.scratchpad.error', { msg: e.message }));
+    addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: e.message }));
   }
 }
 
@@ -1753,7 +1752,7 @@ async function parseSlashCommands(text) {
     } else if (res?.ok) {
       addMessage('system', t('sp.compact.nothing_to_compact'));
     } else {
-      addMessage('system', t('sp.compact.failed', { error: res?.error || 'unknown error' }));
+      addMessage('system', tSystemHtml('sp.compact.failed', { error: res?.error || 'unknown error' }));
     }
     return text.slice(mCompact[0].length).trim();
   }
@@ -1789,14 +1788,14 @@ async function parseSlashCommands(text) {
       addMessage('system', imgHtml);
     } catch (e) {
       if (currentTabId !== tabId) return '';
-      addMessage('system', t('sp.screenshot.error', { msg: e.message }));
+      addMessage('system', tSystemHtml('sp.screenshot.error', { msg: e.message }));
     }
     return '';
   }
 
   // /record — not supported in Firefox
   if (/^\/record(?:\s|$)/i.test(text)) {
-    addMessage('system', t('sp.record.error', { error: 'Tab recording is not supported in Firefox.' }));
+    addMessage('system', tSystemHtml('sp.record.error', { error: 'Tab recording is not supported in Firefox.' }));
     return '';
   }
 
@@ -1880,7 +1879,7 @@ async function parseSlashCommands(text) {
       }
     } catch (e) {
       if (currentTabId !== tabId) return '';
-      addMessage('system', t('sp.vision.error', { msg: e.message }));
+      addMessage('system', tSystemHtml('sp.vision.error', { msg: e.message }));
     }
     return '';
   }
@@ -2770,7 +2769,21 @@ function addMessageCopyButton(msgEl) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(str == null ? '' : str).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[c]));
+}
+
+function tSystemHtml(key, params) {
+  const safeParams = {};
+  for (const [name, value] of Object.entries(params || {})) {
+    safeParams[name] = escapeHtml(value);
+  }
+  return t(key, safeParams);
 }
 
 function truncate(str, len) {
