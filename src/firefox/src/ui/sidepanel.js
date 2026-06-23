@@ -732,6 +732,25 @@ function datetimeLocalValue(ms) {
   return local.toISOString().slice(0, 16);
 }
 
+function isHttpScheduleUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function getCurrentScheduleUrl() {
+  if (currentTabId == null) return '';
+  try {
+    const tab = await browser.tabs.get(currentTabId);
+    return tab?.url || '';
+  } catch {
+    return '';
+  }
+}
+
 function addScheduleField(form, labelText, control) {
   const label = document.createElement('label');
   label.className = 'schedule-field';
@@ -803,6 +822,7 @@ function renderScheduleComposer(prefillPrompt = '') {
   urlInput.type = 'url';
   urlInput.placeholder = 'https://example.com/';
   const urlField = addScheduleField(form, t('sp.schedule_form.target_url'), urlInput);
+  let targetTypeTouched = false;
 
   const modeInput = document.createElement('select');
   modeInput.innerHTML = `<option value="act">${escapeHtml(t('sp.mode.act'))}</option><option value="ask">${escapeHtml(t('sp.mode.ask'))}</option>`;
@@ -835,8 +855,19 @@ function renderScheduleComposer(prefillPrompt = '') {
   }
   scheduleType.addEventListener('change', updateVisibility);
   timeMode.addEventListener('change', updateVisibility);
-  targetType.addEventListener('change', updateVisibility);
+  targetType.addEventListener('change', () => {
+    targetTypeTouched = true;
+    updateVisibility();
+  });
   updateVisibility();
+  getCurrentScheduleUrl().then((url) => {
+    if (!isHttpScheduleUrl(url)) return;
+    if (!urlInput.value) urlInput.value = url;
+    if (!targetTypeTouched) {
+      targetType.value = 'url';
+      updateVisibility();
+    }
+  }).catch(() => {});
 
   cancel.addEventListener('click', () => msgEl.remove());
 
