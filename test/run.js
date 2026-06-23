@@ -1945,6 +1945,19 @@ test('chrome sidepanel Escape abort honors slash autocomplete dismissal', () => 
   assert.equal(defaultPreventedGuard < abortCall, true, 'chrome: consumed slash-menu Escape should not reach abortRun');
 });
 
+test('chrome sidepanel shortcuts are documented in help and README', () => {
+  const locale = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/locales/en.js'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+
+  for (const shortcut of ['Ctrl/Cmd+/', 'Ctrl/Cmd+Shift+A', 'Ctrl/Cmd+Shift+X', 'Escape']) {
+    assert.match(locale, new RegExp(shortcut.replace(/[+/]/g, '\\$&')), `chrome: /help should mention ${shortcut}`);
+    assert.match(readme, new RegExp(shortcut.replace('Ctrl/Cmd', 'Ctrl.*Cmd').replace(/[+/]/g, '\\$&')), `README should mention ${shortcut}`);
+  }
+  assert.match(locale, /Keyboard Shortcuts/, 'chrome: /help should include a keyboard shortcut section');
+  assert.match(readme, /## Keyboard Shortcuts/, 'README should include a keyboard shortcut section');
+  assert.match(readme, /Stop the active run, unless it is only dismissing slash-command autocomplete/, 'README should document Escape vs slash autocomplete behavior');
+});
+
 test('sidepanel reports missing background responses without res.content crash', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
