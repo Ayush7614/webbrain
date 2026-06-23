@@ -1576,11 +1576,16 @@ async function parseSlashCommands(text) {
 
   // /screenshot — capture visible tab and display in chat
   if (/^\/screenshot\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     try {
-      const dataUrl = await browser.tabs.captureVisibleTab(null, { format: 'png' });
+      const tab = tabId == null ? null : await browser.tabs.get(tabId);
+      if (currentTabId !== tabId || !tab?.active) return '';
+      const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      if (currentTabId !== tabId) return '';
       const imgHtml = `<img src="${dataUrl}" style="max-width:100%;border-radius:6px;margin:4px 0;" alt="Screenshot"/>`;
       addMessage('system', imgHtml);
     } catch (e) {
+      if (currentTabId !== tabId) return '';
       addMessage('system', t('sp.screenshot.error', { msg: e.message }));
     }
     return '';
@@ -1622,9 +1627,11 @@ async function parseSlashCommands(text) {
 
   // /profile — toggle profile auto-fill on/off
   if (/^\/profile\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     const stored = await browser.storage.local.get(['profileEnabled', 'profileText']);
     const newState = !stored.profileEnabled;
     await browser.storage.local.set({ profileEnabled: newState });
+    if (currentTabId !== tabId) return '';
     addMessage('system', newState
       ? t('sp.profile.on')
       : t('sp.profile.off'));
@@ -1648,6 +1655,7 @@ async function parseSlashCommands(text) {
 
   // /vision — toggle vision support on active provider
   if (/^\/vision\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     try {
       const { providers, active } = await sendToBackground('get_providers');
       const config = providers[active];
@@ -1657,11 +1665,13 @@ async function parseSlashCommands(text) {
           providerId: active,
           config: { ...config, supportsVision: newVision },
         });
+        if (currentTabId !== tabId) return '';
         addMessage('system', newVision
           ? t('sp.vision.on')
           : t('sp.vision.off'));
       }
     } catch (e) {
+      if (currentTabId !== tabId) return '';
       addMessage('system', t('sp.vision.error', { msg: e.message }));
     }
     return '';

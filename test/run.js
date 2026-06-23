@@ -2057,6 +2057,25 @@ test('sidepanel scopes async tab commands to the original tab', () => {
     assert.match(listBody, /const tabId = currentTabId;[\s\S]*?const jobs = await refreshScheduledJobs\(\);[\s\S]*?if \(currentTabId !== tabId\) return '';/, `${label}: /list-schedules should not render a result into a different tab`);
 
     assert.match(panel, /async function showScratchpad\(tabId = currentTabId\) \{[\s\S]*?sendToBackground\('get_scratchpad', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return;/, `${label}: /show-scratchpad should not render a result into a different tab`);
+
+    const screenshotIdx = panel.indexOf('// /screenshot');
+    const screenshotEnd = panel.indexOf('// /record', screenshotIdx);
+    const screenshotBody = panel.slice(screenshotIdx, screenshotEnd);
+    assert.match(screenshotBody, /const tabId = currentTabId;[\s\S]*?if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system', imgHtml\);/, `${label}: /screenshot should not render a captured image into a different tab`);
+
+    if (label === 'chrome') {
+      const recordIdx = panel.indexOf('// /record');
+      const recordBody = panel.slice(recordIdx, panel.indexOf('// /export', recordIdx));
+      assert.match(recordBody, /const tabId = currentTabId;[\s\S]*?sendToBackground\('start_tab_recording', \{[\s\S]*?tabId,[\s\S]*?\}\);[\s\S]*?if \(currentTabId !== tabId\) return '';/, `${label}: /record should not render recording status into a different tab`);
+    }
+
+    const profileIdx = panel.indexOf('// /profile');
+    const profileBody = panel.slice(profileIdx, panel.indexOf('// /ask', profileIdx));
+    assert.match(profileBody, /const tabId = currentTabId;[\s\S]*?storage\.local\.get\(\['profileEnabled', 'profileText'\]\);[\s\S]*?storage\.local\.set\(\{ profileEnabled: newState \}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system'/, `${label}: /profile should not render a result into a different tab`);
+
+    const visionIdx = panel.indexOf('// /vision');
+    const visionBody = panel.slice(visionIdx, panel.indexOf('return text;', visionIdx));
+    assert.match(visionBody, /const tabId = currentTabId;[\s\S]*?sendToBackground\('get_providers'\);[\s\S]*?sendToBackground\('update_provider'[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system'/, `${label}: /vision should not render a result into a different tab`);
   }
 });
 

@@ -1704,15 +1704,19 @@ async function parseSlashCommands(text) {
 
   // /screenshot — capture visible tab and display in chat
   if (/^\/screenshot\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     try {
-      const tab = await chrome.tabs.query({ active: true, currentWindow: true });
-      const windowId = tab[0]?.windowId;
-      if (windowId) {
+      const tab = tabId == null ? null : await chrome.tabs.get(tabId);
+      if (currentTabId !== tabId || !tab?.active) return '';
+      const windowId = tab?.windowId;
+      if (windowId != null) {
         const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+        if (currentTabId !== tabId) return '';
         const imgHtml = `<img src="${dataUrl}" style="max-width:100%;border-radius:6px;margin:4px 0;" alt="Screenshot"/>`;
         addMessage('system', imgHtml);
       }
     } catch (e) {
+      if (currentTabId !== tabId) return '';
       addMessage('system', t('sp.screenshot.error', { msg: e.message }));
     }
     return '';
@@ -1720,17 +1724,20 @@ async function parseSlashCommands(text) {
 
   // /record — start recording the current tab without LLM involvement
   if (/^\/record(?:\s|$)/i.test(text)) {
+    const tabId = currentTabId;
     try {
       const res = await sendToBackground('start_tab_recording', {
-        tabId: currentTabId,
+        tabId,
         options: { video: true, mic: true },
       });
+      if (currentTabId !== tabId) return '';
       if (!res?.ok) {
         addMessage('system', t('sp.record.error', { error: res?.error || 'unknown' }));
       } else if (res.state && res.state.hasMic === false && res.state.micError) {
         addMessage('system', t('sp.record.mic_unavailable', { error: res.state.micError }));
       }
     } catch (e) {
+      if (currentTabId !== tabId) return '';
       addMessage('system', t('sp.record.error', { error: e.message }));
     }
     return '';
@@ -1766,9 +1773,11 @@ async function parseSlashCommands(text) {
 
   // /profile — toggle profile auto-fill on/off
   if (/^\/profile\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     const stored = await chrome.storage.local.get(['profileEnabled', 'profileText']);
     const newState = !stored.profileEnabled;
     await chrome.storage.local.set({ profileEnabled: newState });
+    if (currentTabId !== tabId) return '';
     addMessage('system', newState
       ? t('sp.profile.on')
       : t('sp.profile.off'));
@@ -1792,6 +1801,7 @@ async function parseSlashCommands(text) {
 
   // /vision — toggle vision support on active provider
   if (/^\/vision\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     try {
       const { providers, active } = await sendToBackground('get_providers');
       const config = providers[active];
@@ -1801,11 +1811,13 @@ async function parseSlashCommands(text) {
           providerId: active,
           config: { ...config, supportsVision: newVision },
         });
+        if (currentTabId !== tabId) return '';
         addMessage('system', newVision
           ? t('sp.vision.on')
           : t('sp.vision.off'));
       }
     } catch (e) {
+      if (currentTabId !== tabId) return '';
       addMessage('system', t('sp.vision.error', { msg: e.message }));
     }
     return '';
