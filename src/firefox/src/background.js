@@ -341,7 +341,13 @@ browser.tabs.onRemoved.addListener((tabId) => {
 // Invalidate pending context-menu prompts on navigation so a prompt recorded
 // on page A is not injected into chat in the context of page B.
 browser.webNavigation?.onCommitted?.addListener?.((details) => {
-  if (details.frameId === 0) contextMenuStorage.cleanup(details.tabId);
+  if (details.frameId !== 0) return;
+  contextMenuStorage.cleanup(details.tabId);
+  browser.runtime.sendMessage({
+    target: 'sidepanel',
+    action: 'context_menu_tab_navigated',
+    tabId: details.tabId,
+  }).catch(() => {});
 });
 
 // Action click: toggle sidebar (existing UX) AND ensure source tab is

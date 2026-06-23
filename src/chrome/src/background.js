@@ -500,7 +500,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Without this a prompt recorded on page A would be injected into chat in the
 // context of page B if the tab redirected before the panel opened.
 chrome.webNavigation?.onCommitted?.addListener((details) => {
-  if (details.frameId === 0) contextMenuStorage.cleanup(details.tabId);
+  if (details.frameId !== 0) return;
+  contextMenuStorage.cleanup(details.tabId);
+  chrome.runtime.sendMessage({
+    target: 'sidepanel',
+    action: 'context_menu_tab_navigated',
+    tabId: details.tabId,
+  }).catch(() => {});
 });
 
 // SPA navigation tracking. Many sites change route via History API without

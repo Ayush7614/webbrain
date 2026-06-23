@@ -349,6 +349,7 @@ const {
   acceptContextMenuPrompt,
   drainQueuedContextMenuPrompts,
   consumePendingContextMenuPrompt,
+  clearQueuedForTab,
 } = createContextMenuPromptHandler({
   getCurrentTabId: () => currentTabId,
   getIsProcessing: () => isProcessing,
@@ -1663,6 +1664,11 @@ async function sendMessage() {
 browser.runtime.onMessage.addListener((msg) => {
   if (msg?.target !== 'sidepanel' || msg.action !== 'context_menu_prompt') return;
   acceptContextMenuPrompt(msg.prompt || msg);
+});
+
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'sidepanel' || msg.action !== 'context_menu_tab_navigated') return;
+  clearQueuedForTab(msg.tabId);
 });
 
 browser.runtime.onMessage.addListener((msg) => {

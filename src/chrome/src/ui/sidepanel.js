@@ -369,6 +369,7 @@ const {
   acceptContextMenuPrompt,
   drainQueuedContextMenuPrompts,
   consumePendingContextMenuPrompt,
+  clearQueuedForTab,
 } = createContextMenuPromptHandler({
   getCurrentTabId: () => currentTabId,
   getIsProcessing: () => isProcessing,
@@ -1954,6 +1955,11 @@ let lastTranscript = null;
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.target !== 'sidepanel' || msg.action !== 'context_menu_prompt') return;
   acceptContextMenuPrompt(msg.prompt || msg);
+});
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'sidepanel' || msg.action !== 'context_menu_tab_navigated') return;
+  clearQueuedForTab(msg.tabId);
 });
 
 chrome.runtime.onMessage.addListener((msg) => {

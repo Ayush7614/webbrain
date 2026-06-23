@@ -103,5 +103,23 @@ export function createContextMenuPromptHandler({
     } catch { /* best effort */ }
   }
 
-  return { acceptContextMenuPrompt, drainQueuedContextMenuPrompts, consumePendingContextMenuPrompt };
+  // Called when the background reports that a tab navigated to a new URL.
+  // Drops any in-panel queued/deferred prompts for that tab so they aren't
+  // submitted against the wrong page.
+  function clearQueuedForTab(tabId) {
+    const numericTabId = Number(tabId);
+    if (!Number.isFinite(numericTabId)) return;
+    const keep = (p) => Number(p.tabId) !== numericTabId;
+    queuedContextMenuPrompts.splice(0, queuedContextMenuPrompts.length,
+      ...queuedContextMenuPrompts.filter(keep));
+    deferredContextMenuPrompts.splice(0, deferredContextMenuPrompts.length,
+      ...deferredContextMenuPrompts.filter(keep));
+  }
+
+  return {
+    acceptContextMenuPrompt,
+    drainQueuedContextMenuPrompts,
+    consumePendingContextMenuPrompt,
+    clearQueuedForTab,
+  };
 }
