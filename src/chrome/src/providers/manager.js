@@ -13,6 +13,8 @@ const WEBBRAIN_CLOUD_PROVIDER_ID = 'webbrain_cloud';
 const WEBBRAIN_DEVICE_GUID_KEY = 'webbrainDeviceGuid';
 const OPENROUTER_DEFAULT_MODEL = 'minimax/minimax-m3';
 const OPENROUTER_LEGACY_DEFAULT_MODEL = 'stepfun/step-3.7-flash';
+const SUPPORTED_PROVIDER_TYPES = new Set(['llamacpp', 'openai', 'anthropic', 'anthropic_oauth']);
+const SAFE_PROVIDER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Manages LLM provider instances and persists configuration.
@@ -46,11 +48,11 @@ export class ProviderManager {
     const defaults = this._defaultConfigs();
     const configs = {};
     for (const [id, config] of Object.entries(defaults)) {
-      configs[id] = { ...config, ...(stored[id] || {}) };
+      configs[id] = { ...config, ...this._storedDefaultOverride(config, stored[id]) };
     }
     // Carry over any stored-only entries (e.g. legacy provider ids).
-    for (const id of Object.keys(stored)) {
-      if (!configs[id]) configs[id] = stored[id];
+    for (const [id, config] of Object.entries(stored)) {
+      if (!configs[id] && this._isSupportedProviderConfig(id, config)) configs[id] = config;
     }
     delete configs.webbrain;
     delete configs.openai_subscription;
@@ -361,6 +363,22 @@ export class ProviderManager {
     return migrated;
   }
 
+  _storedDefaultOverride(defaultConfig, storedConfig) {
+    if (!storedConfig || typeof storedConfig !== 'object') return {};
+    const override = { ...storedConfig };
+    // Stored configs are user-writable extension state. A stale/corrupt `type`
+    // on a built-in provider should not replace the known implementation class.
+    if (override.type !== defaultConfig.type) delete override.type;
+    return override;
+  }
+
+  _isSupportedProviderConfig(id, config) {
+    return SAFE_PROVIDER_ID_RE.test(String(id || '')) &&
+      !!config &&
+      typeof config === 'object' &&
+      SUPPORTED_PROVIDER_TYPES.has(config.type);
+  }
+
   /**
    * Provider category for filter UI. Returns one of:
    *   'local'  — runs on the user's machine (llama.cpp, ollama, lmstudio, jan, vllm, sglang)
@@ -445,7 +463,11 @@ export class ProviderManager {
    * Update a provider's configuration.
    */
   async updateProvider(id, config) {
-    const merged = { ...this.providers.get(id)?.config, ...config };
+    if (!this.providers.has(id)) {
+      throw new Error(`Provider not found: ${id}`);
+    }
+    const current = this.providers.get(id).config;
+    const merged = { ...current, ...this._storedDefaultOverride(current, config) };
     this.providers.set(id, this._createProvider(id, merged));
     await this.save();
   }

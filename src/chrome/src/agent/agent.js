@@ -1,4 +1,4 @@
-import { AGENT_TOOLS, AGENT_TOOL_NAMES, COMPACT_TOOL_NAMES, MID_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID } from './tools.js';
+import { AGENT_TOOLS, AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID } from './tools.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT } from './credential-fields.js';
 import { detectProgressAction, formatLedgerSummary, isValidLedgerStatus, ledgerDoneBlock, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
@@ -1089,7 +1089,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    *   { action: 'return',   value: string }   → caller should return immediately
    *   { action: 'abort' }                     → user requested abort mid-batch
    */
-  async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, step = null) {
+  async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null) {
     let didStateChange = false;
     // Set of tools whose side effect can navigate the page. We snapshot the
     // URL before these and re-check after, so we can warn the model when an
@@ -1105,7 +1105,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { action: 'return', value };
       }
 
-      const fnName = tc.function.name;
+      const fnName = tc.function?.name || '';
+      if (!allowedToolNames.has(fnName)) {
+        const error = fnName
+          ? `Tool ${fnName} is not available in the current mode/provider tool set. Use one of the advertised tools instead.`
+          : 'Tool call is missing a function name.';
+        onUpdate('warning', { message: error });
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify({ success: false, denied: true, error }),
+        });
+        continue;
+      }
       let fnArgs;
       try {
         fnArgs = typeof tc.function.arguments === 'string'
@@ -8164,6 +8176,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     const visionAvailable = !!(provider?.supportsVision) || !!(await this.providerManager.getVisionProvider());
     const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, tier: provider.promptTier, visionAvailable });
+    const allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
     let finalResponse = '';
@@ -8312,7 +8325,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // Fallback: if the LLM emitted tool calls as raw text instead of
       // using the structured tool_calls field, try to parse them out.
       if ((!result.toolCalls || result.toolCalls.length === 0) && result.content) {
-        const fallback = this._tryParseToolCallsFromText(result.content, mode === 'act' ? (provider.promptTier === 'compact' ? COMPACT_TOOL_NAMES : provider.promptTier === 'mid' ? MID_TOOL_NAMES : undefined) : undefined);
+        const fallback = this._tryParseToolCallsFromText(result.content, allowedToolNames);
         if (fallback.length > 0) {
           this._logDebug({ type: 'llm_text_fallback_parse', step: steps, parsed: fallback.map(tc => tc.function.name) });
           result.toolCalls = fallback;
@@ -8340,7 +8353,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         const batchResult = await this._executeToolBatch(
-          tabId, result.toolCalls, messages, onUpdate, provider, result.content, steps
+          tabId, result.toolCalls, messages, onUpdate, provider, result.content, allowedToolNames, steps
         );
         if (batchResult.action === 'return') {
           finalResponse = batchResult.value;
@@ -8461,6 +8474,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     const visionAvailable = !!(provider?.supportsVision) || !!(await this.providerManager.getVisionProvider());
     const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, tier: provider.promptTier, visionAvailable });
+    const allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
@@ -8542,7 +8556,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         // Fallback: parse tool calls from streamed text if structured calls are missing.
         if (!hasToolCalls && fullText) {
-          const fallback = this._tryParseToolCallsFromText(fullText, mode === 'act' ? (provider.promptTier === 'compact' ? COMPACT_TOOL_NAMES : provider.promptTier === 'mid' ? MID_TOOL_NAMES : undefined) : undefined);
+          const fallback = this._tryParseToolCallsFromText(fullText, allowedToolNames);
           if (fallback.length > 0) {
             this._logDebug({ type: 'llm_text_fallback_parse', step: steps, parsed: fallback.map(tc => tc.function.name) });
             hasToolCalls = true;
@@ -8567,7 +8581,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           });
 
           const batchResult = await this._executeToolBatch(
-            tabId, toolCalls, messages, onUpdate, provider, fullText, steps
+            tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps
           );
           if (batchResult.action === 'return') {
             return batchResult.value;

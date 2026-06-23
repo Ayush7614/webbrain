@@ -382,7 +382,7 @@ function openSidePanelForContextMenu(tab) {
   ensureWebBrainGroup(tab).catch(() => {});
 }
 
-function handleContextMenuAsk(info, tab) {
+async function handleContextMenuAsk(info, tab) {
   if (info?.menuItemId !== CONTEXT_MENU_ASK_SELECTION_ID || !tab?.id) return;
   const text = buildContextMenuPrompt(info.selectionText);
   if (!text) return;
@@ -394,13 +394,15 @@ function handleContextMenuAsk(info, tab) {
     createdAt: Date.now(),
   };
 
-  contextMenuStorage.save(tab.id, payload).catch(() => {});
+  try {
+    await contextMenuStorage.save(tab.id, payload);
+  } catch {}
   openSidePanelForContextMenu(tab);
   notifySidePanelOfContextMenuPrompt(payload);
 }
 
 chrome.contextMenus?.onClicked?.addListener?.((info, tab) => {
-  handleContextMenuAsk(info, tab);
+  handleContextMenuAsk(info, tab).catch(() => {});
 });
 
 // (See the panel visibility comment above for why we no longer

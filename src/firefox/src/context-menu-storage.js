@@ -18,31 +18,40 @@ const CONTEXT_MENU_PENDING_PREFIX = 'contextMenuPrompt:';
  */
 export function createContextMenuStorage(getStore) {
   const pending = new Map();
-  const writes = new Map();
+  const operations = new Map();
 
   function key(tabId) {
     return `${CONTEXT_MENU_PENDING_PREFIX}${tabId}`;
   }
 
-  async function waitForWrite(tabId) {
-    const write = writes.get(Number(tabId));
-    if (!write) return;
-    try { await write; } catch { /* best effort */ }
+  function enqueue(tabId, fn) {
+    const numericTabId = Number(tabId);
+    if (!Number.isFinite(numericTabId)) return Promise.resolve({ ok: true });
+    const previous = operations.get(numericTabId) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(() => fn(numericTabId));
+    operations.set(numericTabId, operation);
+    operation.finally(() => {
+      if (operations.get(numericTabId) === operation) operations.delete(numericTabId);
+    }).catch(() => {});
+    return operation;
+  }
+
+  async function waitForOperation(tabId) {
+    const operation = operations.get(Number(tabId));
+    if (!operation) return;
+    try { await operation; } catch { /* best effort */ }
   }
 
   async function save(tabId, payload) {
-    if (tabId == null || !payload) return;
-    const numericTabId = Number(tabId);
-    pending.set(numericTabId, payload);
-    const store = getStore();
-    if (!store) return;
-    const write = store.set({ [key(numericTabId)]: payload }).catch(() => {});
-    writes.set(numericTabId, write);
-    try {
-      await write;
-    } finally {
-      if (writes.get(numericTabId) === write) writes.delete(numericTabId);
-    }
+    if (tabId == null || !payload) return { ok: true };
+    return enqueue(tabId, async (numericTabId) => {
+      pending.set(numericTabId, payload);
+      const store = getStore();
+      if (store) {
+        try { await store.set({ [key(numericTabId)]: payload }); } catch { /* best effort */ }
+      }
+      return { ok: true };
+    });
   }
 
   async function consume(tabId) {
@@ -50,7 +59,7 @@ export function createContextMenuStorage(getStore) {
     if (!Number.isFinite(numericTabId)) return { ok: true, prompt: null };
     const k = key(numericTabId);
     const store = getStore();
-    await waitForWrite(numericTabId);
+    await waitForOperation(numericTabId);
     let prompt = pending.get(numericTabId) || null;
     if (!prompt && store) {
       try {
@@ -68,30 +77,34 @@ export function createContextMenuStorage(getStore) {
   }
 
   async function clear(tabId, promptId) {
-    const numericTabId = Number(tabId);
-    if (!Number.isFinite(numericTabId)) return { ok: true };
-    const k = key(numericTabId);
-    const store = getStore();
-    await waitForWrite(numericTabId);
-    const p = pending.get(numericTabId);
-    if (!promptId || p?.id === promptId) pending.delete(numericTabId);
-    if (store) {
-      try {
-        const stored = await store.get(k);
-        const storedPrompt = stored?.[k] || null;
-        if (!promptId || storedPrompt?.id === promptId) await store.remove(k);
-      } catch { /* best effort */ }
-    }
-    return { ok: true };
+    return enqueue(tabId, async (numericTabId) => {
+      const k = key(numericTabId);
+      const store = getStore();
+      const p = pending.get(numericTabId);
+      if (!promptId || p?.id === promptId) pending.delete(numericTabId);
+      if (store) {
+        try {
+          const stored = await store.get(k);
+          const storedPrompt = stored?.[k] || null;
+          if (!promptId || storedPrompt?.id === promptId) await store.remove(k);
+        } catch { /* best effort */ }
+      }
+      return { ok: true };
+    });
   }
 
   // Call on tab close or navigation to purge in-memory state and storage.
-  // Awaits any in-flight save() so the remove() always wins the race.
+  // Queues behind earlier operations so cleanup wins over older saves, while
+  // later saves for the same tab wait their turn and remain intact.
   async function cleanup(tabId) {
-    const numericTabId = Number(tabId);
-    pending.delete(numericTabId);
-    await waitForWrite(numericTabId);
-    getStore()?.remove(key(numericTabId)).catch(() => {});
+    return enqueue(tabId, async (numericTabId) => {
+      pending.delete(numericTabId);
+      const store = getStore();
+      if (store) {
+        try { await store.remove(key(numericTabId)); } catch { /* best effort */ }
+      }
+      return { ok: true };
+    });
   }
 
   return { key, save, consume, clear, cleanup };

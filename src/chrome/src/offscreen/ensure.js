@@ -35,17 +35,24 @@ const OFFSCREEN_JUSTIFICATION =
 let ready = false;
 let inflight = null;
 
+async function offscreenDocumentExists() {
+  try {
+    return await chrome.offscreen.hasDocument();
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureOffscreen() {
-  if (ready) return;
   if (inflight) return inflight;
   inflight = (async () => {
-    try {
-      const exists = await chrome.offscreen.hasDocument();
-      if (exists) {
-        ready = true;
-        return;
-      }
-    } catch { /* hasDocument missing on very old Chrome — fall through */ }
+    const exists = await offscreenDocumentExists();
+    if (exists === true) {
+      ready = true;
+      return;
+    }
+    if (exists === null && ready) return;
+    ready = false;
     try {
       await chrome.offscreen.createDocument({
         url: OFFSCREEN_URL,

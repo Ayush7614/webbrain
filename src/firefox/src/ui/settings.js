@@ -8,7 +8,7 @@ import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '16.0.0';
+const EXT_VERSION = '16.0.1';
 
 const providersContainer = document.getElementById('providers');
 const verboseToggle = document.getElementById('toggle-verbose');
@@ -119,6 +119,8 @@ if (languageSelect) {
 
 let providersData = {};
 let activeProviderId = '';
+let providerActivationRequestId = 0;
+let requestedActiveProviderId = '';
 let authToken = '';
 let authEmail = '';
 let authDefaultModel = '';
@@ -1292,7 +1294,15 @@ async function loadProviderModels(id) {
   const statusEl = document.querySelector(`.load-models-status[data-provider="${id}"]`);
   const datalistEl = document.getElementById(`models-${id}`);
   if (!datalistEl) return;
-  await saveProvider(id, { showFlash: false });
+  try {
+    await saveProvider(id, { showFlash: false });
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = e.message;
+      statusEl.style.color = 'var(--danger, #c33)';
+    }
+    return;
+  }
   if (statusEl) statusEl.textContent = t('st.providers.loading');
   const res = await sendToBackground('list_provider_models', { providerId: id });
   if (res.ok) {
@@ -1311,6 +1321,15 @@ async function loadProviderModels(id) {
   }
 }
 
+function setProviderTestResult(id, className, message, color) {
+  const testEl = document.getElementById(`test-${id}`);
+  if (!testEl) return null;
+  testEl.className = `test-result show${className ? ` ${className}` : ''}`;
+  testEl.textContent = message;
+  if (color) testEl.style.color = color;
+  return testEl;
+}
+
 async function saveProvider(id, { showFlash = true } = {}) {
   const inputs = document.querySelectorAll(`input[data-provider="${id}"], select[data-provider="${id}"]`);
   const config = {};
@@ -1318,33 +1337,41 @@ async function saveProvider(id, { showFlash = true } = {}) {
     config[input.dataset.key] = providerInputValue(input);
   });
 
-  await sendToBackground('update_provider', { providerId: id, config });
+  try {
+    await sendToBackground('update_provider', { providerId: id, config });
+  } catch (e) {
+    if (showFlash) setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
+    throw e;
+  }
+  if (providersData[id]) Object.assign(providersData[id], config);
 
   if (showFlash) {
-    const testEl = document.getElementById(`test-${id}`);
-    testEl.className = 'test-result show ok';
-    testEl.textContent = t('st.providers.saved');
-    setTimeout(() => testEl.classList.remove('show'), 2000);
+    const testEl = setProviderTestResult(id, 'ok', t('st.providers.saved'));
+    if (testEl) setTimeout(() => testEl.classList.remove('show'), 2000);
   }
 }
 
 async function testProvider(id) {
   // Skip the save-flash so its 2s auto-hide doesn't blank out the test result
   // mid-flight on slow endpoints.
-  await saveProvider(id, { showFlash: false });
+  try {
+    await saveProvider(id, { showFlash: false });
+  } catch (e) {
+    setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
+    return;
+  }
 
-  const testEl = document.getElementById(`test-${id}`);
-  testEl.className = 'test-result show';
-  testEl.textContent = t('st.providers.testing');
-  testEl.style.color = 'var(--text2)';
+  if (!setProviderTestResult(id, '', t('st.providers.testing'), 'var(--text2)')) return;
 
-  const res = await sendToBackground('test_provider', { providerId: id });
-  if (res.ok) {
-    testEl.className = 'test-result show ok';
-    testEl.textContent = t('st.providers.connected', { model: res.model || t('st.providers.unknown_model') });
-  } else {
-    testEl.className = 'test-result show fail';
-    testEl.textContent = t('st.providers.failed', { error: res.error });
+  try {
+    const res = await sendToBackground('test_provider', { providerId: id });
+    if (res.ok) {
+      setProviderTestResult(id, 'ok', t('st.providers.connected', { model: res.model || t('st.providers.unknown_model') }));
+    } else {
+      setProviderTestResult(id, 'fail', t('st.providers.failed', { error: res.error }));
+    }
+  } catch (e) {
+    setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
   }
 }
 
@@ -1359,7 +1386,16 @@ function syncInputsIntoProvidersData() {
 
 async function activateProvider(id) {
   syncInputsIntoProvidersData();
+  requestedActiveProviderId = id;
+  const requestId = ++providerActivationRequestId;
   await sendToBackground('set_active_provider', { providerId: id });
+  if (requestId !== providerActivationRequestId || requestedActiveProviderId !== id) {
+    const latestProviderId = requestedActiveProviderId;
+    if (latestProviderId) {
+      sendToBackground('set_active_provider', { providerId: latestProviderId }).catch(() => {});
+    }
+    return;
+  }
   activeProviderId = id;
   renderProviders();
 }

@@ -698,6 +698,9 @@ export class ScheduledJobManager {
   async cancelJob(jobId, reason = 'cancelled') {
     const jobs = await this._getJobs();
     const existing = jobs.find((it) => it.id === jobId);
+    if (existing && !['pending', 'queued', 'paused', 'running', 'needs_user_input'].includes(existing.status)) {
+      return { ok: false, error: `Cannot cancel a ${existing.status || 'terminal'} scheduled job.`, job: summarizeScheduledJob(existing) };
+    }
     await this._clearAlarm(jobId);
     this._waitingForInput.delete(jobId);
     if (existing && ['running', 'needs_user_input'].includes(existing.status)) {
@@ -706,7 +709,9 @@ export class ScheduledJobManager {
         try { this.agent.abort(tabId); } catch {}
       }
     }
-    const job = await this._updateJob(jobId, () => ({ status: 'cancelled', lastError: reason, pendingClarify: null }));
+    const job = await this._updateJobIf(jobId, (prev) => (
+      ['pending', 'queued', 'paused', 'running', 'needs_user_input'].includes(prev.status)
+    ), () => ({ status: 'cancelled', lastError: reason, pendingClarify: null }));
     if (job) this._emit(job, 'cancelled');
     return { ok: !!job, job: summarizeScheduledJob(job) };
   }
@@ -738,6 +743,7 @@ export class ScheduledJobManager {
       const idx = jobs.findIndex((it) => it.id === jobId);
       if (idx < 0) return null;
       const existing = jobs[idx];
+      if (!['pending', 'queued', 'running', 'needs_user_input'].includes(existing.status)) return null;
       if (['running', 'needs_user_input'].includes(existing.status)) {
         liveTabId = existing.tabId || existing.target?.tabId || null;
         this._waitingForInput.delete(jobId);
@@ -760,7 +766,7 @@ export class ScheduledJobManager {
   }
 
   async resumeJob(jobId) {
-    const job = await this._updateJob(jobId, (prev) => ({
+    const job = await this._updateJobIf(jobId, (prev) => prev.status === 'paused', (prev) => ({
       status: 'pending',
       nextRunAt: prev.nextRunAt || prev.scheduledAt || iso(this.now() + MIN_DELAY_MS),
       queueDeferrals: 0,
@@ -779,7 +785,7 @@ export class ScheduledJobManager {
         error: 'Scheduled run is waiting for your answer. Reply to the prompt or cancel the run.',
       };
     }
-    const job = await this._updateJob(jobId, () => ({
+    const job = await this._updateJobIf(jobId, (prev) => ['pending', 'queued'].includes(prev.status), () => ({
       status: 'pending',
       nextRunAt: iso(this.now() + 1000),
       queueDeferrals: 0,

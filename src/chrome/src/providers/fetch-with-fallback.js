@@ -112,6 +112,7 @@ export async function fetchWithFallback(url, options = {}) {
 
       // Race the proxy round-trip against the same timeout, since
       // chrome.runtime.sendMessage has no native cancellation.
+      let proxyTimeoutId = null;
       const proxyResult = await Promise.race([
         chrome.runtime.sendMessage({
           type: 'offscreen-fetch',
@@ -122,12 +123,14 @@ export async function fetchWithFallback(url, options = {}) {
           stream: false,
         }),
         new Promise((_, reject) =>
-          setTimeout(
+          proxyTimeoutId = setTimeout(
             () => reject(new Error(`offscreen proxy timed out after ${timeoutMs}ms`)),
             timeoutMs
           )
         ),
-      ]);
+      ]).finally(() => {
+        if (proxyTimeoutId != null) clearTimeout(proxyTimeoutId);
+      });
 
       if (proxyResult.error) {
         throw new Error(

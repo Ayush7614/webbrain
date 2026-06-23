@@ -8,6 +8,10 @@
   const buttons = document.querySelectorAll('.tab-btn');
   const panels = document.querySelectorAll('.tab-panel');
 
+  function hasTab(name) {
+    return Array.from(buttons).some((b) => b.dataset.tab === name);
+  }
+
   function activate(name) {
     let matched = false;
     buttons.forEach((b) => {
@@ -32,7 +36,7 @@
   let initial = 'providers';
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved && document.querySelector(`.tab-btn[data-tab="${saved}"]`)) {
+    if (saved && hasTab(saved)) {
       initial = saved;
     }
   } catch (_) {}
@@ -42,7 +46,7 @@
   // was previously named "vision" — old #vision deep-links no longer match
   // anything and silently fall back to the default tab, which is fine.
   const hash = (location.hash || '').replace('#', '');
-  if (hash && document.querySelector(`.tab-btn[data-tab="${hash}"]`)) {
+  if (hash && hasTab(hash)) {
     initial = hash;
   }
 
