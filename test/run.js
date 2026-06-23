@@ -2182,6 +2182,34 @@ test('sidepanel drops stale provider selection and connection checks', () => {
   }
 });
 
+test('sidepanel scopes allow-api override to the tab conversation', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /const apiMutationsAllowedByTab = new Map\(\);/, `${label}: /allow-api should be tracked per tab`);
+    assert.match(panel, /function isApiMutationsAllowedForTab\(tabId\) \{[\s\S]*?apiMutationsAllowedByTab\.get\(tabId\) === true;[\s\S]*?\}/, `${label}: /allow-api per-tab read helper missing`);
+    assert.match(panel, /function syncApiMutationsAllowedForCurrentTab\(\) \{[\s\S]*?apiMutationsAllowed = isApiMutationsAllowedForTab\(currentTabId\);[\s\S]*?updateApiBadge\(\);[\s\S]*?\}/, `${label}: tab switches should resync /allow-api badge state`);
+
+    const switchStart = panel.indexOf('function switchToTab(newTabId)');
+    assert.notEqual(switchStart, -1, `${label}: switchToTab missing`);
+    const switchBody = panel.slice(switchStart, panel.indexOf('refreshScheduledJobs();', switchStart));
+    assert.match(switchBody, /currentTabId = newTabId;[\s\S]*?syncApiMutationsAllowedForCurrentTab\(\);/, `${label}: switching tabs should load the selected tab's /allow-api state`);
+
+    const resetStart = panel.indexOf('function renderClearedConversationForTab(tabId)');
+    assert.notEqual(resetStart, -1, `${label}: renderClearedConversationForTab missing`);
+    const resetBody = panel.slice(resetStart, panel.indexOf('refreshScheduledJobs();', resetStart));
+    assert.match(resetBody, /clearCachedTabChat\(tabId\);[\s\S]*?setApiMutationsAllowedForTab\(tabId, false\);[\s\S]*?if \(currentTabId !== tabId\) return;/, `${label}: reset should clear the target tab's /allow-api state before visible-tab guards`);
+
+    const allowIdx = panel.indexOf('// /allow-api');
+    assert.notEqual(allowIdx, -1, `${label}: /allow-api parser missing`);
+    const allowBody = panel.slice(allowIdx, panel.indexOf('// /compact', allowIdx));
+    assert.match(allowBody, /const tabId = currentTabId;[\s\S]*?const wasAlreadyAllowed = isApiMutationsAllowedForTab\(tabId\);[\s\S]*?setApiMutationsAllowedForTab\(tabId, true\);/, `${label}: /allow-api should enable only the current tab conversation`);
+    assert.doesNotMatch(allowBody, /apiMutationsAllowed = true;/, `${label}: /allow-api should not enable a global mutation override`);
+  }
+});
+
 test('sidepanel scopes async tab commands to the original tab', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],

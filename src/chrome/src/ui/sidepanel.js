@@ -475,11 +475,10 @@ function clearCachedTabChat(tabId) {
 
 function renderClearedConversationForTab(tabId) {
   clearCachedTabChat(tabId);
+  setApiMutationsAllowedForTab(tabId, false);
   if (currentTabId !== tabId) return;
   messagesEl.innerHTML = '';
   addMessage('system', t('sp.cleared_message'));
-  apiMutationsAllowed = false;
-  updateApiBadge();
   refreshScheduledJobs();
   refreshRecommendedActions();
 }
@@ -1340,6 +1339,7 @@ async function switchToTab(newTabId) {
   }
 
   currentTabId = newTabId;
+  syncApiMutationsAllowedForCurrentTab();
 
   // Restore new tab's chat from memory or storage.
   const html = await loadTabChat(newTabId);
@@ -1803,6 +1803,26 @@ function handleInput() {
 // Reset on clearConversation. Visible to the user in the chat as a system
 // message and as a sticky badge near the input area.
 let apiMutationsAllowed = false;
+const apiMutationsAllowedByTab = new Map();
+
+function isApiMutationsAllowedForTab(tabId) {
+  return tabId != null && apiMutationsAllowedByTab.get(tabId) === true;
+}
+
+function setApiMutationsAllowedForTab(tabId, allowed) {
+  if (tabId == null) return;
+  if (allowed) {
+    apiMutationsAllowedByTab.set(tabId, true);
+  } else {
+    apiMutationsAllowedByTab.delete(tabId);
+  }
+  if (currentTabId === tabId) syncApiMutationsAllowedForCurrentTab();
+}
+
+function syncApiMutationsAllowedForCurrentTab() {
+  apiMutationsAllowed = isApiMutationsAllowedForTab(currentTabId);
+  updateApiBadge();
+}
 
 /**
  * Parse leading slash commands out of the user's message.
@@ -1843,9 +1863,9 @@ async function parseSlashCommands(text) {
   // /allow-api — enable API mutation override
   const mApi = text.match(/^\/allow-api\b\s*/i);
   if (mApi) {
-    const wasAlreadyAllowed = apiMutationsAllowed;
-    apiMutationsAllowed = true;
-    updateApiBadge();
+    const tabId = currentTabId;
+    const wasAlreadyAllowed = isApiMutationsAllowedForTab(tabId);
+    setApiMutationsAllowedForTab(tabId, true);
     if (!wasAlreadyAllowed) {
       addMessage('system', t('sp.api.enabled_html'));
     }
