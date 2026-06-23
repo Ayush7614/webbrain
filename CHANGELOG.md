@@ -4,6 +4,11 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / `manifest.json` version.
 
+## [15.5.0] - 2026-06-23
+
+### Changed
+- Updated release metadata, Settings subtitle versions, architecture docs, Chrome / Firefox manifests, and package versions for 15.5.0.
+
 ## [15.4.0] - 2026-06-23
 
 ### Added
