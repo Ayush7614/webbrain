@@ -3027,6 +3027,18 @@ test('settings waits for immediate preference writes and theme persistence', () 
       /export async function applyMode\(mode, opts = \{\}\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ themeMode: mode \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}/,
       `${label}: shared theme helper should await storage persistence`,
     );
+
+    const i18n = fs.readFileSync(path.join(ROOT, label === 'chrome' ? 'src/chrome/src/ui/i18n.js' : 'src/firefox/src/ui/i18n.js'), 'utf8');
+    assert.match(
+      i18n,
+      /export async function setLocale\(code\) \{[\s\S]*?await api\?\.storage\?\.local\?\.set\?\.?\(\{ wbLocale: code \}\);[\s\S]*?applyDOMTranslations\(document\);/,
+      `${label}: locale helper should await storage persistence before broadcasting`,
+    );
+    assert.match(
+      settings,
+      /languageSelect\.addEventListener\('change', async \(\) => \{[\s\S]*?await setLocale\(languageSelect\.value\);[\s\S]*?renderSubtitle\(\);/,
+      `${label}: settings language change should await locale persistence`,
+    );
   }
 });
 
@@ -3165,6 +3177,20 @@ test('sidepanel awaits recommended-actions collapse persistence', () => {
       panel,
       /recommendedActionsToggleEl\.addEventListener\('click', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ \[RECOMMENDED_ACTIONS_COLLAPSED_KEY\]: !recommendedActionsCollapsed \}\)\.catch\(\(\) => \{\}\);[\s\S]*?setRecommendedActionsCollapsed\(!recommendedActionsCollapsed, \{ persist: false \}\);[\s\S]*?\}\);/,
       `${label}: recommended-actions collapse should await persistence`,
+    );
+  }
+});
+
+test('sidepanel language changes await locale persistence', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /languageSelect\.addEventListener\('change', async \(\) => \{[\s\S]*?await setLocale\(languageSelect\.value\);[\s\S]*?applyDOMTranslations\(document\);/,
+      `${label}: sidepanel language change should await locale persistence`,
     );
   }
 });

@@ -3406,8 +3406,8 @@ if (languageSelect) {
     .map((l) => `<option value="${l.code}">${l.label}</option>`)
     .join('');
   languageSelect.value = getLocale();
-  languageSelect.addEventListener('change', () => {
-    setLocale(languageSelect.value);
+  languageSelect.addEventListener('change', async () => {
+    await setLocale(languageSelect.value);
     applyDOMTranslations(document);
     updateInputPlaceholder();
   });
