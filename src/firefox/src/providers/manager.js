@@ -6,6 +6,7 @@ const WEBBRAIN_CLOUD_PROVIDER_ID = 'webbrain_cloud';
 const WEBBRAIN_DEVICE_GUID_KEY = 'webbrainDeviceGuid';
 const OPENROUTER_DEFAULT_MODEL = 'minimax/minimax-m3';
 const OPENROUTER_LEGACY_DEFAULT_MODEL = 'stepfun/step-3.7-flash';
+const SUPPORTED_PROVIDER_TYPES = new Set(['llamacpp', 'openai', 'anthropic', 'anthropic_oauth']);
 
 /**
  * Manages LLM provider instances and persists configuration.
@@ -34,10 +35,10 @@ export class ProviderManager {
     const defaults = this._defaultConfigs();
     const configs = {};
     for (const [id, config] of Object.entries(defaults)) {
-      configs[id] = { ...config, ...(stored[id] || {}) };
+      configs[id] = { ...config, ...this._storedDefaultOverride(config, stored[id]) };
     }
-    for (const id of Object.keys(stored)) {
-      if (!configs[id]) configs[id] = stored[id];
+    for (const [id, config] of Object.entries(stored)) {
+      if (!configs[id] && this._isSupportedProviderConfig(config)) configs[id] = config;
     }
     delete configs.webbrain;
     delete configs.openai_subscription;
@@ -340,6 +341,19 @@ export class ProviderManager {
       };
     }
     return migrated;
+  }
+
+  _storedDefaultOverride(defaultConfig, storedConfig) {
+    if (!storedConfig || typeof storedConfig !== 'object') return {};
+    const override = { ...storedConfig };
+    // Stored configs are user-writable extension state. A stale/corrupt `type`
+    // on a built-in provider should not replace the known implementation class.
+    if (override.type !== defaultConfig.type) delete override.type;
+    return override;
+  }
+
+  _isSupportedProviderConfig(config) {
+    return !!config && typeof config === 'object' && SUPPORTED_PROVIDER_TYPES.has(config.type);
   }
 
   /**

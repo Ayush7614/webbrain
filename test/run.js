@@ -4583,6 +4583,94 @@ test('listProviderModels sends saved API keys for auth-enabled OpenAI-compatible
   }
 });
 
+test('ProviderManager load ignores unsupported stored provider configs', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+  const validGuid = '11111111-1111-4111-8111-111111111111';
+
+  function makeRuntime(storageData) {
+    const local = {
+      async get(keys) {
+        if (Array.isArray(keys)) {
+          const out = {};
+          for (const key of keys) out[key] = storageData[key];
+          return out;
+        }
+        if (typeof keys === 'string') return { [keys]: storageData[keys] };
+        return { ...storageData };
+      },
+      async set(patch) {
+        Object.assign(storageData, patch);
+      },
+    };
+    return {
+      storage: { local },
+      runtime: {
+        id: 'test-runtime',
+        getPlatformInfo(cb) {
+          const info = { os: 'test', arch: 'x64', nacl_arch: 'x64' };
+          if (typeof cb === 'function') cb(info);
+          return Promise.resolve(info);
+        },
+      },
+    };
+  }
+
+  try {
+    for (const [label, PM, runtimeKey] of [
+      ['chrome', ProviderManagerCh, 'chrome'],
+      ['firefox', ProviderManagerFx, 'browser'],
+    ]) {
+      const storageData = {
+        webbrainDeviceGuid: validGuid,
+        activeProvider: 'bad_legacy',
+        providers: {
+          openai: {
+            type: 'not-a-provider',
+            apiKey: `${label}-kept-key`,
+            model: `${label}-kept-model`,
+          },
+          custom_proxy: {
+            type: 'openai',
+            category: 'router',
+            label: 'Custom proxy',
+            providerName: 'custom-proxy',
+            baseUrl: 'https://models.example.test/v1',
+            model: 'custom-model',
+            apiKey: 'custom-key',
+            enabled: true,
+          },
+          bad_legacy: {
+            type: 'removed-provider',
+            label: 'Removed provider',
+            enabled: true,
+          },
+          missing_type: {
+            label: 'Missing type',
+            enabled: true,
+          },
+        },
+      };
+      globalThis[runtimeKey] = makeRuntime(storageData);
+
+      const mgr = new PM();
+      await mgr.load();
+
+      assert.equal(mgr.activeProviderId, 'webbrain_cloud', `${label}: invalid active provider should fall back`);
+      assert.equal(mgr.providers.has('bad_legacy'), false, `${label}: unsupported stored-only provider should be dropped`);
+      assert.equal(mgr.providers.has('missing_type'), false, `${label}: typeless stored-only provider should be dropped`);
+      assert.equal(mgr.providers.get('openai')?.config.type, 'openai', `${label}: built-in type should stay pinned`);
+      assert.equal(mgr.providers.get('openai')?.config.apiKey, `${label}-kept-key`, `${label}: built-in overrides should survive`);
+      assert.equal(mgr.providers.get('openai')?.config.model, `${label}-kept-model`, `${label}: built-in model should survive`);
+      assert.equal(mgr.providers.get('custom_proxy')?.config.type, 'openai', `${label}: supported custom provider should load`);
+      assert.equal(mgr.providers.get('custom_proxy')?.config.model, 'custom-model', `${label}: custom provider config should survive`);
+    }
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.browser = originalBrowser;
+  }
+});
+
 test('_defaultConfigs: every entry carries an explicit category', () => {
   // Walk the actual default config table on each platform and assert
   // each entry has a category field. Catches "I added a provider but
