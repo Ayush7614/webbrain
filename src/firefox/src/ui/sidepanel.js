@@ -762,11 +762,12 @@ function addScheduleField(form, labelText, control) {
   return label;
 }
 
-function renderScheduleComposer(prefillPrompt = '') {
+async function renderScheduleComposer(prefillPrompt = '') {
   const msgEl = addMessage('system', t('sp.schedule_form.opened'));
   const content = msgEl.querySelector('.message-content');
   const form = document.createElement('form');
   form.className = 'schedule-composer';
+  const initialScheduleUrl = await getCurrentScheduleUrl();
 
   const titleInput = document.createElement('input');
   titleInput.type = 'text';
@@ -822,7 +823,10 @@ function renderScheduleComposer(prefillPrompt = '') {
   urlInput.type = 'url';
   urlInput.placeholder = 'https://example.com/';
   const urlField = addScheduleField(form, t('sp.schedule_form.target_url'), urlInput);
-  let targetTypeTouched = false;
+  if (isHttpScheduleUrl(initialScheduleUrl)) {
+    urlInput.value = initialScheduleUrl;
+    targetType.value = 'url';
+  }
 
   const modeInput = document.createElement('select');
   modeInput.innerHTML = `<option value="act">${escapeHtml(t('sp.mode.act'))}</option><option value="ask">${escapeHtml(t('sp.mode.ask'))}</option>`;
@@ -855,19 +859,8 @@ function renderScheduleComposer(prefillPrompt = '') {
   }
   scheduleType.addEventListener('change', updateVisibility);
   timeMode.addEventListener('change', updateVisibility);
-  targetType.addEventListener('change', () => {
-    targetTypeTouched = true;
-    updateVisibility();
-  });
+  targetType.addEventListener('change', updateVisibility);
   updateVisibility();
-  getCurrentScheduleUrl().then((url) => {
-    if (!isHttpScheduleUrl(url)) return;
-    if (!urlInput.value) urlInput.value = url;
-    if (!targetTypeTouched) {
-      targetType.value = 'url';
-      updateVisibility();
-    }
-  }).catch(() => {});
 
   cancel.addEventListener('click', () => msgEl.remove());
 
