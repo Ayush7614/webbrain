@@ -1147,17 +1147,17 @@ function renderProviderFilterBar() {
     btn.className = `provider-filter-pill${providerFilter === f.key ? ' active' : ''}`;
     btn.dataset.filter = f.key;
     btn.textContent = t(f.labelKey);
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       if (providerFilter === f.key) return;
-    // Snapshot whatever the user has typed but not yet saved BEFORE we
-    // rebuild the DOM — otherwise input values for the currently-rendered
-    // cards are lost (e.g. typed an API key, then clicked a filter pill
-    // to compare two providers).
-    syncInputsIntoProvidersData();
-    providerFilter = f.key;
-    void browser.storage.local.set({ providerFilter: f.key }).catch(() => {});
-    renderProviders();
-  });
+      // Snapshot whatever the user has typed but not yet saved BEFORE we
+      // rebuild the DOM — otherwise input values for the currently-rendered
+      // cards are lost (e.g. typed an API key, then clicked a filter pill
+      // to compare two providers).
+      syncInputsIntoProvidersData();
+      providerFilter = f.key;
+      await browser.storage.local.set({ providerFilter: f.key }).catch(() => {});
+      renderProviders();
+    });
     bar.appendChild(btn);
   }
   return bar;

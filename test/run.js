@@ -3017,8 +3017,8 @@ test('settings waits for immediate preference writes and theme persistence', () 
     );
     assert.match(
       settings,
-      /try \{[\s\S]*?void (chrome|browser)\.storage\.local\.set\(\{ providerFilter: f\.key \}\)\.catch\(\(\) => \{\}\);[\s\S]*?renderProviders\(\);/,
-      `${label}: provider filter changes should still persist even if the render rebuilds immediately`,
+      /btn\.addEventListener\('click', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ providerFilter: f\.key \}\)\.catch\(\(\) => \{\}\);[\s\S]*?renderProviders\(\);[\s\S]*?\}\);/,
+      `${label}: provider filter clicks should await persistence before rerendering`,
     );
 
     const theme = fs.readFileSync(path.join(ROOT, label === 'chrome' ? 'src/chrome/src/ui/theme.js' : 'src/firefox/src/ui/theme.js'), 'utf8');
