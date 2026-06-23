@@ -500,8 +500,26 @@ document.getElementById('btn-clear-all').addEventListener('click', async () => {
 });
 
 // Re-render on locale change so already-rendered content updates in place.
-document.addEventListener('wb-locale-changed', () => {
-  refresh();
+document.addEventListener('wb-locale-changed', async () => {
+  await refresh();
+  const compareBtn = document.getElementById('btn-compare');
+  compareBtn.textContent = compareMode ? t('tr.btn.compare.picking') : t('tr.btn.compare');
+  if (compareMode) {
+    if (compareIds.length === 2) {
+      renderCompare(compareIds[0], compareIds[1]);
+    } else {
+      mainPane.classList.remove('compare-mode');
+      replaceTimelineObjectUrls(new Set());
+      const textKey = compareIds.length === 0 ? 'tr.compare_mode.hint' : 'tr.compare_mode.picked';
+      const textParams = compareIds.length === 0 ? undefined : { n: compareIds.length };
+      mainPane.innerHTML = `<div id="empty-state"><div><p style="font-size:14px;">${escapeHtml(t('tr.compare_mode.title'))}</p><p style="color:var(--text3);">${escapeHtml(t(textKey, textParams))}</p></div></div>`;
+    }
+  } else if (selectedRunId) {
+    renderRun(selectedRunId);
+  } else {
+    replaceTimelineObjectUrls(new Set());
+    mainPane.innerHTML = `<div id="empty-state"><div><p style="font-size:14px;">${escapeHtml(t('tr.empty.title'))}</p></div></div>`;
+  }
 });
 
 filterText.addEventListener('input', renderList);

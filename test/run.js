@@ -2302,6 +2302,24 @@ test('trace viewer toolbar actions use a captured run selection across awaits', 
   }
 });
 
+test('trace viewer locale changes rerender the active pane', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+    const listenerStart = traces.indexOf("document.addEventListener('wb-locale-changed', async () => {");
+    assert.notEqual(listenerStart, -1, `${label}: locale-change handler should be async`);
+    const listenerBody = traces.slice(listenerStart, traces.indexOf("filterText.addEventListener('input'", listenerStart));
+    assert.match(listenerBody, /await refresh\(\);/, `${label}: locale changes should refresh translated run-list UI before rerendering`);
+    assert.match(listenerBody, /compareBtn\.textContent = compareMode \? t\('tr\.btn\.compare\.picking'\) : t\('tr\.btn\.compare'\);/, `${label}: locale changes should update the compare button label`);
+    assert.match(listenerBody, /if \(compareMode\) \{[\s\S]*?if \(compareIds\.length === 2\) \{[\s\S]*?renderCompare\(compareIds\[0\], compareIds\[1\]\);/, `${label}: locale changes should rerender active compare panes`);
+    assert.match(listenerBody, /const textKey = compareIds\.length === 0 \? 'tr\.compare_mode\.hint' : 'tr\.compare_mode\.picked';[\s\S]*?mainPane\.innerHTML = `<div id="empty-state">/, `${label}: locale changes should rerender compare picking empty states`);
+    assert.match(listenerBody, /\} else if \(selectedRunId\) \{[\s\S]*?renderRun\(selectedRunId\);/, `${label}: locale changes should rerender the selected run pane`);
+    assert.match(listenerBody, /\} else \{[\s\S]*?replaceTimelineObjectUrls\(new Set\(\)\);[\s\S]*?tr\.empty\.title/, `${label}: locale changes should rerender the default empty state`);
+  }
+});
+
 test('sidepanel export keeps blob URLs alive until the download is committed', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
