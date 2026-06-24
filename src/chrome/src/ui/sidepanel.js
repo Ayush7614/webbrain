@@ -2461,7 +2461,11 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   switch (type) {
     case 'thinking':
-      showActivity(t('sp.activity.thinking_step', { step: data.step }));
+      if (data?.note) {
+        showActivity(String(data.note));
+      } else {
+        showActivity(t('sp.activity.thinking_step', { step: data.step }));
+      }
       break;
 
     case 'text':
@@ -2743,10 +2747,7 @@ function renderPlanReviewCard(data) {
   titleEl.textContent = typeof t === 'function' ? t('sp.plan.title') : 'Review plan';
   card.appendChild(titleEl);
 
-  const bodyEl = document.createElement('pre');
-  bodyEl.className = 'plan-review-body';
-  bodyEl.textContent = String(data.markdown || data.plan?.summary || '').slice(0, 6000);
-  card.appendChild(bodyEl);
+  const originalMarkdown = String(data.markdown || data.plan?.summary || '').slice(0, 6000);
 
   const editHint = document.createElement('div');
   editHint.className = 'plan-review-hint';
@@ -2755,8 +2756,8 @@ function renderPlanReviewCard(data) {
 
   const textarea = document.createElement('textarea');
   textarea.className = 'plan-review-edit';
-  textarea.rows = 4;
-  textarea.value = String(data.markdown || '').slice(0, 6000);
+  textarea.rows = 8;
+  textarea.value = originalMarkdown;
   card.appendChild(textarea);
 
   const actions = document.createElement('div');
@@ -2767,7 +2768,9 @@ function renderPlanReviewCard(data) {
   approveBtn.className = 'plan-review-approve';
   approveBtn.textContent = typeof t === 'function' ? t('sp.plan.approve') : 'Approve & run';
   approveBtn.addEventListener('click', () => {
-    submitPlanReview(card, tabId, planId, 'approve', textarea.value.trim());
+    const current = textarea.value.trim();
+    const editedText = current && current !== originalMarkdown.trim() ? current : '';
+    submitPlanReview(card, tabId, planId, 'approve', editedText);
   });
 
   const cancelBtn = document.createElement('button');
@@ -2800,7 +2803,7 @@ function submitPlanReview(card, tabId, planId, action, editedText) {
   card.appendChild(note);
   scrollToBottom();
 
-  sendToBackground('plan_response', { tabId, planId, action, editedText })
+  sendToBackground('plan_response', { tabId, planId, decision: action, editedText })
     .catch(() => {});
 }
 

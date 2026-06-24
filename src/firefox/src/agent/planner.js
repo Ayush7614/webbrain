@@ -70,36 +70,48 @@ export function buildPlannerMessages(enrichedUserMessage, pageUrl, pageTitle) {
   ];
 }
 
-export function parsePlanFromContent(content) {
-  const raw = String(content || '').trim();
-  if (!raw) return null;
+export function extractFirstJsonObject(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const candidates = [];
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  candidates.push(text);
 
-  const tryParse = (text) => {
-    try {
-      const obj = JSON.parse(text);
-      return normalizePlan(obj);
-    } catch {
-      return null;
+  for (const candidate of candidates) {
+    const start = candidate.indexOf('{');
+    if (start < 0) continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i++) {
+      const ch = candidate[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return JSON.parse(candidate.slice(start, i + 1));
+          } catch {
+            break;
+          }
+        }
+      }
     }
-  };
-
-  let plan = tryParse(raw);
-  if (plan) return plan;
-
-  const fence = raw.match(/```(?:json)?\s*([\{][\s\S]*?)\s*```/i);
-  if (fence) {
-    plan = tryParse(fence[1]);
-    if (plan) return plan;
   }
-
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    plan = tryParse(raw.slice(start, end + 1));
-    if (plan) return plan;
-  }
-
   return null;
+}
+
+export function parsePlanFromContent(content) {
+  const obj = extractFirstJsonObject(content);
+  return obj ? normalizePlan(obj) : null;
 }
 
 export function normalizePlan(obj) {

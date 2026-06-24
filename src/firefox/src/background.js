@@ -443,6 +443,7 @@ async function handleMessage(msg, sender) {
   if (providerManager.providers.size === 0) {
     await providerManager.load();
   }
+  await loadPlanBeforeAct();
 
   switch (msg.action) {
     case 'chat': {
@@ -621,10 +622,10 @@ async function handleMessage(msg, sender) {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) return { ok: false, error: 'No tab ID' };
       const planId = String(msg.planId || '');
-      const action = String(msg.action || 'reject');
+      const decision = String(msg.decision || 'reject');
       const editedText = String(msg.editedText || '');
       if (!planId) return { ok: false, error: 'planId required' };
-      const matched = agent.submitPlanResponse(tabId, planId, action, editedText);
+      const matched = agent.submitPlanResponse(tabId, planId, decision, editedText);
       return { ok: matched, matched };
     }
 

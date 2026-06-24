@@ -8855,11 +8855,33 @@ test('planner gate: abort during planner call stops before review card', async (
   });
 });
 
+test('planner gate: fail closed when plan JSON cannot be parsed', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9151 : 9152;
+      const agent = new AgentClass({ getActive: () => ({}) });
+      agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+      agent._chatWithCostAllowance = async () => ({ content: 'Here is my plan: not valid json at all' });
+
+      const gate = await agent._runPlannerGate(
+        tabId,
+        { role: 'user', content: 'do something risky' },
+        () => {},
+        null,
+      );
+
+      assert.equal(gate.proceed, false, `${label} should fail closed`);
+      assert.match(gate.message || '', /could not produce a valid structured plan/i, `${label} message`);
+    }
+  });
+});
+
 test('planner gate: approving plan appends without deleting scratchpad facts', async () => {
   await withPlannerBrowserGlobals(async () => {
     for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
       const tabId = label === 'chrome' ? 9201 : 9202;
       const agent = new AgentClass({ getActive: () => ({}) });
+      agent.planBeforeAct = true;
       agent.conversations.set(tabId, [
         { role: 'system', content: 'system' },
         { role: 'user', content: 'original task' },
@@ -8868,18 +8890,22 @@ test('planner gate: approving plan appends without deleting scratchpad facts', a
       agent._chatWithCostAllowance = async () => ({ content: plannerFixtureJson() });
       agent._waitForPlanReview = async () => ({ action: 'approve', editedText: '' });
 
-      const gate = await agent._runPlannerGate(
-        tabId,
-        { role: 'user', content: 'collect account links' },
-        () => {},
-        null,
+      const messages = agent.conversations.get(tabId);
+      const enriched = { role: 'user', content: 'collect account links' };
+      const outcome = await agent._maybeRunPlannerGate(
+        tabId, messages, enriched, () => {}, 'act', null, null,
       );
-      assert.equal(gate.proceed, true, `${label} should proceed`);
+      assert.equal(outcome.proceed, true, `${label} should proceed`);
 
       const idx = agent._findScratchpadIndex(agent.conversations.get(tabId));
       const body = agent._extractScratchpadBody(agent.conversations.get(tabId)[idx].content);
       assert.match(body, /Existing downloadId=42/, `${label} should preserve existing scratchpad fact`);
-      assert.match(body, /\[Approved plan/, `${label} should append approved plan`);
+      assert.match(body, /\[Approved plan — pinned by planner\]/, `${label} should append approved plan marker`);
+
+      const userIdx = agent.conversations.get(tabId).findIndex((m) => m.role === 'user' && m.content === 'collect account links');
+      assert.ok(userIdx >= 0, `${label} user message present`);
+      assert.ok(idx > userIdx, `${label} scratchpad should follow user task`);
+      assert.equal(idx, agent.conversations.get(tabId).length - 1, `${label} scratchpad should be last`);
     }
   });
 });

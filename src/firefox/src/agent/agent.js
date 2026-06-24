@@ -2116,23 +2116,86 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   async _waitForPlanReview(tabId, planId, plan, markdown, onUpdate) {
+    const PLAN_REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
     const tabPending = this._pendingPlans.get(tabId) || new Map();
     this._pendingPlans.set(tabId, tabPending);
     const responsePromise = new Promise((resolve) => {
       tabPending.set(planId, { resolve, ts: Date.now() });
+    });
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve({
+        action: 'reject',
+        cancelled: true,
+        reason: 'plan review timed out',
+      }), PLAN_REVIEW_TIMEOUT_MS);
     });
     if (typeof onUpdate === 'function') {
       try {
         onUpdate('plan_review', { planId, plan, markdown });
       } catch {}
     }
-    const response = await responsePromise;
+    const response = await Promise.race([responsePromise, timeoutPromise]);
     tabPending.delete(planId);
     if (!tabPending.size) this._pendingPlans.delete(tabId);
     return response;
   }
 
-  async _runPlannerGate(tabId, enriched, onUpdate, costState) {
+  async _startTraceRun(tabId, userMessage, mode, provider) {
+    let tabUrl = '';
+    let tabTitle = '';
+    try {
+      const tab = await browser.tabs.get(tabId);
+      tabUrl = tab?.url || '';
+      tabTitle = tab?.title || '';
+    } catch {}
+    const runId = await trace.startRun({
+      model: provider?.model,
+      providerId: provider?.name,
+      providerClass: provider?.constructor?.name,
+      userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
+      tabUrl,
+      tabTitle,
+      mode,
+      conversationId: this.conversationIds.get(tabId) || null,
+    });
+    if (runId) this.currentRunId.set(tabId, runId);
+    return runId;
+  }
+
+  async _maybeRunPlannerGate(tabId, messages, enriched, onUpdate, mode, costState, runId) {
+    if (mode !== 'act' || !this.planBeforeAct) {
+      messages.push(enriched);
+      return { proceed: true };
+    }
+
+    const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState, runId);
+    if (!gate.proceed) {
+      messages.push(enriched);
+      messages.push({ role: 'assistant', content: gate.message || 'Task cancelled.' });
+      return { proceed: false, message: gate.message || 'Task cancelled.' };
+    }
+
+    messages.push(enriched);
+    if (gate.approvedScratchpadText) {
+      const scratchResult = this._scratchpadWrite(tabId, { text: gate.approvedScratchpadText });
+      if (!scratchResult?.success) {
+        onUpdate('warning', { message: scratchResult?.error || 'Could not pin plan to scratchpad.' });
+      } else {
+        const scratchIdx = this._findScratchpadIndex(messages);
+        if (scratchIdx >= 0 && scratchIdx < messages.length - 1) {
+          const scratchMsg = messages[scratchIdx];
+          messages.splice(scratchIdx, 1);
+          messages.push(scratchMsg);
+        }
+        if (gate.planId) {
+          onUpdate('plan_approved', { planId: gate.planId, bytes: scratchResult.bytes });
+        }
+      }
+    }
+    return { proceed: true };
+  }
+
+  async _runPlannerGate(tabId, enriched, onUpdate, costState, runId = null) {
     let tabUrl = '';
     let tabTitle = '';
     try {
@@ -2145,21 +2208,47 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const provider = this.providerManager.getActive();
     const plannerMessages = buildPlannerMessages(enriched, tabUrl, tabTitle);
+    const plannerStep = 0;
 
     try {
+      if (runId) {
+        try {
+          await trace.recordLLMRequest(runId, plannerStep, {
+            providerClass: provider?.constructor?.name,
+            model: provider?.model,
+            messageCount: plannerMessages.length,
+            toolsCount: 0,
+            phase: 'planner',
+          });
+        } catch {}
+      }
+      const _llmStart = Date.now();
       const result = await this._chatWithCostAllowance(
         provider,
         plannerMessages,
         { temperature: 0.3, maxTokens: 2048 },
         costState,
       );
+      if (runId) {
+        try {
+          await trace.recordLLMResponse(runId, plannerStep, {
+            content: result.content,
+            toolCalls: null,
+            usage: result.usage,
+            latencyMs: Date.now() - _llmStart,
+            model: provider?.model,
+            phase: 'planner',
+          });
+        } catch {}
+      }
       if (this._checkAbort(tabId)) {
         return { proceed: false, message: '[Stopped by user]' };
       }
       const plan = parsePlanFromContent(result.content);
       if (!plan) {
-        onUpdate('warning', { message: 'Planner could not parse a structured plan — continuing without plan review.' });
-        return { proceed: true };
+        const msg = 'Plan before Act is enabled but the planner could not produce a valid structured plan. Task cancelled — no actions were taken.';
+        onUpdate('warning', { message: msg });
+        return { proceed: false, message: msg };
       }
 
       const planId = `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2173,22 +2262,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { proceed: false, message: 'Task cancelled — plan was not approved.' };
       }
 
-      const scratchpadText = formatPlanScratchpad(plan, choice?.editedText);
-      const scratchResult = this._scratchpadWrite(tabId, { text: scratchpadText });
-      if (!scratchResult?.success) {
-        onUpdate('warning', { message: scratchResult?.error || 'Could not pin plan to scratchpad.' });
-      } else {
-        onUpdate('plan_approved', { planId, bytes: scratchResult.bytes });
-      }
-      return { proceed: true };
+      const approvedScratchpadText = formatPlanScratchpad(plan, choice?.editedText);
+      return { proceed: true, approvedScratchpadText, planId };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
         return { proceed: false, message: e.message };
       }
-      onUpdate('warning', {
-        message: `Planner failed: ${e.message || 'unknown error'}. Continuing without plan review.`,
-      });
-      return { proceed: true };
+      const msg = `Plan before Act is enabled but planning failed (${e.message || 'unknown error'}). Task cancelled — no actions were taken.`;
+      onUpdate('warning', { message: msg });
+      return { proceed: false, message: msg };
     }
   }
 
@@ -2349,6 +2431,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _cleanupTab(tabId, { preserveRunGuard = false } = {}) {
+    this._cancelPendingPlans(tabId, 'tab closed');
     this._isPdfTabCache.delete(tabId);
     this.progressPageScopes.delete(tabId);
     this.progressSessions.delete(tabId);
@@ -5272,19 +5355,27 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
 
-    this.abortFlags.delete(tabId); // clear any stale abort before the optional planner gate
+    const provider = this.providerManager.getActive();
+    let runId = null;
     if (mode === 'act' && this.planBeforeAct) {
-      const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState);
-      if (!gate.proceed) {
-        messages.push(enriched);
-        messages.push({ role: 'assistant', content: gate.message || 'Task cancelled.' });
-        return gate.message || 'Task cancelled.';
-      }
+      try {
+        runId = await this._startTraceRun(tabId, userMessage, mode, provider);
+      } catch {}
     }
 
-    messages.push(enriched);
+    const gateOutcome = await this._maybeRunPlannerGate(
+      tabId, messages, enriched, onUpdate, mode, costState, runId,
+    );
+    if (!gateOutcome.proceed) {
+      if (runId) {
+        try {
+          await trace.endRun(runId, { status: 'cancelled', finalContent: gateOutcome.message || 'Task cancelled.' });
+        } catch {}
+        this.currentRunId.delete(tabId);
+      }
+      return gateOutcome.message || 'Task cancelled.';
+    }
 
-    const provider = this.providerManager.getActive();
     if (mode === 'act') {
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
@@ -5300,23 +5391,26 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // empty→nudge→empty→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
 
+    this.abortFlags.delete(tabId); // clear any stale abort before the agent loop
+
     // Start trace run (gated inside recorder by tracingEnabled setting).
-    let runId = null;
     try {
       let tabUrl = '', tabTitle = '';
       try {
         const tab = await browser.tabs.get(tabId);
         tabUrl = tab?.url || ''; tabTitle = tab?.title || '';
       } catch {}
-      runId = await trace.startRun({
-        model: provider.model,
-        providerId: provider.name,
-        providerClass: provider.constructor.name,
-        userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
-        tabUrl, tabTitle, mode,
-        conversationId: this.conversationIds.get(tabId) || null,
-      });
-      if (runId) this.currentRunId.set(tabId, runId);
+      if (!runId) {
+        runId = await trace.startRun({
+          model: provider.model,
+          providerId: provider.name,
+          providerClass: provider.constructor.name,
+          userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
+          tabUrl, tabTitle, mode,
+          conversationId: this.conversationIds.get(tabId) || null,
+        });
+        if (runId) this.currentRunId.set(tabId, runId);
+      }
     } catch {}
 
     try {
@@ -5563,19 +5657,27 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
 
-    this.abortFlags.delete(tabId); // clear any stale abort before the optional planner gate
+    const provider = this.providerManager.getActive();
+    let runId = null;
     if (mode === 'act' && this.planBeforeAct) {
-      const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState);
-      if (!gate.proceed) {
-        messages.push(enriched);
-        messages.push({ role: 'assistant', content: gate.message || 'Task cancelled.' });
-        return gate.message || 'Task cancelled.';
-      }
+      try {
+        runId = await this._startTraceRun(tabId, userMessage, mode, provider);
+      } catch {}
     }
 
-    messages.push(enriched);
+    const gateOutcome = await this._maybeRunPlannerGate(
+      tabId, messages, enriched, onUpdate, mode, costState, runId,
+    );
+    if (!gateOutcome.proceed) {
+      if (runId) {
+        try {
+          await trace.endRun(runId, { status: 'cancelled', finalContent: gateOutcome.message || 'Task cancelled.' });
+        } catch {}
+        this.currentRunId.delete(tabId);
+      }
+      return gateOutcome.message || 'Task cancelled.';
+    }
 
-    const provider = this.providerManager.getActive();
     if (mode === 'act') {
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
@@ -5586,6 +5688,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
+
+    this.abortFlags.delete(tabId); // clear any stale abort before the agent loop
 
     while (steps < this.maxSteps) {
       if (this._checkAbort(tabId)) {
