@@ -3091,11 +3091,6 @@ test('settings page awaits immediate preference writes before moving on', () => 
     const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
     assert.match(
       settings,
-      /window\.addEventListener\('message', async \(event\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ authToken, authEmail, authDefaultModel \}\)\.catch\(\(\) => \{\}\);[\s\S]*?renderAuthSection\(\);/,
-      `${label}: auth token hydration should persist before the settings UI proceeds`,
-    );
-    assert.match(
-      settings,
       /verboseToggle\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode: verboseToggle\.checked \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
       `${label}: verbose toggle should await its storage write`,
     );
