@@ -243,7 +243,7 @@ const {
 // agent.js imports tools.js and cdp-client.js (which uses chrome.*). We need
 // only the loop-detection helpers, so we extract them via a tiny standalone
 // shim that mirrors the relevant Agent methods. Keep this in sync with
-// agent.js _recordCall / _detectLoop / _checkLoop.
+// agent.js _recordCall / _detectLoop / _checkLoop / _detectApiShortcut.
 class LoopDetectorShim {
   constructor() {
     this.recentCalls = new Map();
@@ -318,6 +318,30 @@ class LoopDetectorShim {
       return { kind: 'stop' };
     }
     return { kind: 'nudge' };
+  }
+  _detectApiShortcut(tabId, loop, buf) {
+    if (loop.type !== 'repeat') return null;
+    if (!['click', 'click_ax'].includes(loop.name)) return null;
+    const apiRequests = globalThis.__webbrainApiRequests?.get(tabId);
+    if (!apiRequests || apiRequests.length === 0) return null;
+
+    const clickTimes = buf.filter(e => e.key === loop.key).map(e => e.ts);
+    if (clickTimes.length < 2) return null;
+
+    const WINDOW_MS = 3000;
+    let candidate = null;
+    let matches = 0;
+    for (const clickTs of clickTimes) {
+      const hit = apiRequests.find(r =>
+        r.ts >= clickTs && r.ts <= clickTs + WINDOW_MS &&
+        (!candidate || (r.url === candidate.url && r.method === candidate.method))
+      );
+      if (!hit) continue;
+      if (!candidate) candidate = { url: hit.url, method: hit.method };
+      matches++;
+    }
+    if (!candidate || matches < 2) return null;
+    return { url: candidate.url, method: candidate.method, occurrences: matches };
   }
 }
 
@@ -689,7 +713,106 @@ test('window of 6 means a loop can fall out of the window', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────
-// Image budget (token-conscious screenshots)
+// _detectApiShortcut tests
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\n_detectApiShortcut');
+
+test('_detectApiShortcut: match found returns url + method', () => {
+  const d = new LoopDetectorShim();
+  const tabId = 200;
+  d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const buf = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const loop = d._detectLoop(buf);
+  assert.ok(loop, 'expected loop to be detected');
+  assert.equal(loop.type, 'repeat');
+
+  // One API request per click, within the 3 s window.
+  const clickTimes = buf.filter(e => e.key === loop.key).map(e => e.ts);
+  const apiMap = new Map();
+  apiMap.set(tabId, clickTimes.map(ts => ({
+    url: 'https://api.example.com/items?page=2',
+    method: 'GET',
+    ts: ts + 100,
+  })));
+  globalThis.__webbrainApiRequests = apiMap;
+
+  try {
+    const shortcut = d._detectApiShortcut(tabId, loop, buf);
+    assert.ok(shortcut, 'expected a shortcut to be returned');
+    assert.equal(shortcut.url, 'https://api.example.com/items?page=2');
+    assert.equal(shortcut.method, 'GET');
+    assert.ok(shortcut.occurrences >= 2, `expected occurrences >= 2, got ${shortcut.occurrences}`);
+  } finally {
+    delete globalThis.__webbrainApiRequests;
+  }
+});
+
+test('_detectApiShortcut: no API requests returns null', () => {
+  const d = new LoopDetectorShim();
+  const tabId = 201;
+  d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const buf = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const loop = d._detectLoop(buf);
+  assert.ok(loop);
+
+  delete globalThis.__webbrainApiRequests;
+  assert.equal(d._detectApiShortcut(tabId, loop, buf), null);
+});
+
+test('_detectApiShortcut: non-click tool name returns null', () => {
+  const d = new LoopDetectorShim();
+  const tabId = 202;
+  d._recordCall(tabId, 'read_page', {}, { ok: true });
+  d._recordCall(tabId, 'read_page', {}, { ok: true });
+  const buf = d._recordCall(tabId, 'read_page', {}, { ok: true });
+  const loop = d._detectLoop(buf);
+  assert.ok(loop);
+  assert.equal(loop.name, 'read_page');
+
+  const apiMap = new Map();
+  apiMap.set(tabId, [{ url: 'https://api.example.com/data', method: 'GET', ts: Date.now() }]);
+  globalThis.__webbrainApiRequests = apiMap;
+
+  try {
+    assert.equal(d._detectApiShortcut(tabId, loop, buf), null, 'non-click tool should return null');
+  } finally {
+    delete globalThis.__webbrainApiRequests;
+  }
+});
+
+test('_detectApiShortcut: request outside 3 s window returns null', () => {
+  const d = new LoopDetectorShim();
+  const tabId = 203;
+  d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
+  d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
+  const buf = d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
+  const loop = d._detectLoop(buf);
+  assert.ok(loop);
+
+  // Requests timestamped 5 s before each click — outside the 3 s window.
+  const clickTimes = buf.filter(e => e.key === loop.key).map(e => e.ts);
+  const apiMap = new Map();
+  apiMap.set(tabId, clickTimes.map(ts => ({
+    url: 'https://api.example.com/data',
+    method: 'GET',
+    ts: ts - 5000,
+  })));
+  globalThis.__webbrainApiRequests = apiMap;
+
+  try {
+    assert.equal(d._detectApiShortcut(tabId, loop, buf), null, 'out-of-window requests should not match');
+  } finally {
+    delete globalThis.__webbrainApiRequests;
+  }
+});
+
+test('_detectApiShortcut: both chrome and firefox builds define the method', () => {
+  assert.equal(typeof AgentCh.prototype._detectApiShortcut, 'function', 'chrome Agent missing _detectApiShortcut');
+  assert.equal(typeof AgentFx.prototype._detectApiShortcut, 'function', 'firefox Agent missing _detectApiShortcut');
+});
 //
 // These mirror the static helpers on Agent exactly — keep them in sync
 // with src/chrome/src/agent/agent.js `_estimateImageTokens` and
