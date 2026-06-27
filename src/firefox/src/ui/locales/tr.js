@@ -173,6 +173,8 @@ export default {
   'st.display.allow_local_network.desc': 'Aracının fetch_url aracının loopback (127.0.0.1, localhost) ve özel/RFC1918 adreslerine (10.x, 192.168.x, 172.16–31.x) ulaşmasına izin verir. Yerel geliştirme sunucuları, intranet araçları veya kendi sunucundaki API\'lar için kullanışlıdır. Varsayılan olarak kapalıdır — kapalıyken, prompt-injection içeren sayfalar aracıyı yerel ağını taramaya yönlendiremez. Bulut meta-veri adresleri (169.254.169.254) ve *.internal/*.local ana makine adları açıkken bile engellenir.',
   'st.display.notify_sound.label': 'Tamamlama sesi',
   'st.display.notify_sound.desc': 'Aracı bir görevi bitirdiğinde yan panelde kısa bir ses çalar. Çalışmayı iptal edersen çalınmaz.',
+  'st.display.completion_confetti.label': 'Tamamlama konfetisi',
+  'st.display.completion_confetti.desc': 'Bir görev başarıyla tamamlandığında üstten kısa bir konfeti animasyonu gösterir. Varsayılan olarak açıktır; daha sakin bir bitiş istersen kapatabilirsin.',
   'st.display.max_steps.label': 'Azami aracı adımı',
   'st.display.max_steps.desc': 'Aracının mesaj başına atabileceği en fazla araç adımı sayısı. Daha yüksek değerler daha karmaşık çok adımlı görevlere izin verir ama daha fazla token kullanabilir. Sınırsız adım için kaydırıcıyı ∞ konumuna getirin.',
   'st.display.traces_link.label': 'İzler',

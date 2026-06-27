@@ -1784,6 +1784,47 @@ test('getToolsForMode: default `done` description is the loose hygiene hint', ()
   }
 });
 
+test('getToolsForMode: `done` outcome is exposed only in full and mid act modes', () => {
+  for (const [label, getTools] of [
+    ['chrome', getToolsForModeCh],
+    ['firefox', getToolsForModeFx],
+  ]) {
+    for (const [modeLabel, tools, shouldExposeOutcome] of [
+      ['ask', getTools('ask'), false],
+      ['ask strict', getTools('ask', { strictSecretMode: true }), false],
+      ['act full', getTools('act'), true],
+      ['act mid', getTools('act', { tier: 'mid' }), true],
+      ['act compact', getTools('act', { tier: 'compact' }), false],
+      ['act strict full', getTools('act', { strictSecretMode: true }), true],
+      ['act strict mid', getTools('act', { tier: 'mid', strictSecretMode: true }), true],
+      ['act strict compact', getTools('act', { tier: 'compact', strictSecretMode: true }), false],
+    ]) {
+      const done = tools.find(t => t.function.name === 'done');
+      assert.ok(done, `[${label}] ${modeLabel}: done tool missing`);
+      const params = done.function.parameters;
+      assert.ok(params.required.includes('summary'), `[${label}] ${modeLabel}: summary should remain required`);
+      if (shouldExposeOutcome) {
+        assert.deepEqual(params.properties.outcome.enum, ['success', 'partial', 'failed'], `[${label}] ${modeLabel}: done outcome enum drifted`);
+        assert.match(params.properties.outcome.description, /success only/i, `[${label}] ${modeLabel}: done outcome should describe success semantics`);
+        assert.ok(params.required.includes('outcome'), `[${label}] ${modeLabel}: outcome should be required`);
+      } else {
+        assert.equal(params.properties.outcome, undefined, `[${label}] ${modeLabel}: done outcome should not be exposed`);
+        assert.equal(params.required.includes('outcome'), false, `[${label}] ${modeLabel}: outcome should not be required`);
+      }
+    }
+  }
+
+  for (const [label, askPrompt, compactPrompt, fullPrompt, midPrompt] of [
+    ['chrome', SYSTEM_PROMPT_ASK_CH, SYSTEM_PROMPT_ACT_COMPACT_CH, SYSTEM_PROMPT_ACT_CH, SYSTEM_PROMPT_ACT_MID_CH],
+    ['firefox', SYSTEM_PROMPT_ASK_FX, SYSTEM_PROMPT_ACT_COMPACT_FX, SYSTEM_PROMPT_ACT_FX, SYSTEM_PROMPT_ACT_MID_FX],
+  ]) {
+    assert.doesNotMatch(askPrompt, /done\(\{summary,\s*outcome/i, `[${label}] ask prompt should not teach outcome`);
+    assert.doesNotMatch(compactPrompt, /done\(\{summary,\s*outcome|outcome:"/i, `[${label}] compact prompt should not teach outcome`);
+    assert.match(fullPrompt, /done\(\{summary,\s*outcome/i, `[${label}] full act prompt should teach outcome`);
+    assert.match(midPrompt, /done\(\{summary,\s*outcome/i, `[${label}] mid act prompt should teach outcome`);
+  }
+});
+
 test('getToolsForMode: strictSecretMode swaps in the strict `done` description', () => {
   for (const getTools of [getToolsForModeCh, getToolsForModeFx]) {
     const loose = getTools('act');
@@ -3820,6 +3861,46 @@ test('max agent steps locale copy mentions unlimited in every locale', () => {
   }
 });
 
+test('completion confetti is default-on and success-only in sidepanel completion flow', () => {
+  for (const [label, settingsRel, settingsHtmlRel, panelRel, cssRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js', 'src/chrome/src/ui/settings.html', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/styles/sidepanel.css'],
+    ['firefox', 'src/firefox/src/ui/settings.js', 'src/firefox/src/ui/settings.html', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/styles/sidepanel.css'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    const settingsHtml = fs.readFileSync(path.join(ROOT, settingsHtmlRel), 'utf8');
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, cssRel), 'utf8');
+
+    assert.match(settingsHtml, /id="toggle-completion-confetti" checked/, `${label}: confetti toggle should be checked by default in General settings`);
+    assert.match(settingsHtml, /st\.display\.completion_confetti\.label/, `${label}: confetti setting should be localized in the settings UI`);
+    assert.match(settings, /completionConfettiToggle\.checked = stored\.completionConfetti \?\? true/, `${label}: settings should default completion confetti on`);
+    assert.match(settings, /completionConfetti:\s*completionConfettiToggle\.checked/, `${label}: settings should persist completion confetti changes`);
+
+    assert.match(panel, /let completionConfettiEnabled = true;/, `${label}: sidepanel should default completion confetti on`);
+    assert.match(panel, /completionConfettiEnabled = changes\.completionConfetti\.newValue !== false/, `${label}: sidepanel should live-sync completion confetti setting`);
+    assert.match(panel, /function triggerCompletionConfetti\(\)/, `${label}: sidepanel should define the confetti animation trigger`);
+    assert.match(panel, /function updatesContainSuccessfulDone\(updates\)/, `${label}: live completion success should be derived from done tool updates`);
+    assert.match(panel, /if \(success\) triggerCompletionConfetti\(\);/, `${label}: confetti should only fire for successful completions`);
+    assert.match(panel, /result\?\.outcome === 'success'/, `${label}: live done success should require explicit success outcome`);
+    assert.match(panel, /notifyCompletion\(\{\s*success:\s*job\?\.lastOutcome === 'success'\s*\}\)/, `${label}: scheduled completed jobs should celebrate only explicit success outcomes`);
+    assert.match(panel, /notifyCompletion\(\{\s*success:\s*completedSuccessfully\s*\}\)/, `${label}: live runs should pass success state to completion notification`);
+    assert.doesNotMatch(panel, /completedSuccessfully = !\(res\?\./, `${label}: live confetti should not treat every normal chat response as successful completion`);
+
+    assert.match(css, /\.completion-confetti/, `${label}: sidepanel CSS should include the confetti overlay`);
+    assert.match(css, /@keyframes completion-confetti-fall/, `${label}: sidepanel CSS should define the confetti fall animation`);
+    assert.match(css, /prefers-reduced-motion:\s*reduce/, `${label}: confetti animation should respect reduced-motion preference`);
+  }
+
+  for (const dirRel of ['src/chrome/src/ui/locales', 'src/firefox/src/ui/locales']) {
+    const dir = path.join(ROOT, dirRel);
+    for (const file of fs.readdirSync(dir).filter(name => name.endsWith('.js'))) {
+      const locale = fs.readFileSync(path.join(dir, file), 'utf8');
+      assert.match(locale, /'st\.display\.completion_confetti\.label':/, `${dirRel}/${file}: completion confetti label missing`);
+      assert.match(locale, /'st\.display\.completion_confetti\.desc':/, `${dirRel}/${file}: completion confetti description missing`);
+    }
+  }
+});
+
 test('download_social_media exposes merged DOM/vision strategy in act tiers only', () => {
   for (const [label, getTools] of [
     ['chrome', getToolsForModeCh],
@@ -4945,6 +5026,73 @@ test('ScheduledJobManager lets scheduled tasks survive conversation changes on t
   }
 });
 
+test('ScheduledJobManager records success outcomes from scheduled done tool results only', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    const successHarness = makeSchedulerHarness(SchedulerMod, {
+      now,
+      processMessage: async (_tabId, _message, onUpdate) => {
+        onUpdate('tool_result', {
+          name: 'done',
+          result: { done: true, summary: 'clicked references', outcome: 'success' },
+        });
+        return 'clicked references';
+      },
+    });
+    const successCreated = await successHarness.manager.createTaskJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      args: {
+        title: 'Click references',
+        prompt: 'Click References on the current page.',
+        schedule: { type: 'once', after_seconds: 60 },
+        target: { type: 'current_tab' },
+      },
+      source: 'user',
+      currentUrl: 'https://example.com/',
+      currentTitle: 'Example',
+    });
+
+    await successHarness.manager.handleAlarm(successHarness.alarmName(successCreated.jobId));
+    const successJob = successHarness.jobs()[0];
+    const successListed = await successHarness.manager.listJobs({ tabId: 77 });
+    const successCompleted = successHarness.updates.find((u) => u.type === 'scheduled_job' && u.data?.event === 'completed');
+    assert.equal(successJob.lastOutcome, 'success', `${label}: successful scheduled done outcome should be stored`);
+    assert.equal(successListed[0]?.lastOutcome, 'success', `${label}: job summaries should expose successful done outcome`);
+    assert.equal(successCompleted?.data?.job?.lastOutcome, 'success', `${label}: completed scheduled event should carry successful done outcome`);
+
+    const legacyHarness = makeSchedulerHarness(SchedulerMod, {
+      now,
+      processMessage: async (_tabId, _message, onUpdate) => {
+        onUpdate('tool_result', {
+          name: 'done',
+          result: { done: true, summary: 'legacy completion without outcome' },
+        });
+        return 'legacy completion without outcome';
+      },
+    });
+    const legacyCreated = await legacyHarness.manager.createTaskJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      args: {
+        title: 'Legacy completion',
+        prompt: 'Finish without structured outcome.',
+        schedule: { type: 'once', after_seconds: 60 },
+        target: { type: 'current_tab' },
+      },
+      source: 'user',
+      currentUrl: 'https://example.com/',
+      currentTitle: 'Example',
+    });
+
+    await legacyHarness.manager.handleAlarm(legacyHarness.alarmName(legacyCreated.jobId));
+    const legacyJob = legacyHarness.jobs()[0];
+    const legacyCompleted = legacyHarness.updates.find((u) => u.type === 'scheduled_job' && u.data?.event === 'completed');
+    assert.equal(legacyJob.lastOutcome, null, `${label}: missing done outcome should not be treated as success`);
+    assert.equal(legacyCompleted?.data?.job?.lastOutcome, null, `${label}: completed event should not invent scheduled success`);
+  }
+});
+
 test('ScheduledJobManager fails current-tab tasks after the tab navigates away', async () => {
   const now = Date.UTC(2026, 0, 1, 12, 0, 0);
   for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
@@ -5176,11 +5324,17 @@ test('ScheduledJobManager preserves URL-target schedules when helper tabs close'
 test('ScheduledJobManager completes recurring tasks and schedules the next run', async () => {
   const now = Date.UTC(2026, 0, 1, 12, 0, 0);
   for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    let runCount = 0;
     const h = makeSchedulerHarness(SchedulerMod, {
       now,
-      processMessage: async (_tabId, message) => {
+      processMessage: async (_tabId, message, onUpdate) => {
+        runCount += 1;
         assert.match(message, /Scheduled task/, `${label}: synthetic task message should be trusted scheduler text`);
-        return 'checked';
+        onUpdate('tool_result', {
+          name: 'done',
+          result: { done: true, summary: `checked ${runCount}`, outcome: 'success' },
+        });
+        return `checked ${runCount}`;
       },
     });
     const created = await h.manager.createTaskJob({
@@ -5197,13 +5351,26 @@ test('ScheduledJobManager completes recurring tasks and schedules the next run',
     assert.equal(created.success, true, `${label}: create recurring task should succeed`);
 
     await h.manager.handleAlarm(h.alarmName(created.jobId));
-    const job = h.jobs()[0];
+    let job = h.jobs()[0];
     const expectedNext = new Date(now + 5 * 60 * 1000).toISOString();
     assert.equal(job.status, 'pending', `${label}: recurring job should stay pending`);
     assert.equal(job.runCount, 1, `${label}: run count should increment`);
-    assert.equal(job.lastResult, 'checked', `${label}: result should be saved`);
+    assert.equal(job.lastResult, 'checked 1', `${label}: result should be saved`);
+    assert.equal(job.lastOutcome, 'success', `${label}: recurring successful outcome should be saved`);
     assert.equal(job.nextRunAt, expectedNext, `${label}: next run should be computed`);
     assert.equal(h.alarms.get(h.alarmName(created.jobId)).when, Date.parse(expectedNext));
+
+    h.setNow(Date.parse(expectedNext));
+    await h.manager.handleAlarm(h.alarmName(created.jobId));
+    job = h.jobs()[0];
+    const expectedSecondNext = new Date(Date.parse(expectedNext) + 5 * 60 * 1000).toISOString();
+    const completedEvents = h.updates.filter((u) => u.type === 'scheduled_job' && u.data?.event === 'completed');
+    assert.equal(job.runCount, 2, `${label}: recurring run count should increment again`);
+    assert.equal(job.lastResult, 'checked 2', `${label}: second recurring result should be saved`);
+    assert.equal(job.lastOutcome, 'success', `${label}: second recurring success outcome should be saved`);
+    assert.equal(job.nextRunAt, expectedSecondNext, `${label}: second next run should be computed`);
+    assert.equal(completedEvents.length, 2, `${label}: each successful recurrence should emit a completed event`);
+    assert.ok(completedEvents.every((u) => u.data?.job?.lastOutcome === 'success'), `${label}: every successful recurring completed event should carry success outcome`);
   }
 });
 

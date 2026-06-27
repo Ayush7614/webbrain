@@ -173,6 +173,8 @@ export default {
   'st.display.allow_local_network.desc': 'Permite que la herramienta fetch_url del agente alcance direcciones loopback (127.0.0.1, localhost) y privadas/RFC1918 (10.x, 192.168.x, 172.16–31.x). Útil para servidores de desarrollo locales, herramientas de intranet o APIs auto-alojadas. Desactivado por defecto — cuando está desactivado, páginas con inyección de prompt no pueden dirigir al agente a sondear tu red local. Las direcciones de metadatos en la nube (169.254.169.254) y los nombres de host *.internal/*.local siguen bloqueados incluso cuando está activado.',
   'st.display.notify_sound.label': 'Sonido al terminar',
   'st.display.notify_sound.desc': 'Reproduce un tono corto en el panel lateral cuando el agente termina una tarea. No suena si cancelas la ejecución.',
+  'st.display.completion_confetti.label': 'Confeti al completar',
+  'st.display.completion_confetti.desc': 'Muestra una breve animación de confeti desde arriba cuando una tarea termina correctamente. Activado de forma predeterminada; desactívalo si prefieres un final más discreto.',
   'st.display.max_steps.label': 'Pasos máximos del agente',
   'st.display.max_steps.desc': 'Número máximo de pasos con herramientas que el agente puede dar por mensaje. Valores más altos permiten tareas más complejas pero pueden consumir más tokens. Pon el control en ∞ para pasos ilimitados.',
   'st.display.traces_link.label': 'Trazas',

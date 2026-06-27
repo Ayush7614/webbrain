@@ -3,6 +3,15 @@
  * These are sent to the LLM in OpenAI function-calling format.
  */
 
+const DONE_OUTCOME_PROPERTY = {
+  type: 'string',
+  enum: ['success', 'partial', 'failed'],
+  description: 'Choose success only when the user requested task is actually complete. Choose partial for useful progress that is not fully complete. Choose failed when blocked or reasonable alternatives were exhausted.',
+};
+
+const DONE_REQUIRED = ['summary'];
+const DONE_REQUIRED_WITH_OUTCOME = ['summary', 'outcome'];
+
 export const AGENT_TOOLS = [
   {
     type: 'function',
@@ -469,13 +478,13 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'done',
-      description: 'Signal that the task is FULLY complete. Only call this when you have successfully accomplished the user\'s request OR have exhausted every reasonable alternative (at least 3-4 different approaches). Provide a summary of what was accomplished. Do NOT call this prematurely — keep trying different strategies if the current one fails. Credentials hygiene: when summarizing, prefer generic references ("logged in with the provided password", "API key updated") over echoing the literal value — keeps summaries tidy and avoids needlessly persisting secrets in trace logs. If the user explicitly asked you to show them a value (a recovery code, an API key on the page, etc.), including the value IS the answer and you should include it.',
+      description: 'Signal that the task is finished for this run. Only call this when you have successfully accomplished the user\'s request OR have exhausted every reasonable alternative (at least 3-4 different approaches). Provide a summary of what was accomplished. Do NOT call this prematurely — keep trying different strategies if the current one fails. Credentials hygiene: when summarizing, prefer generic references ("logged in with the provided password", "API key updated") over echoing the literal value — keeps summaries tidy and avoids needlessly persisting secrets in trace logs. If the user explicitly asked you to show them a value (a recovery code, an API key on the page, etc.), including the value IS the answer and you should include it.',
       parameters: {
         type: 'object',
         properties: {
           summary: { type: 'string', description: 'Summary of what was accomplished.' },
         },
-        required: ['summary'],
+        required: DONE_REQUIRED,
       },
     },
   },
@@ -845,6 +854,22 @@ export const COMPACT_TOOL_NAMES = new Set([
   'scratchpad_write', 'progress_update', 'progress_read', 'clarify', 'solve_captcha', 'done',
 ]);
 
+const DONE_TOOL_WITH_OUTCOME = {
+  type: 'function',
+  function: {
+    name: 'done',
+    description: 'Signal that the task is finished for this run. Set outcome="success" only when you have successfully accomplished the user\'s request. Set outcome="partial" when you made useful progress but the request is not fully complete. Set outcome="failed" when you are blocked or have exhausted every reasonable alternative (at least 3-4 different approaches). Provide a summary of what was accomplished. Do NOT call this prematurely — keep trying different strategies if the current one fails. Credentials hygiene: when summarizing, prefer generic references ("logged in with the provided password", "API key updated") over echoing the literal value — keeps summaries tidy and avoids needlessly persisting secrets in trace logs. If the user explicitly asked you to show them a value (a recovery code, an API key on the page, etc.), including the value IS the answer and you should include it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'Summary of what was accomplished.' },
+        outcome: DONE_OUTCOME_PROPERTY,
+      },
+      required: DONE_REQUIRED_WITH_OUTCOME,
+    },
+  },
+};
+
 /**
  * Strict-mode replacement for the `done` tool. See chrome/agent/tools.js for
  * the rationale — webbrain runs as a personal-computer tool so the default
@@ -855,13 +880,29 @@ const DONE_TOOL_STRICT = {
   type: 'function',
   function: {
     name: 'done',
-    description: 'Signal that the task is FULLY complete. Only call this when you have successfully accomplished the user\'s request OR have exhausted every reasonable alternative (at least 3-4 different approaches). Provide a summary of what was accomplished. Do NOT call this prematurely — keep trying different strategies if the current one fails. CREDENTIALS (strict mode is ON): never include passwords, API keys, tokens, OTPs, recovery codes, application-password strings, or any value the user typed into a password field — in the summary. Refer to them generically ("logged in with the provided credentials", "API key updated", "OTP submitted") even if the user explicitly asked you to display the value: in strict mode the answer is "I filled the field with the value you provided" or "the API key on this page is in the field labeled X", not the literal string. This rule applies even if the user typed the value directly into the chat.',
+    description: 'Signal that the task is finished for this run. Only call this when you have successfully accomplished the user\'s request OR have exhausted every reasonable alternative (at least 3-4 different approaches). Provide a summary of what was accomplished. Do NOT call this prematurely — keep trying different strategies if the current one fails. CREDENTIALS (strict mode is ON): never include passwords, API keys, tokens, OTPs, recovery codes, application-password strings, or any value the user typed into a password field — in the summary. Refer to them generically ("logged in with the provided credentials", "API key updated", "OTP submitted") even if the user explicitly asked you to display the value: in strict mode the answer is "I filled the field with the value you provided" or "the API key on this page is in the field labeled X", not the literal string. This rule applies even if the user typed the value directly into the chat.',
     parameters: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'Summary of what was accomplished. Must NOT contain credentials, passwords, API keys, tokens, OTPs, or any secret the user provided or that you read from a password field.' },
       },
-      required: ['summary'],
+      required: DONE_REQUIRED,
+    },
+  },
+};
+
+const DONE_TOOL_STRICT_WITH_OUTCOME = {
+  type: 'function',
+  function: {
+    name: 'done',
+    description: 'Signal that the task is finished for this run. Set outcome="success" only when you have successfully accomplished the user\'s request. Set outcome="partial" when you made useful progress but the request is not fully complete. Set outcome="failed" when you are blocked or have exhausted every reasonable alternative (at least 3-4 different approaches). Provide a summary of what was accomplished. Do NOT call this prematurely — keep trying different strategies if the current one fails. CREDENTIALS (strict mode is ON): never include passwords, API keys, tokens, OTPs, recovery codes, application-password strings, or any value the user typed into a password field — in the summary. Refer to them generically ("logged in with the provided credentials", "API key updated", "OTP submitted") even if the user explicitly asked you to display the value: in strict mode the answer is "I filled the field with the value you provided" or "the API key on this page is in the field labeled X", not the literal string. This rule applies even if the user typed the value directly into the chat.',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'Summary of what was accomplished. Must NOT contain credentials, passwords, API keys, tokens, OTPs, or any secret the user provided or that you read from a password field.' },
+        outcome: DONE_OUTCOME_PROPERTY,
+      },
+      required: DONE_REQUIRED_WITH_OUTCOME,
     },
   },
 };
@@ -897,8 +938,12 @@ export function getToolsForMode(mode, opts = {}) {
   if (opts.visionAvailable === false) {
     base = base.filter(t => !VISION_ONLY_TOOLS.has(t.function.name));
   }
-  if (!opts.strictSecretMode) return base;
-  return base.map(t => (t.function.name === 'done' ? DONE_TOOL_STRICT : t));
+  const useOutcomeDone = mode !== 'ask' && tier !== 'compact';
+  if (!opts.strictSecretMode && !useOutcomeDone) return base;
+  const replacement = opts.strictSecretMode
+    ? (useOutcomeDone ? DONE_TOOL_STRICT_WITH_OUTCOME : DONE_TOOL_STRICT)
+    : DONE_TOOL_WITH_OUTCOME;
+  return base.map(t => (t.function.name === 'done' ? replacement : t));
 }
 
 export const SYSTEM_PROMPT_ACT_COMPACT = `You are WebBrain, an AI browser agent. You control web pages through tools.
@@ -914,7 +959,7 @@ RULES:
 8. Interact through the visible UI. Do not call APIs directly for actions that create, modify, delete, send, submit, buy, transfer, post, or publish.
 9. If stuck after 2 attempts, try a different tool or route. Never repeat the same failing action 3 times.
 10. For loop tasks, keep using tools in this run; never say "I'll continue" unless you are actually making more tool calls.
-11. You cannot schedule, sleep, set timers, or check back later in compact mode. If something must wait for an external event, call done with the current state and ask the user to re-invoke you.
+11. You cannot schedule, sleep, set timers, or check back later in compact mode. If something must wait for an external event, call done({summary:"..."}) with the current state and ask the user to re-invoke you.
 12. When the task is complete, call done({summary:"..."}). Verify success first.
 
 TOOLS - use only these:
@@ -1187,7 +1232,7 @@ LISTINGS & PAGINATION — read this:
 - Required pattern: from the current page, list each visible item to the user as concrete bullets (title + price/date/identifier + canonical link), THEN move to the next page. Do not queue 2-3 pages of fetches and try to deliver everything at the end — the step budget runs out and you ship nothing.
 - Wrong tool for listings: \`get_accessibility_tree({filter:"all"})\` overflows the maxChars limit on almost every listing page (each card is dozens of nodes × dozens of cards). If you hit "Output exceeds N character limit" once, do NOT retry the same call with a higher maxChars — that is the wrong tool for this page. Switch to \`get_accessibility_tree({filter:"visible", maxDepth:8-10})\` for the in-viewport cards, then scroll + re-read; or use \`read_page\` if you need prose; or use \`extract_data({type:"links"})\` for raw href harvesting.
 - Don't refetch a URL you already fetched in this conversation. \`fetch_url\`, \`research_url\`, and \`navigate\` against the same URL all return the same content — reuse what you already have rather than calling another tool to "verify". If the previous fetch result was truncated, scroll/extract within it; don't hit the URL again.
-- Terminal-list tasks ("give me the links", "list the products under $N", "find all matching items"): call \`done({summary})\` with the items you have collected as soon as you have a useful answer. Partial-but-delivered beats complete-but-never-delivered. Don't paginate forever in pursuit of completeness.`;
+- Terminal-list tasks ("give me the links", "list the products under $N", "find all matching items"): call \`done({summary, outcome:"partial"})\` with the items you have collected as soon as you have a useful answer if it is not complete. Partial-but-delivered beats complete-but-never-delivered. Don't paginate forever in pursuit of completeness.`;
 
 /**
  * Mid tool set for capable-but-not-frontier models (~9B–32B, local / OpenRouter).
@@ -1252,13 +1297,13 @@ TOOLS — use only these:
 - download_social_media: one-shot image/video download from supported social sites; strategy:"auto" uses DOM first, then vision crop only when needed and available.
 - verify_form: check a form's field values before submitting. scratchpad_write({text}): pin facts that survive context summarization. progress_update/progress_read: track repeated item/action progress.
 - clarify({question}): ask the user only when materially blocked/ambiguous (budget 1-2 per run). solve_captcha: once, only when CapSolver is configured.
-- done({summary}): signal completion — verify success first.
+- done({summary, outcome}): signal completion; use outcome:"success" only after verifying success.
 
 DEFAULT LOOP:
 1. get_accessibility_tree({filter:"visible"}) — see what's on screen; note the ref_ids you need.
 2. Act with click_ax / set_field / type_ax (ref_ids are stable across calls).
 3. Verify: re-read the tree or take a screenshot. NEVER assume success — confirm the page changed.
-4. Repeat. When done, call done({summary}) after confirming success.
+4. Repeat. When done, call done({summary, outcome:"success"}) after confirming success.
 
 TYPING:
 - For text fields prefer set_field({ref_id, text, submit}) — one call that focuses, clears, types, and (optionally) submits. Otherwise type_ax({ref_id, text}) after reading the tree.

@@ -173,6 +173,8 @@ export default {
   'st.display.allow_local_network.desc': 'Membenarkan alat fetch_url ejen mencapai loopback (127.0.0.1, localhost) dan alamat peribadi/RFC1918 (10.x, 192.168.x, 172.16–31.x). Berguna untuk pelayan pembangunan tempatan, alat intranet, atau API yang dihos sendiri. Dimatikan secara lalai — apabila dimatikan, halaman yang disuntik prompt-injection tidak boleh mendorong ejen untuk meneliti rangkaian tempatan anda. Alamat metadata awan (169.254.169.254) dan nama hos *.internal/*.local kekal disekat walaupun dihidupkan.',
   'st.display.notify_sound.label': 'Bunyi selesai',
   'st.display.notify_sound.desc': 'Mainkan bunyi pendek di panel sisi apabila ejen menyelesaikan tugas. Tidak akan dimainkan jika anda membatalkan larian.',
+  'st.display.completion_confetti.label': 'Konfeti selesai',
+  'st.display.completion_confetti.desc': 'Paparkan animasi konfeti pendek dari atas apabila tugas berjaya diselesaikan. Dihidupkan secara lalai; matikan jika anda mahukan penamat yang lebih tenang.',
   'st.display.max_steps.label': 'Langkah maksimum ejen',
   'st.display.max_steps.desc': 'Jumlah maksimum langkah penggunaan alat yang boleh dilakukan ejen bagi setiap mesej. Nilai lebih tinggi membenarkan tugas berbilang langkah yang lebih kompleks, tetapi mungkin menggunakan lebih banyak token. Tetapkan peluncur kepada ∞ untuk langkah tanpa had.',
   'st.display.traces_link.label': 'Jejak',

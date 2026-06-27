@@ -175,6 +175,8 @@ export default {
   'st.display.allow_local_network.desc': 'Hinahayaan ang fetch_url tool ng ahente na maabot ang loopback (127.0.0.1, localhost) at mga private/RFC1918 address (10.x, 192.168.x, 172.16–31.x). Mainam para sa mga lokal na dev server, intranet tool, o self-hosted API. Naka-off bilang default — kapag naka-off, hindi mapipilit ng mga pahina na may prompt-injection ang ahente na sumiyasat sa iyong lokal na network. Mananatiling naka-block ang mga cloud-metadata address (169.254.169.254) at mga *.internal/*.local hostname kahit naka-on ito.',
   'st.display.notify_sound.label': 'Tunog kapag tapos na',
   'st.display.notify_sound.desc': 'Magpatugtog ng maikling chime sa side panel kapag natapos ang gawain ng ahente. Hindi tutugtog kung kinansela mo ang run.',
+  'st.display.completion_confetti.label': 'Confetti kapag tapos na',
+  'st.display.completion_confetti.desc': 'Magpakita ng maikling confetti animation mula sa itaas kapag matagumpay na natapos ang gawain. Naka-on ito bilang default; i-off kung mas gusto mo ng mas tahimik na pagtatapos.',
   'st.display.max_steps.label': 'Maximum na hakbang ng ahente',
   'st.display.max_steps.desc': 'Pinakamalaking bilang ng tool-use na hakbang na maaaring gawin ng ahente bawat mensahe. Ang mas mataas na halaga ay nagpapahintulot ng mas komplikadong multi-step na gawain ngunit maaaring mas marami ang gagamiting token. Itakda ang slider sa ∞ para sa walang limitasyong mga hakbang.',
   'st.display.traces_link.label': 'Traces',

@@ -173,6 +173,8 @@ export default {
   'st.display.allow_local_network.desc': 'エージェントの fetch_url ツールがループバック（127.0.0.1、localhost）やプライベート/RFC1918 アドレス（10.x、192.168.x、172.16–31.x）に届くようになります。ローカル開発サーバー、社内ツール、セルフホスト API に便利です。デフォルトはオフ — オフのときは prompt 注入されたページがエージェントにローカルネットワークの探索をさせることはできません。クラウドメタデータアドレス（169.254.169.254）と *.internal/*.local ホスト名はオンでもブロックされたままです。',
   'st.display.notify_sound.label': '完了サウンド',
   'st.display.notify_sound.desc': 'エージェントがタスクを完了したときにサイドパネルで短いチャイムを鳴らします。実行をキャンセルした場合は鳴りません。',
+  'st.display.completion_confetti.label': '完了時の紙吹雪',
+  'st.display.completion_confetti.desc': 'タスクが正常に完了したとき、上から短い紙吹雪アニメーションを表示します。既定でオンです。落ち着いた完了表示にしたい場合はオフにできます。',
   'st.display.max_steps.label': 'エージェントの最大ステップ数',
   'st.display.max_steps.desc': '1 メッセージあたりに使えるツール呼び出しステップの上限です。値を大きくすると複雑な多段タスクが可能になりますが、トークン消費が増えることがあります。スライダーを ∞ にするとステップ数は無制限になります。',
   'st.display.traces_link.label': 'トレース',

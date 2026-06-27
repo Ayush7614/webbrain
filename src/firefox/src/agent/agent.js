@@ -33,6 +33,12 @@ const COST_EPSILON = 1e-9;
 const TOKENS_PER_MILLION = 1_000_000;
 const DEFAULT_INPUT_COST_PER_MILLION_USD = 3;
 const DEFAULT_OUTPUT_COST_PER_MILLION_USD = 15;
+const DONE_OUTCOMES = new Set(['success', 'partial', 'failed']);
+
+function normalizeDoneOutcome(value) {
+  const outcome = String(value || '').trim().toLowerCase();
+  return DONE_OUTCOMES.has(outcome) ? outcome : null;
+}
 
 /**
  * The WebBrain Agent — orchestrates multi-step LLM + tool-use loops.
@@ -4177,6 +4183,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
 
     if (name === 'done') {
+      const outcome = normalizeDoneOutcome(args?.outcome);
       // In act mode, require a verification screenshot + page info before completing.
       const mode = this.conversationModes.get(tabId) || 'ask';
       if (mode === 'act') {
@@ -4278,6 +4285,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             return {
               done: true,
               summary: args.summary,
+              outcome,
               verification: {
                 pageUrl: pageState.url || '',
                 pageTitle: pageState.title || '',
@@ -4294,7 +4302,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           // Screenshot failed — still allow done but note it
         }
       }
-      return { done: true, summary: args.summary };
+      return { done: true, summary: args.summary, outcome };
     }
 
     // Network & download tools (background context). fetchUrl/readDownloadedFile

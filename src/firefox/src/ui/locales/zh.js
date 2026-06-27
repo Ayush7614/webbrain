@@ -173,6 +173,8 @@ export default {
   'st.display.allow_local_network.desc': '允许代理的 fetch_url 工具访问回环（127.0.0.1、localhost）和私有/RFC1918 地址（10.x、192.168.x、172.16–31.x）。用于本地开发服务器、内网工具或自托管 API。默认关闭 — 关闭时，含 prompt 注入的页面无法引导代理探测你的本地网络。即使开启，云元数据地址（169.254.169.254）和 *.internal/*.local 主机名仍然会被阻止。',
   'st.display.notify_sound.label': '完成提示音',
   'st.display.notify_sound.desc': '代理完成任务时在侧边栏播放短促的提示音。取消运行则不播放。',
+  'st.display.completion_confetti.label': '完成彩纸',
+  'st.display.completion_confetti.desc': '任务成功完成时从顶部播放短暂的彩纸动画。默认开启；如果想要更安静的完成效果，可将其关闭。',
   'st.display.max_steps.label': '代理最大步骤数',
   'st.display.max_steps.desc': '代理每条消息可执行的最大工具调用步数。更高的值允许更复杂的多步任务，但可能消耗更多 token。将滑块设为 ∞ 可不限步骤数。',
   'st.display.traces_link.label': '轨迹',

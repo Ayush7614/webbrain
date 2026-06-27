@@ -398,15 +398,21 @@ const {
   sendMessage,
   sendToBackground,
 });
-// Notification sound on task completion. Default on; togglable via Settings.
+// Completion notification + success celebration. Default on; togglable via Settings.
 let notifySoundEnabled = true;
+let completionConfettiEnabled = true;
 let notifyAudio = null;
-chrome.storage.local.get('notifySound').then((stored) => {
+let completionConfettiTimer = null;
+chrome.storage.local.get(['notifySound', 'completionConfetti']).then((stored) => {
   if (stored && stored.notifySound === false) notifySoundEnabled = false;
+  if (stored && stored.completionConfetti === false) completionConfettiEnabled = false;
 }).catch(() => {});
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.notifySound) {
     notifySoundEnabled = changes.notifySound.newValue !== false;
+  }
+  if (changes.completionConfetti) {
+    completionConfettiEnabled = changes.completionConfetti.newValue !== false;
   }
 });
 
@@ -450,6 +456,62 @@ function playCompletionSound() {
     const p = notifyAudio.play();
     if (p && typeof p.catch === 'function') p.catch(() => {});
   } catch { /* ignore */ }
+}
+
+function triggerCompletionConfetti() {
+  if (!completionConfettiEnabled) return;
+  if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return;
+  try {
+    document.querySelector('.completion-confetti')?.remove();
+    if (completionConfettiTimer) {
+      clearTimeout(completionConfettiTimer);
+      completionConfettiTimer = null;
+    }
+
+    const layer = document.createElement('div');
+    layer.className = 'completion-confetti';
+    layer.setAttribute('aria-hidden', 'true');
+    const colors = ['#4caf50', '#6c63ff', '#ffb703', '#ef476f', '#00b4d8', '#f77f00'];
+    for (let i = 0; i < 42; i += 1) {
+      const piece = document.createElement('span');
+      piece.className = 'confetti-piece';
+      piece.style.setProperty('--x', `${Math.random() * 100}%`);
+      piece.style.setProperty('--drift', `${Math.round((Math.random() - 0.5) * 160)}px`);
+      piece.style.setProperty('--delay', `${Math.random() * 0.28}s`);
+      piece.style.setProperty('--duration', `${1.15 + Math.random() * 0.75}s`);
+      piece.style.setProperty('--rotation', `${Math.round(240 + Math.random() * 600)}deg`);
+      const size = 5 + Math.random() * 5;
+      piece.style.setProperty('--size', `${size}px`);
+      piece.style.setProperty('--height', `${size * 1.7}px`);
+      piece.style.backgroundColor = colors[i % colors.length];
+      layer.appendChild(piece);
+    }
+    document.body.appendChild(layer);
+    completionConfettiTimer = setTimeout(() => {
+      layer.remove();
+      completionConfettiTimer = null;
+    }, 2300);
+  } catch { /* ignore */ }
+}
+
+function notifyCompletion({ success = false } = {}) {
+  playCompletionSound();
+  if (success) triggerCompletionConfetti();
+}
+
+function isSuccessfulDoneUpdate(update) {
+  const result = update?.data?.result;
+  return update?.type === 'tool_result' &&
+    update?.data?.name === 'done' &&
+    result?.done === true &&
+    result?.outcome === 'success' &&
+    result?.success !== false &&
+    !result?.error &&
+    !result?.blockedDone;
+}
+
+function updatesContainSuccessfulDone(updates) {
+  return Array.isArray(updates) && updates.some(isSuccessfulDoneUpdate);
 }
 
 // Per-tab chat history (stores innerHTML of messages container).
@@ -899,7 +961,7 @@ function settleScheduledRun(event, job) {
     abortRequested = false;
     drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
-  if (event === 'completed') playCompletionSound();
+  if (event === 'completed') notifyCompletion({ success: job?.lastOutcome === 'success' });
 }
 
 function handleScheduledJobEvent(data, tabId) {
@@ -2297,6 +2359,7 @@ async function sendMessage(extraChatParams) {
   }
 
   let accepted = false;
+  let completedSuccessfully = false;
   try {
     const res = await sendToBackground('chat', {
       tabId,
@@ -2306,6 +2369,7 @@ async function sendMessage(extraChatParams) {
       ...extraChatParams,
     });
     accepted = true;
+    completedSuccessfully = updatesContainSuccessfulDone(res?.updates);
 
     if (renderToCurrentTab && currentTabId === tabId && abortRequested) {
       // Agent was stopped — show what we got so far
@@ -2342,7 +2406,7 @@ async function sendMessage(extraChatParams) {
     }
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     if (renderToCurrentTab && currentTabId === tabId) scrollToBottom();
-    if (renderToCurrentTab && !wasAborted) playCompletionSound();
+    if (renderToCurrentTab && !wasAborted) notifyCompletion({ success: completedSuccessfully });
     if (renderToCurrentTab && currentTabId === tabId) refreshRecommendedActions();
     await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }

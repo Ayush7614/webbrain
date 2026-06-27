@@ -14,6 +14,7 @@ export const MAX_INTERVAL_MINUTES = 525600; // one year
 const ALARM_KEEPALIVE_INTERVAL_MS = 20 * 1000;
 const LIVE_SCHEDULED_STATUSES = new Set(['pending', 'queued', 'running', 'needs_user_input']);
 const DUPLICATE_COALESCED_ERROR = 'Duplicate scheduled job coalesced into an existing live job.';
+const DONE_OUTCOMES = new Set(['success', 'partial', 'failed']);
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -88,6 +89,18 @@ function normalizePendingClarify(data, now = Date.now()) {
 
 function isActiveRunError(error) {
   return /agent run is already in progress|active WebBrain run/i.test(String(error?.message || error || ''));
+}
+
+function normalizeDoneOutcome(value) {
+  const outcome = String(value || '').trim().toLowerCase();
+  return DONE_OUTCOMES.has(outcome) ? outcome : null;
+}
+
+function doneOutcomeFromUpdate(type, data) {
+  if (type !== 'tool_result' || data?.name !== 'done') return null;
+  const result = data?.result;
+  if (!result?.done || result?.success === false || result?.blockedDone || result?.error) return null;
+  return normalizeDoneOutcome(result.outcome);
 }
 
 function canonicalText(value) {
@@ -384,6 +397,7 @@ export function summarizeScheduledJob(job) {
     schedule: job.schedule || null,
     target: job.target || null,
     lastResult: job.lastResult || null,
+    lastOutcome: job.lastOutcome || null,
     lastError: job.lastError || null,
     needsUserInput: job.status === 'needs_user_input',
     pendingClarify: job.pendingClarify || null,
@@ -890,6 +904,7 @@ export class ScheduledJobManager {
     ), () => ({
       status: 'failed',
       lastError: String(error || 'Scheduled job failed.'),
+      lastOutcome: null,
       pendingClarify: null,
     }));
     if (failed) this._emit(failed, 'failed');
@@ -908,6 +923,7 @@ export class ScheduledJobManager {
           ...prev,
           status: 'failed',
           lastError: `Timed out waiting to run: ${reason}`,
+          lastOutcome: null,
           pendingClarify: null,
           updatedAt: iso(this.now()),
         }
@@ -917,6 +933,7 @@ export class ScheduledJobManager {
           nextRunAt: iso(this._nextQueueRetryMs(prev, jobs)),
           queueDeferrals: deferrals,
           lastError: reason,
+          lastOutcome: null,
           pendingClarify: null,
           updatedAt: iso(this.now()),
         };
@@ -990,7 +1007,8 @@ export class ScheduledJobManager {
     return `[Scheduled task ${job.id}: ${job.title}]\nThe user explicitly scheduled this future task. Treat this as the user-authored task for this scheduled run.\nTask: ${job.prompt}\nFirst reread the current page/state. If the task is stale, conflicts with newer user messages, or needs user input, stop and explain.`;
   }
 
-  async _complete(job, result) {
+  async _complete(job, result, outcome = null) {
+    const lastOutcome = normalizeDoneOutcome(outcome);
     if (job.kind === 'task' && job.schedule?.type === 'recurring') {
       const updated = await this._updateJobIf(job.id, (prev) => (
         ['running', 'needs_user_input'].includes(prev.status)
@@ -1005,6 +1023,7 @@ export class ScheduledJobManager {
           runCount: Number(prev.runCount || 0) + 1,
           lastRunAt: iso(this.now()),
           lastResult: String(result || '').slice(0, 2000),
+          lastOutcome,
           lastError: null,
           pendingClarify: null,
         };
@@ -1023,6 +1042,7 @@ export class ScheduledJobManager {
       runCount: Number(prev.runCount || 0) + 1,
       lastRunAt: iso(this.now()),
       lastResult: String(result || '').slice(0, 2000),
+      lastOutcome,
       lastError: null,
       pendingClarify: null,
     }));
@@ -1064,6 +1084,7 @@ export class ScheduledJobManager {
       queueDeferrals: 0,
       startedAt: iso(this.now()),
       lastError: null,
+      lastOutcome: null,
       pendingClarify: null,
     }));
     if (!running) {
@@ -1072,7 +1093,10 @@ export class ScheduledJobManager {
     }
     this._emit(running, 'running');
 
+    let runOutcome = null;
     const onUpdate = (type, data) => {
+      const doneOutcome = doneOutcomeFromUpdate(type, data);
+      if (doneOutcome) runOutcome = doneOutcome;
       if (type === 'clarify') {
         const pendingClarify = normalizePendingClarify(data, this.now());
         this._waitingForInput.add(job.id);
@@ -1097,7 +1121,7 @@ export class ScheduledJobManager {
       await this.loadProviders();
       const result = await this.agent.processMessage(tabId, this._messageForJob(running), onUpdate, running.mode || 'act');
       this._waitingForInput.delete(job.id);
-      await this._complete(running, result);
+      await this._complete(running, result, runOutcome);
     } catch (e) {
       this._waitingForInput.delete(job.id);
       if (isActiveRunError(e)) {

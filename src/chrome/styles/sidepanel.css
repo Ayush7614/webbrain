@@ -1728,3 +1728,43 @@ body {
   cursor: pointer;
 }
 .btn-summarize-recording:hover { background: var(--accent2, #5a52d5); }
+
+.completion-confetti {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.confetti-piece {
+  position: absolute;
+  top: -18px;
+  left: var(--x);
+  width: var(--size);
+  height: var(--height);
+  border-radius: 1px;
+  opacity: 0;
+  transform: translate3d(0, -18px, 0) rotate(0deg);
+  animation: completion-confetti-fall var(--duration) cubic-bezier(0.18, 0.72, 0.24, 1) var(--delay) forwards;
+}
+
+@keyframes completion-confetti-fall {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -18px, 0) rotate(0deg);
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--drift), calc(100vh + 24px), 0) rotate(var(--rotation));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .completion-confetti {
+    display: none;
+  }
+}

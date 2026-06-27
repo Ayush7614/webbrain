@@ -173,6 +173,8 @@ export default {
   'st.display.allow_local_network.desc': '에이전트의 fetch_url 도구가 루프백(127.0.0.1, localhost)과 사설/RFC1918 주소(10.x, 192.168.x, 172.16–31.x)에 접근할 수 있게 합니다. 로컬 개발 서버, 인트라넷 도구, 자체 호스팅 API에 유용합니다. 기본값은 끔 — 꺼져 있으면 prompt 주입된 페이지가 에이전트로 하여금 로컬 네트워크를 탐색하게 만들 수 없습니다. 클라우드 메타데이터 주소(169.254.169.254)와 *.internal/*.local 호스트명은 켜진 상태에서도 차단됩니다.',
   'st.display.notify_sound.label': '완료 알림음',
   'st.display.notify_sound.desc': '에이전트가 작업을 마치면 사이드 패널에서 짧은 알림음을 재생합니다. 실행을 취소한 경우에는 재생되지 않습니다.',
+  'st.display.completion_confetti.label': '완료 색종이',
+  'st.display.completion_confetti.desc': '작업이 성공적으로 끝나면 위에서 짧은 색종이 애니메이션을 표시합니다. 기본적으로 켜져 있으며, 더 차분한 마무리를 원하면 끌 수 있습니다.',
   'st.display.max_steps.label': '에이전트 최대 단계 수',
   'st.display.max_steps.desc': '한 메시지당 에이전트가 사용할 수 있는 도구 호출 단계의 최대 수입니다. 값이 클수록 더 복잡한 다단계 작업이 가능하지만 토큰을 더 소비할 수 있습니다. 슬라이더를 ∞로 설정하면 단계 수가 무제한입니다.',
   'st.display.traces_link.label': '트레이스',
