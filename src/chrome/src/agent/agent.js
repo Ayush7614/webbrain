@@ -531,27 +531,38 @@ export class Agent {
   // tool result the model sees. On second detection within the same loop,
   // we hard-stop the run with a clear final message.
 
-  _recordCall(tabId, name, args, result) {
+  _isToolResultErroredForLoop(name, _args, result) {
+    if (!result || typeof result !== 'object') return false;
+    if (result.error || result.success === false || result.noProgress) return true;
+    const status = Number(result.status);
+    return URL_FAMILY_TOOLS.has(name) && Number.isFinite(status) && status >= 400;
+  }
+
+  _loopCallKey(name, args, result) {
     // URL-family tools (fetch_url, research_url, …) bucket by resource
     // identity so the agent can't escape loop detection by fetching the
     // same logical file via 8 different API endpoints. See loop-bucket.js.
-    const errored = !!(result && (result.error || result.success === false || result.noProgress));
+    const errored = this._isToolResultErroredForLoop(name, args, result);
     const argsHash = bucketArgsKey(name, args);
-    const key = `${name}|${argsHash}|${errored ? 'err' : 'ok'}`;
+    return `${name}|${argsHash}|${errored ? 'err' : 'ok'}`;
+  }
+
+  _recordCall(tabId, name, args, result) {
+    const key = this._loopCallKey(name, args, result);
     const buf = this.recentCalls.get(tabId) || [];
     buf.push({ key, name, ts: Date.now() });
     if (buf.length > 6) buf.shift();
     this.recentCalls.set(tabId, buf);
-    return buf;
+    return { buf, key };
   }
 
-  _detectLoop(buf) {
+  _detectLoop(buf, activeKey = null) {
     if (!buf || buf.length < 3) return null;
     // 1. Same key 3+ times in the window.
     const counts = new Map();
     for (const e of buf) counts.set(e.key, (counts.get(e.key) || 0) + 1);
     for (const [key, n] of counts) {
-      if (n >= 3) {
+      if (n >= 3 && (!activeKey || key === activeKey)) {
         return { type: 'repeat', key, name: key.split('|')[0], count: n };
       }
     }
@@ -567,6 +578,10 @@ export class Agent {
       }
     }
     return null;
+  }
+
+  _isFailedApiMutationForLoop(name, args, result) {
+    return isNetworkMutation(name, args) && this._isToolResultErroredForLoop(name, args, result);
   }
 
   _clearLoopState(tabId) {
@@ -1017,8 +1032,8 @@ export class Agent {
    *   { kind: 'stop',  message: string }   // hard stop, abort the run
    */
   _checkLoop(tabId, toolName, toolArgs, toolResult) {
-    const buf = this._recordCall(tabId, toolName, toolArgs, toolResult);
-    const loop = this._detectLoop(buf);
+    const { buf, key } = this._recordCall(tabId, toolName, toolArgs, toolResult);
+    const loop = this._detectLoop(buf, key);
     if (!loop) {
       // Healthy, non-looping call. We don't reset the nudge counter
       // immediately — that would let the agent escape detection by
@@ -1407,6 +1422,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // unintended navigation happens (the most common cause of "model keeps
     // executing the original plan on a totally different page").
     const navNotices = []; // accumulated for injection after the loop
+    const failedApiMutationLoopKeysThisBatch = new Set();
 
     for (const tc of toolCalls) {
       // Abort check before each tool call.
@@ -1638,7 +1654,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
 
       // Loop detection — two parallel checks, strongest action wins.
-      const loopCheck = this._checkLoop(tabId, fnName, fnArgs, toolResult);
+      let loopCheck = { kind: 'none' };
+      const loopKey = this._loopCallKey(fnName, fnArgs, toolResult);
+      const failedApiMutation = this._isFailedApiMutationForLoop(fnName, fnArgs, toolResult);
+      if (!failedApiMutation || !failedApiMutationLoopKeysThisBatch.has(loopKey)) {
+        if (failedApiMutation) failedApiMutationLoopKeysThisBatch.add(loopKey);
+        loopCheck = this._checkLoop(tabId, fnName, fnArgs, toolResult);
+      }
       let coordCheck = { kind: 'none' };
       if (fnName === 'click' && fnArgs?.x != null && fnArgs?.y != null) {
         coordCheck = this._checkCoordClickLoop(tabId, fnArgs.x, fnArgs.y);

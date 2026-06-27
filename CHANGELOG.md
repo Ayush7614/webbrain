@@ -4,6 +4,16 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / `manifest.json` version.
 
+## [18.0.4] - 2026-06-27
+
+### Fixed
+- Prevented stale repeated `fetch_url` loop entries from hard-stopping the agent after it switches to a different tool, such as falling back from failed API calls to `click_ax`.
+- Collapsed repeated failed mutating API calls in one assistant batch into a single failed API strategy for loop detection, while keeping `/allow-api` as the required opt-in for API mutations.
+- Reasserted the active viewport glow after tab reloads during a running task so the visual run indicator comes back when the content script reloads.
+
+### Tests
+- Added Chrome and Firefox regression coverage for stale URL-tool loop pivots, failed API mutation batches, and active viewport glow reassertion after reload.
+
 ## [18.0.3] - 2026-06-27
 
 ### Changed

@@ -261,7 +261,7 @@ const {
 // agent.js imports tools.js and cdp-client.js (which uses chrome.*). We need
 // only the loop-detection helpers, so we extract them via a tiny standalone
 // shim that mirrors the relevant Agent methods. Keep this in sync with
-// agent.js _recordCall / _detectLoop / _checkLoop / _detectApiShortcut.
+// agent.js _loopCallKey / _recordCall / _detectLoop / _checkLoop / _detectApiShortcut.
 class LoopDetectorShim {
   constructor() {
     this.recentCalls = new Map();
@@ -284,26 +284,35 @@ class LoopDetectorShim {
     if (n >= 5) return { kind: 'nudge', x: bx, y: by };
     return { kind: 'none' };
   }
-  _recordCall(tabId, name, args, result) {
+  _isToolResultErroredForLoop(name, _args, result) {
+    if (!result || typeof result !== 'object') return false;
+    if (result.error || result.success === false || result.noProgress) return true;
+    const status = Number(result.status);
+    return URL_FAMILY_TOOLS.has(name) && Number.isFinite(status) && status >= 400;
+  }
+  _loopCallKey(name, args, result) {
     // Mirror agent.js: URL-family tools bucket by resource identity so
     // the agent can't escape loop detection by fetching the same file
     // via 8 different API endpoints. Falls back to exact JSON for other
     // tools.
     const argsHash = bucketArgsKey(name, args);
-    const errored = !!(result && (result.error || result.success === false || result.noProgress));
-    const key = `${name}|${argsHash}|${errored ? 'err' : 'ok'}`;
+    const errored = this._isToolResultErroredForLoop(name, args, result);
+    return `${name}|${argsHash}|${errored ? 'err' : 'ok'}`;
+  }
+  _recordCall(tabId, name, args, result) {
+    const key = this._loopCallKey(name, args, result);
     const buf = this.recentCalls.get(tabId) || [];
     buf.push({ key, name, ts: Date.now() });
     if (buf.length > 6) buf.shift();
     this.recentCalls.set(tabId, buf);
-    return buf;
+    return { buf, key };
   }
-  _detectLoop(buf) {
+  _detectLoop(buf, activeKey = null) {
     if (!buf || buf.length < 3) return null;
     const counts = new Map();
     for (const e of buf) counts.set(e.key, (counts.get(e.key) || 0) + 1);
     for (const [key, n] of counts) {
-      if (n >= 3) return { type: 'repeat', key, name: key.split('|')[0], count: n };
+      if (n >= 3 && (!activeKey || key === activeKey)) return { type: 'repeat', key, name: key.split('|')[0], count: n };
     }
     if (buf.length >= 4) {
       const last4 = buf.slice(-4);
@@ -318,8 +327,8 @@ class LoopDetectorShim {
     return null;
   }
   _checkLoop(tabId, name, args, result) {
-    const buf = this._recordCall(tabId, name, args, result);
-    const loop = this._detectLoop(buf);
+    const { buf, key } = this._recordCall(tabId, name, args, result);
+    const loop = this._detectLoop(buf, key);
     if (!loop) {
       const healthy = (this.healthyCallsSinceLoop.get(tabId) || 0) + 1;
       this.healthyCallsSinceLoop.set(tabId, healthy);
@@ -629,6 +638,23 @@ test('nudge counter persists across one healthy call (slow loop)', () => {
   assert.equal(result.kind, 'nudge', `expected nudge, got ${result.kind}`);
 });
 
+test('stale repeated fetch_url entries do not stop after switching tools', () => {
+  const d = new LoopDetectorShim();
+  const tab = 71;
+  for (let i = 0; i < 9; i++) {
+    const result = d._checkLoop(
+      tab,
+      'fetch_url',
+      { url: `https://github.com/users/follow?target=user${i}`, method: 'POST' },
+      { success: true, status: 422, title: 'Oh no' },
+    );
+    assert.notEqual(result.kind, 'stop', `fetch attempt ${i + 1} stopped too early`);
+  }
+
+  const pivot = d._checkLoop(tab, 'click_ax', { ref_id: 'ref_157' }, { success: true });
+  assert.equal(pivot.kind, 'none');
+});
+
 test('nudge counter resets after a sustained healthy streak', () => {
   const d = new LoopDetectorShim();
   const tab = 8;
@@ -757,8 +783,8 @@ test('_detectApiShortcut: match found returns url + method', () => {
   const tabId = 200;
   d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
   d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
-  const buf = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
-  const loop = d._detectLoop(buf);
+  const { buf, key } = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const loop = d._detectLoop(buf, key);
   assert.ok(loop, 'expected loop to be detected');
   assert.equal(loop.type, 'repeat');
 
@@ -788,8 +814,8 @@ test('_detectApiShortcut: one request cannot satisfy multiple click windows', ()
   const tabId = 205;
   d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
   d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
-  const buf = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
-  const loop = d._detectLoop(buf);
+  const { buf, key } = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const loop = d._detectLoop(buf, key);
   assert.ok(loop, 'expected loop to be detected');
 
   const base = Date.now();
@@ -819,8 +845,8 @@ test('_detectApiShortcut: no API requests returns null', () => {
   const tabId = 201;
   d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
   d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
-  const buf = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
-  const loop = d._detectLoop(buf);
+  const { buf, key } = d._recordCall(tabId, 'click', { selector: '#next' }, { success: true });
+  const loop = d._detectLoop(buf, key);
   assert.ok(loop);
 
   delete globalThis.__webbrainApiRequests;
@@ -832,8 +858,8 @@ test('_detectApiShortcut: non-click tool name returns null', () => {
   const tabId = 202;
   d._recordCall(tabId, 'read_page', {}, { ok: true });
   d._recordCall(tabId, 'read_page', {}, { ok: true });
-  const buf = d._recordCall(tabId, 'read_page', {}, { ok: true });
-  const loop = d._detectLoop(buf);
+  const { buf, key } = d._recordCall(tabId, 'read_page', {}, { ok: true });
+  const loop = d._detectLoop(buf, key);
   assert.ok(loop);
   assert.equal(loop.name, 'read_page');
 
@@ -853,8 +879,8 @@ test('_detectApiShortcut: request outside 3 s window returns null', () => {
   const tabId = 203;
   d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
   d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
-  const buf = d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
-  const loop = d._detectLoop(buf);
+  const { buf, key } = d._recordCall(tabId, 'click', { selector: '#load' }, { success: true });
+  const loop = d._detectLoop(buf, key);
   assert.ok(loop);
 
   // Requests timestamped 5 s before each click — outside the 3 s window.
@@ -879,8 +905,8 @@ test('_detectApiShortcut: write-method requests remain eligible for explicit API
   const tabId = 204;
   d._recordCall(tabId, 'click', { selector: '#delete' }, { success: true });
   d._recordCall(tabId, 'click', { selector: '#delete' }, { success: true });
-  const buf = d._recordCall(tabId, 'click', { selector: '#delete' }, { success: true });
-  const loop = d._detectLoop(buf);
+  const { buf, key } = d._recordCall(tabId, 'click', { selector: '#delete' }, { success: true });
+  const loop = d._detectLoop(buf, key);
   assert.ok(loop);
 
   const clickTimes = buf.filter(e => e.key === loop.key).map(e => e.ts);
@@ -7185,6 +7211,48 @@ test('agent allows mutating fetch_url after /allow-api', async () => {
   }
 });
 
+test('agent counts failed API mutation batch as one loop strategy', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 4897;
+    let executed = 0;
+    agent.executeTool = async () => {
+      executed++;
+      return { success: true, status: 422, title: 'Oh no', text: 'What‽ Your browser did something unexpected.' };
+    };
+    agent._ensureGateSetting = async () => {};
+    agent._skipPermissionGate = true;
+    agent.setApiMutationsAllowed(tabId, true);
+    const messages = [];
+    const toolCalls = Array.from({ length: 9 }, (_, i) => ({
+      id: `fetch_${i}`,
+      function: {
+        name: 'fetch_url',
+        arguments: JSON.stringify({
+          url: `https://github.com/users/follow?target=user${i}`,
+          method: 'POST',
+        }),
+      },
+    }));
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      toolCalls,
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['fetch_url']),
+      1,
+    );
+
+    assert.equal(executed, 9, `${AgentClass.name}: expected all batch API attempts to execute`);
+    assert.equal(result.action, 'continue', `${AgentClass.name}: failed API batch should not hard-stop as a loop`);
+    assert.equal(messages.length, 9, `${AgentClass.name}: expected one tool result per batch call`);
+    assert.equal(agent.loopNudges.get(tabId) || 0, 0, `${AgentClass.name}: duplicate failed API batch calls should not accumulate loop nudges`);
+  }
+});
+
 test('capabilityFor: screenshot is read-only, but save:true is a download', () => {
   assert.equal(capabilityFor('screenshot', {}), null);
   assert.equal(capabilityFor('full_page_screenshot', {}), null);
@@ -9811,6 +9879,20 @@ test('plan before act: try mode is default with strict/off migration', () => {
     assert.match(source, /planBeforeActMode/, `${file} should use the planner mode setting`);
     assert.match(source, /return 'try'/, `${file} should treat unset storage as try planning`);
     assert.match(source, /return 'off'/, `${file} should preserve legacy disabled storage`);
+  }
+});
+
+test('background reasserts active viewport glow after tab reload', () => {
+  for (const [label, file] of [
+    ['chrome', 'src/chrome/src/background.js'],
+    ['firefox', 'src/firefox/src/background.js'],
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.match(source, /const activeIndicatorTabs = new Set\(\);/, `${label}: active indicator tab registry missing`);
+    assert.match(source, /activeIndicatorTabs\.add\(tabId\);/, `${label}: show should mark tab active`);
+    assert.match(source, /activeIndicatorTabs\.delete\(tabId\);/, `${label}: hide/remove should clear active tab`);
+    assert.match(source, /onUpdated\.addListener\(\(tabId, changeInfo\) => \{[\s\S]*changeInfo\?\.status === 'complete'[\s\S]*reassertIndicatorIfActive\(tabId\);/, `${label}: completed reload should reassert active indicator`);
+    assert.match(source, /setTimeout\(\(\) => \{[\s\S]*activeIndicatorTabs\.has\(tabId\)[\s\S]*WB_SHOW_AGENT_INDICATORS[\s\S]*\}, 500\);/, `${label}: delayed reassert retry missing`);
   }
 });
 

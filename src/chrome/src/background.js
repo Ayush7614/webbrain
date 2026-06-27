@@ -462,12 +462,39 @@ chrome.contextMenus?.onClicked?.addListener?.((info, tab) => {
  * content script there) and on tabs that haven't loaded yet. We don't
  * await — these are decorative and shouldn't block the run.
  */
+const activeIndicatorTabs = new Set();
+
 function sendIndicatorMessage(tabId, type) {
   if (tabId == null || !type) return;
+  if (type === 'WB_SHOW_AGENT_INDICATORS') {
+    activeIndicatorTabs.add(tabId);
+  } else if (type === 'WB_HIDE_AGENT_INDICATORS') {
+    activeIndicatorTabs.delete(tabId);
+  }
   try {
     chrome.tabs.sendMessage(tabId, { type }).catch(() => { /* expected */ });
   } catch { /* ignore */ }
 }
+
+function reassertIndicatorIfActive(tabId) {
+  if (!activeIndicatorTabs.has(tabId)) return;
+  sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
+  setTimeout(() => {
+    if (activeIndicatorTabs.has(tabId)) {
+      sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
+    }
+  }, 500);
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo?.status === 'complete') {
+    reassertIndicatorIfActive(tabId);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  activeIndicatorTabs.delete(tabId);
+});
 
 function sendAgentRunComplete(tabId) {
   if (tabId == null) return;

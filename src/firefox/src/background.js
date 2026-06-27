@@ -459,12 +459,39 @@ browser.browserAction.onClicked.addListener((tab) => {
  * effort: silently no-ops on about:* / file:// pages without our
  * content script and on tabs that haven't loaded yet.
  */
+const activeIndicatorTabs = new Set();
+
 function sendIndicatorMessage(tabId, type) {
   if (tabId == null || !type) return;
+  if (type === 'WB_SHOW_AGENT_INDICATORS') {
+    activeIndicatorTabs.add(tabId);
+  } else if (type === 'WB_HIDE_AGENT_INDICATORS') {
+    activeIndicatorTabs.delete(tabId);
+  }
   try {
     browser.tabs.sendMessage(tabId, { type }).catch(() => { /* expected */ });
   } catch { /* ignore */ }
 }
+
+function reassertIndicatorIfActive(tabId) {
+  if (!activeIndicatorTabs.has(tabId)) return;
+  sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
+  setTimeout(() => {
+    if (activeIndicatorTabs.has(tabId)) {
+      sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
+    }
+  }, 500);
+}
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo?.status === 'complete') {
+    reassertIndicatorIfActive(tabId);
+  }
+});
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  activeIndicatorTabs.delete(tabId);
+});
 
 function sendAgentRunComplete(tabId) {
   if (tabId == null) return;
