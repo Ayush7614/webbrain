@@ -432,10 +432,6 @@
   <h1 data-i18n="st.title"></h1>
   <p class="subtitle" id="subtitle"></p>
 
-  <!-- WebBrain Cloud billing is device-bound and managed by Stripe. -->
-  <h2 data-i18n="st.tab.account"></h2>
-  <div id="account-section"></div>
-
   <nav class="tabs" role="tablist">
     <button class="tab-btn" type="button" role="tab" data-tab="display" data-i18n="st.tab.display"></button>
     <button class="tab-btn active" type="button" role="tab" data-tab="providers" data-i18n="st.tab.providers"></button>
@@ -492,6 +488,16 @@
         </div>
         <label class="toggle">
           <input type="checkbox" id="toggle-site-adapters" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-label" data-i18n="st.display.api_mutation_observer.label"></div>
+          <div class="setting-desc" data-i18n="st.display.api_mutation_observer.desc"></div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-api-mutation-observer">
           <span class="toggle-slider"></span>
         </label>
       </div>

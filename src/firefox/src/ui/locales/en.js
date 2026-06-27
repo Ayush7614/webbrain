@@ -290,6 +290,8 @@ export default {
   'st.display.screenshot.desc': 'Capture a screenshot of the page when DOM reading fails or returns insufficient content. Requires a vision-capable model.',
   'st.display.site_adapters.label': 'Site adapters',
   'st.display.site_adapters.desc': 'Inject short, hand-curated guidance for known high-traffic sites (GitHub, Gmail, Stripe, AWS, etc.) into the agent\'s first message. Helps the agent avoid common dead-ends. Adds a small token cost on the first turn of conversations on matched sites.',
+  'st.display.api_mutation_observer.label': 'API mutation observer',
+  'st.display.api_mutation_observer.desc': 'Observe same-tab XHR/fetch request URLs and methods so WebBrain can detect repeated UI actions and suggest API shortcut patterns. Off by default; enable only while investigating shortcut behavior or latency.',
   'st.display.plan_before_act.label': 'Plan before Act',
   'st.display.plan_before_act.desc': 'In Act mode, try generating a structured plan first. Try mode continues without a pinned plan if planning fails; strict mode cancels instead. Adds one LLM call per Act turn.',
   'st.display.plan_before_act.try': 'Try planning (default)',

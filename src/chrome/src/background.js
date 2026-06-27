@@ -195,6 +195,9 @@ chrome.storage.onChanged.addListener((changes) => {
     agent.useSiteAdapters = changes.useSiteAdapters.newValue;
     refreshPrompts = true;
   }
+  if (changes[API_MUTATION_OBSERVER_KEY]) {
+    setApiMutationObserverEnabled(changes[API_MUTATION_OBSERVER_KEY].newValue === true);
+  }
   if (changes.strictSecretMode) {
     agent.strictSecretMode = !!changes.strictSecretMode.newValue;
     // The setting only flips the `done` tool description and the credential
@@ -639,20 +642,46 @@ chrome.tabs.onRemoved.addListener((tabId) => lastNavByTab.delete(tabId));
 // Strict matching only: same tab, exact method/url captured as-is — no
 // param-pattern fuzzing yet.
 const API_REQUESTS_PER_TAB_LIMIT = 40;
+const API_MUTATION_OBSERVER_KEY = 'apiMutationObserverEnabled';
 const apiRequestsByTab = new Map(); // tabId -> [{ url, method, ts }]
 globalThis.__webbrainApiRequests = apiRequestsByTab;
+let apiMutationObserverRegistered = false;
 
-chrome.webRequest.onBeforeRequest.addListener(
-  (details) => {
-    const { tabId, url, method } = details;
-    if (tabId == null || tabId < 0) return;
-    const list = apiRequestsByTab.get(tabId) || [];
-    list.push({ url, method, ts: Date.now() });
-    if (list.length > API_REQUESTS_PER_TAB_LIMIT) list.shift();
-    apiRequestsByTab.set(tabId, list);
-  },
-  { urls: ['<all_urls>'], types: ['xmlhttprequest'] }
-);
+function recordApiRequest(details) {
+  const { tabId, url, method } = details;
+  if (tabId == null || tabId < 0) return;
+  const list = apiRequestsByTab.get(tabId) || [];
+  list.push({ url, method, ts: Date.now() });
+  if (list.length > API_REQUESTS_PER_TAB_LIMIT) list.shift();
+  apiRequestsByTab.set(tabId, list);
+}
+
+function setApiMutationObserverEnabled(enabled) {
+  const shouldEnable = enabled === true;
+  const onBeforeRequest = chrome.webRequest?.onBeforeRequest;
+  if (!onBeforeRequest) return;
+  if (shouldEnable && !apiMutationObserverRegistered) {
+    onBeforeRequest.addListener(recordApiRequest, { urls: ['<all_urls>'], types: ['xmlhttprequest'] });
+    apiMutationObserverRegistered = true;
+  } else if (!shouldEnable && apiMutationObserverRegistered) {
+    onBeforeRequest.removeListener(recordApiRequest);
+    apiMutationObserverRegistered = false;
+    apiRequestsByTab.clear();
+  } else if (!shouldEnable) {
+    apiRequestsByTab.clear();
+  }
+}
+
+async function loadApiMutationObserverSetting() {
+  try {
+    const stored = await chrome.storage.local.get(API_MUTATION_OBSERVER_KEY);
+    setApiMutationObserverEnabled(stored[API_MUTATION_OBSERVER_KEY] === true);
+  } catch (e) {
+    setApiMutationObserverEnabled(false);
+  }
+}
+
+loadApiMutationObserverSetting();
 
 chrome.tabs.onRemoved.addListener((tabId) => apiRequestsByTab.delete(tabId));
 

@@ -23,6 +23,7 @@ const costSpentValueLabel = document.getElementById('cost-spent-value');
 const btnResetCostSpend = document.getElementById('btn-reset-cost-spend');
 const autoScreenshotSelect = document.getElementById('select-auto-screenshot');
 const siteAdaptersToggle = document.getElementById('toggle-site-adapters');
+const apiMutationObserverToggle = document.getElementById('toggle-api-mutation-observer');
 const planBeforeActModeSelect = document.getElementById('select-plan-before-act-mode');
 const notifySoundToggle = document.getElementById('toggle-notify-sound');
 const completionConfettiToggle = document.getElementById('toggle-completion-confetti');
@@ -31,7 +32,6 @@ const strictSecretToggle = document.getElementById('toggle-strict-secret');
 const allowLocalNetworkToggle = document.getElementById('toggle-allow-local-network');
 const scheduledTasksToggle = document.getElementById('toggle-scheduled-tasks');
 const scheduledConfirmToggle = document.getElementById('toggle-scheduled-confirm');
-const accountSection = document.getElementById('account-section');
 const visionBaseUrlInput = document.getElementById('vision-base-url');
 const visionApiKeyInput = document.getElementById('vision-api-key');
 const visionModelInput = document.getElementById('vision-model');
@@ -109,13 +109,11 @@ if (languageSelect) {
     await setLocale(languageSelect.value);
     // Re-render dynamic bits whose text comes from JS.
     renderSubtitle();
-    renderAuthSection();
     renderProviders();
   });
   document.addEventListener('wb-locale-changed', () => {
     languageSelect.value = getLocale();
     renderSubtitle();
-    if (accountSection) renderAuthSection();
     if (providersContainer) renderProviders();
     renderPermissions();
   });
@@ -193,16 +191,13 @@ const expandedProviders = new Set(); // ids the user explicitly expanded this se
 // --- Init ---
 
 async function init() {
-  // Render once now; render again after providers load so deviceGuid is present.
-  renderAuthSection();
-
   // Migration: the old auth.webbrain.one sign-in stored a bearer token and
   // account info here. Billing is now device-GUID based and there is no sign-in
   // UI, so purge any stale credentials left over from that flow.
   chrome.storage.local.remove(['authToken', 'authEmail', 'authDefaultModel']).catch(() => {});
 
   // Load display settings
-  const stored = await chrome.storage.local.get(['verboseMode', 'screenshotFallback', 'maxAgentSteps', 'autoScreenshot', 'useSiteAdapters', 'planBeforeActMode', 'planBeforeAct', 'notifySound', 'completionConfetti', 'tracingEnabled', 'strictSecretMode', 'agentAllowLocalNetwork', 'scheduledTasksEnabled', 'scheduledRequireConsequentialConfirmation', 'providerFilter', 'requestTimeoutMs', 'costAllowanceSessionUsd', 'costAllowanceTotalUsd', 'cloudCostSpentUsd']);
+  const stored = await chrome.storage.local.get(['verboseMode', 'screenshotFallback', 'maxAgentSteps', 'autoScreenshot', 'useSiteAdapters', 'apiMutationObserverEnabled', 'planBeforeActMode', 'planBeforeAct', 'notifySound', 'completionConfetti', 'tracingEnabled', 'strictSecretMode', 'agentAllowLocalNetwork', 'scheduledTasksEnabled', 'scheduledRequireConsequentialConfirmation', 'providerFilter', 'requestTimeoutMs', 'costAllowanceSessionUsd', 'costAllowanceTotalUsd', 'cloudCostSpentUsd']);
   if (typeof stored.providerFilter === 'string' && ['all','local','cloud','router'].includes(stored.providerFilter)) {
     providerFilter = stored.providerFilter;
   }
@@ -227,6 +222,7 @@ async function init() {
   }
   autoScreenshotSelect.value = stored.autoScreenshot || 'state_change';
   siteAdaptersToggle.checked = stored.useSiteAdapters ?? true;
+  apiMutationObserverToggle.checked = stored.apiMutationObserverEnabled === true;
   if (planBeforeActModeSelect) {
     planBeforeActModeSelect.value = normalizePlanBeforeActMode(stored);
   }
@@ -285,7 +281,6 @@ async function init() {
   const res = await sendToBackground('get_providers');
   providersData = res.providers;
   activeProviderId = res.active;
-  renderAuthSection();
   renderProviders();
 }
 
@@ -380,37 +375,6 @@ if (globalThis.chrome?.storage?.onChanged) {
   });
 }
 
-// --- WebBrain Cloud Billing ---
-
-function currentWebbrainDeviceGuid() {
-  return providersData?.webbrain_cloud?.deviceGuid || '';
-}
-
-function renderAuthSection() {
-  if (!accountSection) return;
-  const deviceGuid = currentWebbrainDeviceGuid();
-  const billingHref = webbrainAccountUrl(deviceGuid);
-  const disabledAttr = deviceGuid ? '' : ' disabled';
-  const statusText = deviceGuid
-    ? t('st.account.billing_managed')
-    : t('st.account.billing_preparing');
-
-  accountSection.innerHTML = `
-    <div class="account-card">
-      <div class="account-info">
-        <div class="account-email">${escapeHtml(t('st.account.provider_name'))}</div>
-        <div class="account-provider">${escapeHtml(statusText)}</div>
-      </div>
-      <button class="btn-sign-in" id="btn-manage-billing"${disabledAttr}>${escapeHtml(t('st.account.manage_billing'))}</button>
-    </div>
-  `;
-
-  document.getElementById('btn-manage-billing')?.addEventListener('click', () => {
-    if (!deviceGuid) return;
-    window.open(billingHref, '_blank', 'noopener,noreferrer');
-  });
-}
-
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -456,6 +420,10 @@ autoScreenshotSelect.addEventListener('change', async () => {
 
 siteAdaptersToggle.addEventListener('change', async () => {
   await chrome.storage.local.set({ useSiteAdapters: siteAdaptersToggle.checked }).catch(() => {});
+});
+
+apiMutationObserverToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ apiMutationObserverEnabled: apiMutationObserverToggle.checked }).catch(() => {});
 });
 
 if (planBeforeActModeSelect) {
@@ -1126,6 +1094,9 @@ function renderProviders() {
 
     const subscribeHref = id === 'webbrain_cloud' ? webbrainSubscribeUrl(config.deviceGuid) : '';
     const accountHref = id === 'webbrain_cloud' ? webbrainAccountUrl(config.deviceGuid) : '';
+    const billingButton = id === 'webbrain_cloud'
+      ? `<button class="btn-secondary btn-manage-billing" data-href="${escapeHtml(accountHref)}"${config.deviceGuid ? '' : ' disabled'}>${escapeHtml(t('st.account.manage_billing'))}</button>`
+      : '';
     let providerNote = '';
     if (id === 'webbrain_cloud') {
       const linkStyle = 'color:var(--accent,#4A90D9);text-decoration:none;';
@@ -1148,6 +1119,7 @@ function renderProviders() {
       <div class="btn-row">
         <button class="btn-primary btn-save" data-provider="${id}">${escapeHtml(t('st.providers.save'))}</button>
         <button class="btn-secondary btn-test" data-provider="${id}">${escapeHtml(t('st.providers.test'))}</button>
+        ${billingButton}
         ${!isActive ? `<button class="btn-secondary btn-activate" data-provider="${id}">${escapeHtml(t('st.providers.set_active'))}</button>` : ''}
       </div>
       <div class="test-result" id="test-${id}"></div>
@@ -1177,6 +1149,13 @@ function renderProviders() {
   });
   document.querySelectorAll('.btn-load-models').forEach(btn => {
     btn.addEventListener('click', () => loadProviderModels(btn.dataset.provider));
+  });
+  document.querySelectorAll('.btn-manage-billing').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const href = btn.dataset.href || '';
+      if (!href) return;
+      window.open(href, '_blank', 'noopener,noreferrer');
+    });
   });
   document.querySelectorAll('.model-select').forEach(sel => {
     sel.addEventListener('change', () => {

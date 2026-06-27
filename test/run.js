@@ -3504,6 +3504,48 @@ test('settings exposes a Cloudflare account ID field before the base URL templat
   }
 });
 
+test('settings scopes WebBrain Cloud billing button to provider card only', () => {
+  for (const [label, settingsRel, htmlRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js', 'src/chrome/src/ui/settings.html'],
+    ['firefox', 'src/firefox/src/ui/settings.js', 'src/firefox/src/ui/settings.html'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    const html = fs.readFileSync(path.join(ROOT, htmlRel), 'utf8');
+    assert.doesNotMatch(html, /account-section/, `${label}: top-level account section should be removed`);
+    assert.doesNotMatch(settings, /renderAuthSection/, `${label}: top-level billing renderer should be removed`);
+    assert.match(settings, /id === 'webbrain_cloud'[\s\S]*btn-manage-billing/, `${label}: billing button should be created only for WebBrain Cloud`);
+    assert.match(settings, /document\.querySelectorAll\('\.btn-manage-billing'\)[\s\S]*window\.open\(href, '_blank', 'noopener,noreferrer'\)/, `${label}: billing button should open the account portal`);
+  }
+});
+
+test('API mutation observer setting is opt-in and controls the request observer', () => {
+  for (const [label, bgRel, settingsRel, htmlRel] of [
+    ['chrome', 'src/chrome/src/background.js', 'src/chrome/src/ui/settings.js', 'src/chrome/src/ui/settings.html'],
+    ['firefox', 'src/firefox/src/background.js', 'src/firefox/src/ui/settings.js', 'src/firefox/src/ui/settings.html'],
+  ]) {
+    const bg = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    const html = fs.readFileSync(path.join(ROOT, htmlRel), 'utf8');
+
+    assert.match(html, /id="toggle-api-mutation-observer"/, `${label}: settings toggle missing`);
+    assert.doesNotMatch(html, /id="toggle-api-mutation-observer"\s+checked/, `${label}: observer toggle should default off`);
+    assert.match(settings, /apiMutationObserverEnabled/, `${label}: settings should persist observer toggle`);
+    assert.match(settings, /apiMutationObserverToggle\.checked = stored\.apiMutationObserverEnabled === true/, `${label}: observer should load off by default`);
+    assert.match(settings, /apiMutationObserverEnabled:\s*apiMutationObserverToggle\.checked/, `${label}: observer toggle should save storage`);
+    assert.match(bg, /const API_MUTATION_OBSERVER_KEY = 'apiMutationObserverEnabled';/, `${label}: storage key missing`);
+    assert.match(bg, /function setApiMutationObserverEnabled\(enabled\)/, `${label}: observer gate missing`);
+    assert.doesNotMatch(bg, /(?:chrome|browser)\.webRequest\.onBeforeRequest\.addListener\(/, `${label}: observer should not register unconditionally`);
+    assert.match(bg, /onBeforeRequest\.addListener\(recordApiRequest/, `${label}: observer should register only through the gate`);
+    assert.match(bg, /onBeforeRequest\.removeListener\(recordApiRequest\)/, `${label}: observer should unregister when disabled`);
+    assert.match(bg, /setApiMutationObserverEnabled\(stored\[API_MUTATION_OBSERVER_KEY\] === true\)/, `${label}: unset storage should load as off`);
+    assert.match(
+      bg,
+      /changes\[API_MUTATION_OBSERVER_KEY\][\s\S]*setApiMutationObserverEnabled\(changes\[API_MUTATION_OBSERVER_KEY\]\.newValue === true\)/,
+      `${label}: storage changes should update observer`,
+    );
+  }
+});
+
 test('settings async test controls surface rejected background results', () => {
   for (const [label, settingsRel] of [
     ['chrome', 'src/chrome/src/ui/settings.js'],
