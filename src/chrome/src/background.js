@@ -562,6 +562,29 @@ chrome.webNavigation?.onCompleted?.addListener((details) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => lastNavByTab.delete(tabId));
 
+// Background API call observer (issue #189). Watches XHR/fetch requests the
+// page itself fires — e.g. clicking "Next Page" — so the agent can later spot
+// a repeated UI action and shortcut to calling the underlying API directly.
+// Strict matching only: same tab, exact method/url captured as-is — no
+// param-pattern fuzzing yet.
+const API_REQUESTS_PER_TAB_LIMIT = 40;
+const apiRequestsByTab = new Map(); // tabId -> [{ url, method, ts }]
+globalThis.__webbrainApiRequests = apiRequestsByTab;
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    const { tabId, url, method } = details;
+    if (tabId == null || tabId < 0) return;
+    const list = apiRequestsByTab.get(tabId) || [];
+    list.push({ url, method, ts: Date.now() });
+    if (list.length > API_REQUESTS_PER_TAB_LIMIT) list.shift();
+    apiRequestsByTab.set(tabId, list);
+  },
+  { urls: ['<all_urls>'], types: ['xmlhttprequest'] }
+);
+
+chrome.tabs.onRemoved.addListener((tabId) => apiRequestsByTab.delete(tabId));
+
 /**
  * Central message handler.
  */

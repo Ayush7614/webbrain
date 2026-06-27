@@ -12,6 +12,7 @@
     "scripting",
     "storage",
     "webNavigation",
+    "webRequest",
     "debugger",
     "downloads",
     "alarms",
