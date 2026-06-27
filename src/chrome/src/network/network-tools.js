@@ -297,6 +297,191 @@ function apiReplayOptionsForFetch(rawUrl, opts = {}, ctx = {}) {
   };
 }
 
+function formatTextFetchResult({ status, contentType, finalUrl, text, replayContext = null }) {
+  const normalizedContentType = (contentType || '').toLowerCase();
+  const body = String(text ?? '');
+  const success = Number(status) < 400;
+  const error = success ? undefined : `Fetch returned HTTP ${status}`;
+  const base = {
+    success,
+    ...(error ? { error } : {}),
+    status,
+    contentType: normalizedContentType,
+    url: finalUrl,
+    ...(replayContext ? { replayContext } : {}),
+  };
+
+  if (normalizedContentType.includes('json')) {
+    let pretty = body;
+    try { pretty = JSON.stringify(JSON.parse(body), null, 2); } catch (e) {}
+    return {
+      ...base,
+      json: pretty.slice(0, FETCH_JSON_LIMIT),
+      truncated: pretty.length > FETCH_JSON_LIMIT,
+      originalLength: pretty.length,
+    };
+  }
+
+  if (normalizedContentType.includes('html') || normalizedContentType.includes('xhtml')) {
+    const { title, text: readableText } = htmlToText(body);
+    return {
+      ...base,
+      title,
+      text: readableText.slice(0, FETCH_TEXT_LIMIT),
+      truncated: readableText.length > FETCH_TEXT_LIMIT,
+      originalLength: readableText.length,
+    };
+  }
+
+  if (normalizedContentType.startsWith('text/') ||
+      normalizedContentType.includes('xml') ||
+      normalizedContentType.includes('javascript') ||
+      normalizedContentType.includes('csv') ||
+      normalizedContentType.includes('markdown') ||
+      normalizedContentType === '') {
+    return {
+      ...base,
+      text: body.slice(0, FETCH_TEXT_LIMIT),
+      truncated: body.length > FETCH_TEXT_LIMIT,
+      originalLength: body.length,
+    };
+  }
+
+  return {
+    ...base,
+    text: body.slice(0, FETCH_TEXT_LIMIT),
+    truncated: body.length > FETCH_TEXT_LIMIT,
+    originalLength: body.length,
+    note: 'Replay response was read as text because page-context replay cannot stream binary content back to the background.',
+  };
+}
+
+async function fetchReplayInPageContext(url, opts = {}, ctx = {}, allowLocal = false) {
+  const replayRequestId = opts.replayRequestId || opts.apiReplayRequestId;
+  const api = globalThis.chrome;
+  if (!replayRequestId || ctx?.tabId == null || !api?.tabs?.get) return null;
+
+  let tab;
+  let target;
+  try {
+    tab = await api.tabs.get(ctx.tabId);
+    target = new URL(url);
+    const page = new URL(tab?.url || '');
+    if (page.origin !== target.origin) return null;
+  } catch (_) {
+    return null;
+  }
+  if (!api.scripting?.executeScript) {
+    return {
+      success: false,
+      error: 'Page-context API replay is unavailable in this browser context.',
+      replayContext: 'page',
+    };
+  }
+
+  const init = {
+    method: opts.method || 'GET',
+    headers: opts.headers || {},
+    body: opts.body ?? null,
+  };
+
+  let payload;
+  try {
+    const results = await api.scripting.executeScript({
+      target: { tabId: ctx.tabId },
+      world: 'MAIN',
+      args: [url, init],
+      func: async (rawUrl, replayInit) => {
+        try {
+          const targetUrl = new URL(rawUrl, location.href);
+          if (targetUrl.origin !== location.origin) {
+            return {
+              ok: false,
+              error: `Page-context replay target ${targetUrl.origin} does not match page origin ${location.origin}.`,
+              finalUrl: targetUrl.href,
+            };
+          }
+          const headers = {};
+          for (const [name, value] of Object.entries(replayInit.headers || {})) {
+            if (value != null) headers[name] = String(value);
+          }
+          const response = await fetch(targetUrl.href, {
+            method: replayInit.method || 'GET',
+            headers,
+            body: replayInit.body == null ? undefined : replayInit.body,
+            credentials: 'include',
+            redirect: 'follow',
+          });
+          const finalUrl = response.url || targetUrl.href;
+          try {
+            if (new URL(finalUrl).origin !== location.origin) {
+              return {
+                ok: false,
+                error: 'Page-context replay redirected outside the page origin; response body was discarded.',
+                status: response.status,
+                finalUrl,
+              };
+            }
+          } catch (_) {}
+          return {
+            ok: true,
+            status: response.status,
+            url: finalUrl,
+            contentType: response.headers.get('content-type') || '',
+            text: await response.text(),
+          };
+        } catch (e) {
+          return { ok: false, error: e?.message || String(e) };
+        }
+      },
+    });
+    payload = results?.[0]?.result;
+  } catch (e) {
+    return {
+      success: false,
+      error: `Page-context API replay failed before fetch: ${e.message}`,
+      replayContext: 'page',
+    };
+  }
+
+  if (!payload) {
+    return { success: false, error: 'Page-context API replay produced no result.', replayContext: 'page' };
+  }
+  if (!payload.ok) {
+    return {
+      success: false,
+      error: `Page-context API replay failed: ${payload.error || 'unknown error'}`,
+      ...(payload.status != null ? { status: payload.status } : {}),
+      ...(payload.finalUrl ? { url: payload.finalUrl, finalUrl: payload.finalUrl } : {}),
+      replayContext: 'page',
+    };
+  }
+
+  const finalUrl = payload.url || url;
+  const v = validateFetchUrl(finalUrl, { allowLocalNetwork: allowLocal });
+  if (!v.ok) {
+    return { success: false, error: `Page-context replay redirected to blocked URL: ${v.error}`, finalUrl, replayContext: 'page' };
+  }
+  try {
+    if (new URL(finalUrl).origin !== target.origin) {
+      return {
+        success: false,
+        error: 'Page-context replay redirected outside the captured request origin; response body discarded.',
+        finalUrl,
+        replayContext: 'page',
+      };
+    }
+  } catch (_) {}
+
+  return formatTextFetchResult({
+    status: payload.status,
+    contentType: payload.contentType || '',
+    finalUrl,
+    text: payload.text || '',
+    replayContext: 'page',
+  });
+}
+
 export function extractPageSourceAssets(html, baseUrl) {
   const out = { stylesheets: [], scripts: [] };
   const seen = { stylesheets: new Set(), scripts: new Set() };
@@ -651,6 +836,9 @@ export async function fetchUrl(url, opts = {}, ctx = {}) {
   const allowLocal = getAllowLocalNetwork();
   const v = validateFetchUrl(url, { allowLocalNetwork: allowLocal });
   if (!v.ok) return { success: false, error: v.error };
+
+  const pageReplay = await fetchReplayInPageContext(url, opts, ctx, allowLocal);
+  if (pageReplay) return pageReplay;
 
   // Decide cookie policy based on active tab origin (if any).
   let attachCookies = false;

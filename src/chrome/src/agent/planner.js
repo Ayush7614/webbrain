@@ -40,6 +40,7 @@ Rules:
   memory: scratchpad_write, progress_update, progress_read
   schedule: schedule_task (future/recurring work the user explicitly asked for), schedule_resume (pause CURRENT run blocked on external event)
   finish: done
+- For repeated same-kind UI mutations (for example following many users), plan visible UI first. If /allow-api is enabled and WebBrain later reports a [BULK API MUTATION PATTERN], include a conditional branch to sample exactly one fetch_url replay with the provided replayRequestId. If that sample fails with success:false or HTTP 4xx/5xx, stop using API for that request shape and continue through the visible UI with any needed delays.
 - scheduling.tool = schedule_task when the user wants reminders, monitors, or recurring checks later.
 - scheduling.tool = schedule_resume only when the CURRENT task must pause until an external event (deploy finishes, email arrives) — not for generic waits (use wait_for_stable).
 - memory.use_progress_ledger = true for repeated per-item tasks (follow users, collect emails, process each search result). One ledger row per item.
