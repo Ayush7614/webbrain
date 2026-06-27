@@ -2450,7 +2450,7 @@ async function sendMessage(extraChatParams) {
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     if (renderToCurrentTab && currentTabId === tabId) scrollToBottom();
     if (renderToCurrentTab && renderedTabId === tabId) await flushRenderedTabChat();
-    if (renderToCurrentTab && !wasAborted) notifyCompletion({ success: completedSuccessfully });
+    if (renderToCurrentTab && !wasAborted) notifyCompletion({ success: currentTabId === tabId && completedSuccessfully });
     if (renderToCurrentTab && currentTabId === tabId) refreshRecommendedActions();
     await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }

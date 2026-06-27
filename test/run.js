@@ -3989,7 +3989,7 @@ test('completion confetti is default-on and success-only in sidepanel completion
     assert.match(panel, /if \(success\) triggerCompletionConfetti\(\);/, `${label}: confetti should only fire for successful completions`);
     assert.match(panel, /result\?\.outcome === 'success'/, `${label}: live done success should require explicit success outcome`);
     assert.match(panel, /notifyCompletion\(\{\s*success:\s*job\?\.lastOutcome === 'success'\s*\}\)/, `${label}: scheduled completed jobs should celebrate only explicit success outcomes`);
-    assert.match(panel, /notifyCompletion\(\{\s*success:\s*completedSuccessfully\s*\}\)/, `${label}: live runs should pass success state to completion notification`);
+    assert.match(panel, /notifyCompletion\(\{\s*success:\s*currentTabId === tabId && completedSuccessfully\s*\}\)/, `${label}: live confetti should be gated to the tab that completed`);
     assert.doesNotMatch(panel, /completedSuccessfully = !\(res\?\./, `${label}: live confetti should not treat every normal chat response as successful completion`);
 
     assert.match(css, /\.completion-confetti/, `${label}: sidepanel CSS should include the confetti overlay`);

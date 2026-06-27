@@ -2257,7 +2257,7 @@ async function sendMessage(extraChatParams) {
       refreshRecommendedActions();
     }
     if (renderToCurrentTab && currentTabId === tabId) flushRenderedTabChat();
-    if (renderToCurrentTab && !wasAborted) notifyCompletion({ success: completedSuccessfully });
+    if (renderToCurrentTab && !wasAborted) notifyCompletion({ success: currentTabId === tabId && completedSuccessfully });
     await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
   return accepted;
