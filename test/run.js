@@ -456,6 +456,40 @@ test('agent URL normalization preserves query and hash for nav change detection'
   }
 });
 
+test('chrome target blank redirect ignores browser new-tab placeholders', async () => {
+  const realChrome = globalThis.chrome;
+  const realSetTimeout = globalThis.setTimeout;
+  try {
+    globalThis.setTimeout = (fn, _delay, ...args) => realSetTimeout(fn, 0, ...args);
+
+    for (const url of ['chrome://newtab/', 'edge://newtab/']) {
+      const removedTabs = [];
+      const updatedTabs = [];
+      globalThis.chrome = {
+        tabs: {
+          query: async () => [
+            { id: 1, url: 'https://example.com/source' },
+            { id: 2, openerTabId: 1, url },
+          ],
+          remove: async (tabId) => { removedTabs.push(tabId); },
+          update: async (tabId, patch) => { updatedTabs.push({ tabId, patch }); },
+        },
+      };
+
+      const agent = new AgentCh({});
+      const result = await agent._redirectTargetBlankClick(1, new Set([1]));
+
+      assert.equal(result, null, `${url} should not be treated as a real target`);
+      assert.deepEqual(updatedTabs, [], `${url} should not navigate the source tab`);
+      assert.deepEqual(removedTabs, [2], `${url} placeholder tab should be closed`);
+    }
+  } finally {
+    if (realChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = realChrome;
+    globalThis.setTimeout = realSetTimeout;
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // Adapter matching tests
 // ────────────────────────────────────────────────────────────────────────
