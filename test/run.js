@@ -152,7 +152,7 @@ function allowProgress(agent, tabId, allowedActions = ['follow'], opts = {}) {
 
 // bump-version.mjs is the version-bump CLI but exports its pure helpers
 // for testing. The CLI body is guarded so importing it is side-effect-free.
-const { bumpSemver, rewriteVersionInJsonText, rewriteVersionByAnchor, isReleaseBoundary } = await import(
+const { bumpSemver, rewriteVersionInJsonText, rewriteVersionByAnchor, isReleaseBoundary, submissionZipPaths } = await import(
   'file://' + path.join(ROOT, 'scripts/bump-version.mjs').replace(/\\/g, '/')
 );
 const { normalizeChangelogBody, buildChangelogSection, insertChangelogEntry } = await import(
@@ -2296,6 +2296,14 @@ test('isReleaseBoundary: composes with bumpSemver to classify the next version',
   // Explicit override path also routes through correctly.
   assert.equal(isReleaseBoundary(bumpSemver('7.0.5', '8.2.0')), true);
   assert.equal(isReleaseBoundary(bumpSemver('7.0.5', '8.2.3')), false);
+});
+
+test('submissionZipPaths includes every store package artifact', () => {
+  assert.deepEqual(submissionZipPaths('18.2.0'), [
+    'dist/webbrain-chrome-18.2.0.zip',
+    'dist/webbrain-edge-18.2.0.zip',
+    'dist/webbrain-firefox-18.2.0.zip',
+  ]);
 });
 
 // ────────────────────────────────────────────────────────────────────────
