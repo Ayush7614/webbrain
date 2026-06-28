@@ -33,7 +33,7 @@ git clone https://github.com/webbrain-one/webbrain.git
 
 1. Open Chrome → `chrome://extensions/`
 2. Enable **Developer mode** (top right)
-3. Click **Load unpacked** → select the `webbrain` folder
+3. Click **Load unpacked** → select the `webbrain/src/chrome` folder
 
 ### Microsoft Edge
 
@@ -43,7 +43,7 @@ git clone https://github.com/webbrain-one/webbrain.git
 
 1. Open Edge → `edge://extensions/`
 2. Enable **Developer mode** (left sidebar)
-3. Click **Load unpacked** → select the `webbrain` folder
+3. Click **Load unpacked** → select the `webbrain/src/chrome` folder
 
 The Edge package uses the same Manifest V3 build as Chrome. The extension APIs
 still use the Chromium `chrome.*` namespace in code, which is supported by
