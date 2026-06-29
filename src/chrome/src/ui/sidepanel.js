@@ -374,6 +374,9 @@ let renderedTabId = null;
 let pendingTabSwitch = null; // tab the user switched to while isProcessing was true
 let tabSwitchTransitionId = null;
 let queuedTabSwitchMessages = [];
+const pendingAttachmentsByTab = new Map(); // tabId -> [{ kind: 'image'|'document', name, dataUrl }]
+const attachmentReadCountsByTab = new Map();
+const attachmentGenerationByTab = new Map();
 let isProcessing = false;
 let currentAssistantEl = null;
 let verboseMode = false;
@@ -626,6 +629,7 @@ function restoreInputDraftForTab(tabId) {
 function renderClearedConversationForTab(tabId) {
   clearCachedTabChat(tabId);
   saveInputDraftForTab(tabId, '');
+  clearPendingAttachmentsForTab(tabId);
   setApiMutationsAllowedForTab(tabId, false);
   if (currentTabId !== tabId) return;
   renderedTabId = tabId;
@@ -1585,6 +1589,7 @@ async function switchToTab(newTabId) {
       addMessage('system', t('sp.help_message'));
     }
     restoreInputDraftForTab(newTabId);
+    renderAttachmentPreviews();
     scrollToBottom();
     refreshScheduledJobs({ tabId: newTabId });
     refreshRecommendedActions();
@@ -2166,11 +2171,11 @@ function isOutOfBandSlashDraft(value) {
 
 function syncSendButtonState() {
   if (!sendBtn) return;
-  if (!isProcessing) {
-    sendBtn.disabled = false;
+  if (isProcessing) {
+    sendBtn.disabled = !isOutOfBandSlashDraft(inputEl?.value || '');
     return;
   }
-  sendBtn.disabled = !isOutOfBandSlashDraft(inputEl?.value || '');
+  sendBtn.disabled = isAttachmentReadPendingForTab();
 }
 
 function showBusySlashCommandNotice() {
@@ -2422,6 +2427,10 @@ async function sendMessage(extraChatParams) {
   let text = inputEl.value.trim();
   if (!text) return;
   const tabId = currentTabId;
+  if (!isProcessing && isAttachmentReadPendingForTab(tabId)) {
+    syncSendButtonState();
+    return false;
+  }
   if (isProcessing) {
     if (!isOutOfBandSlashDraft(text)) {
       showBusySlashCommandNotice();
@@ -2472,7 +2481,7 @@ async function sendMessage(extraChatParams) {
   }
 
   let assistantEl = null;
-  const attachmentsForSend = pendingAttachments;
+  const attachmentsForSend = getPendingAttachmentsForTab(tabId, { create: false }).slice();
   if (renderToCurrentTab) {
     isProcessing = true;
     abortRequested = false;
@@ -2480,7 +2489,7 @@ async function sendMessage(extraChatParams) {
     autoResizeInput();
     syncSendButtonState();
     hideRecommendedActions();
-    pendingAttachments = [];
+    clearPendingAttachmentsForTab(tabId);
     renderAttachmentPreviews();
     addMessage('user', text);
     showActivity(t('sp.activity.thinking'));
@@ -4100,10 +4109,65 @@ const attachBtn = document.getElementById('btn-attach');
 const fileAttachInput = document.getElementById('file-attach-input');
 const attachmentPreviewList = document.getElementById('attachment-preview-list');
 const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024; // matches PDF_PASSTHROUGH_MAX_BYTES (pdf-tools.js)
-let pendingAttachments = []; // [{ kind: 'image'|'document', name, dataUrl }]
+
+function normalizeAttachmentTabId(tabId = renderedTabId ?? currentTabId) {
+  if (tabId == null || tabId === '') return null;
+  const numericTabId = Number(tabId);
+  return Number.isFinite(numericTabId) ? numericTabId : null;
+}
+
+function getPendingAttachmentsForTab(tabId = renderedTabId ?? currentTabId, { create = true } = {}) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return [];
+  let attachments = pendingAttachmentsByTab.get(numericTabId);
+  if (!attachments && create) {
+    attachments = [];
+    pendingAttachmentsByTab.set(numericTabId, attachments);
+  }
+  return attachments || [];
+}
+
+function getAttachmentGeneration(tabId) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return 0;
+  return attachmentGenerationByTab.get(numericTabId) || 0;
+}
+
+function bumpAttachmentGeneration(tabId) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return;
+  attachmentGenerationByTab.set(numericTabId, getAttachmentGeneration(numericTabId) + 1);
+}
+
+function isAttachmentReadPendingForTab(tabId = renderedTabId ?? currentTabId) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  return numericTabId != null && (attachmentReadCountsByTab.get(numericTabId) || 0) > 0;
+}
+
+function updateAttachmentReadCount(tabId, delta) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return;
+  const next = Math.max(0, (attachmentReadCountsByTab.get(numericTabId) || 0) + delta);
+  if (next) attachmentReadCountsByTab.set(numericTabId, next);
+  else attachmentReadCountsByTab.delete(numericTabId);
+  if (normalizeAttachmentTabId() === numericTabId) syncSendButtonState();
+}
+
+function clearPendingAttachmentsForTab(tabId) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return;
+  pendingAttachmentsByTab.delete(numericTabId);
+  bumpAttachmentGeneration(numericTabId);
+  if (normalizeAttachmentTabId() === numericTabId) {
+    renderAttachmentPreviews();
+    syncSendButtonState();
+  }
+}
 
 function renderAttachmentPreviews() {
   if (!attachmentPreviewList) return;
+  const previewTabId = normalizeAttachmentTabId();
+  const pendingAttachments = getPendingAttachmentsForTab(previewTabId, { create: false });
   attachmentPreviewList.innerHTML = '';
   attachmentPreviewList.classList.toggle('hidden', pendingAttachments.length === 0);
   pendingAttachments.forEach((att, i) => {
@@ -4118,8 +4182,11 @@ function renderAttachmentPreviews() {
     removeBtn.setAttribute('aria-label', t('sp.attach.remove'));
     removeBtn.textContent = '×';
     removeBtn.addEventListener('click', () => {
-      pendingAttachments.splice(i, 1);
+      const attachments = getPendingAttachmentsForTab(previewTabId, { create: false });
+      attachments.splice(i, 1);
+      if (attachments.length === 0 && previewTabId != null) pendingAttachmentsByTab.delete(previewTabId);
       renderAttachmentPreviews();
+      syncSendButtonState();
     });
     chip.append(label, removeBtn);
     attachmentPreviewList.appendChild(chip);
@@ -4135,32 +4202,51 @@ function readFileAsDataUrl(file) {
   });
 }
 
-async function handleAttachedFiles(fileList) {
-  for (const file of Array.from(fileList || [])) {
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      addMessage('system', tSystemHtml('sp.attach.too_large', { name: file.name }));
-      continue;
+async function handleAttachedFiles(fileList, tabId = renderedTabId ?? currentTabId) {
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return;
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const generation = getAttachmentGeneration(numericTabId);
+  updateAttachmentReadCount(numericTabId, 1);
+  try {
+    for (const file of files) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        if (normalizeAttachmentTabId() === numericTabId) {
+          addMessage('system', tSystemHtml('sp.attach.too_large', { name: file.name }));
+        }
+        continue;
+      }
+      const isImage = file.type.startsWith('image/');
+      const isPdf = file.type === 'application/pdf';
+      if (!isImage && !isPdf) {
+        if (normalizeAttachmentTabId() === numericTabId) {
+          addMessage('system', tSystemHtml('sp.attach.unsupported_type', { name: file.name }));
+        }
+        continue;
+      }
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        if (generation !== getAttachmentGeneration(numericTabId)) continue;
+        getPendingAttachmentsForTab(numericTabId).push({ kind: isImage ? 'image' : 'document', name: file.name, dataUrl });
+      } catch {
+        if (generation === getAttachmentGeneration(numericTabId) && normalizeAttachmentTabId() === numericTabId) {
+          addMessage('system', tSystemHtml('sp.attach.read_failed', { name: file.name }));
+        }
+      }
     }
-    const isImage = file.type.startsWith('image/');
-    const isPdf = file.type === 'application/pdf';
-    if (!isImage && !isPdf) {
-      addMessage('system', tSystemHtml('sp.attach.unsupported_type', { name: file.name }));
-      continue;
-    }
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      pendingAttachments.push({ kind: isImage ? 'image' : 'document', name: file.name, dataUrl });
-    } catch {
-      addMessage('system', tSystemHtml('sp.attach.read_failed', { name: file.name }));
+  } finally {
+    updateAttachmentReadCount(numericTabId, -1);
+    if (generation === getAttachmentGeneration(numericTabId) && normalizeAttachmentTabId() === numericTabId) {
+      renderAttachmentPreviews();
     }
   }
-  renderAttachmentPreviews();
 }
 
 if (attachBtn && fileAttachInput) {
   attachBtn.addEventListener('click', () => fileAttachInput.click());
   fileAttachInput.addEventListener('change', () => {
-    handleAttachedFiles(fileAttachInput.files);
+    handleAttachedFiles(fileAttachInput.files, renderedTabId ?? currentTabId);
     fileAttachInput.value = ''; // allow re-selecting the same file
   });
 }
