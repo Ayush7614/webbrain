@@ -349,7 +349,9 @@ const SLASH_COMMAND_OPTION_ID_PREFIX = 'slash-command-option-';
 const BUSY_SLASH_NOTICE_COOLDOWN_MS = 3000;
 
 let currentTabId = null;
+let renderedTabId = null;
 let pendingTabSwitch = null; // tab the user switched to while isProcessing was true
+let tabSwitchTransitionId = null;
 let isProcessing = false;
 let currentAssistantEl = null;
 let verboseMode = false;
@@ -500,19 +502,105 @@ function updateActWarning() {
   actWarning.classList.toggle('hidden', !show);
 }
 
-// Per-tab chat history (stores innerHTML of messages container)
+// Per-tab chat history (stores innerHTML of messages container).
+// Also mirrored to browser.storage.session keyed `tabChat:<tabId>` so the
+// conversation survives the sidebar being closed and reopened.
 const tabChats = new Map();
+const TAB_CHAT_PREFIX = 'tabChat:';
+const tabChatOperations = new Map();
 const tabInputDrafts = new Map();
+
+function enqueueTabChatOperation(tabId, fn) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return Promise.resolve({ ok: true });
+  const previous = tabChatOperations.get(numericTabId) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(() => fn(numericTabId));
+  tabChatOperations.set(numericTabId, operation);
+  operation.finally(() => {
+    if (tabChatOperations.get(numericTabId) === operation) tabChatOperations.delete(numericTabId);
+  }).catch(() => {});
+  return operation;
+}
+
+async function loadTabChat(tabId) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return null;
+  if (!tabChatOperations.has(numericTabId) && tabChats.has(numericTabId)) return tabChats.get(numericTabId);
+  try {
+    return await enqueueTabChatOperation(numericTabId, async (queuedTabId) => {
+      if (tabChats.has(queuedTabId)) return tabChats.get(queuedTabId);
+      const key = TAB_CHAT_PREFIX + queuedTabId;
+      const stored = await browser.storage.session.get(key);
+      const html = stored?.[key];
+      if (typeof html === 'string') {
+        tabChats.set(queuedTabId, html);
+        return html;
+      }
+      return null;
+    });
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+function persistTabChat(tabId, html) {
+  if (tabId == null) return;
+  return enqueueTabChatOperation(tabId, async (numericTabId) => {
+    tabChats.set(numericTabId, html);
+    const key = TAB_CHAT_PREFIX + numericTabId;
+    try {
+      await browser.storage.session.set({ [key]: html }).catch(() => {});
+    } catch (e) { /* ignore */ }
+    return { ok: true };
+  });
+}
+
+async function flushRenderedTabChat() {
+  const tabId = renderedTabId;
+  if (tabId == null) return;
+  if (persistTimer && persistTimerTabId === tabId) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    persistTimerTabId = null;
+  }
+  await persistTabChat(tabId, messagesEl.innerHTML);
+}
 
 function clearCachedTabChat(tabId) {
   if (tabId == null) return;
+  if (persistTimer && persistTimerTabId === tabId) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    persistTimerTabId = null;
+  }
   tabChats.delete(tabId);
+  return enqueueTabChatOperation(tabId, async (numericTabId) => {
+    tabChats.delete(numericTabId);
+    try {
+      await browser.storage.session?.remove(TAB_CHAT_PREFIX + numericTabId).catch(() => {});
+    } catch (e) { /* ignore */ }
+    return { ok: true };
+  });
 }
 
-function flushRenderedTabChat() {
-  if (currentTabId == null) return;
-  tabChats.set(currentTabId, messagesEl.innerHTML);
+// Save current tab's chat to storage on a debounced cadence — we don't want
+// to thrash storage on every keystroke / streamed token.
+let persistTimer = null;
+let persistTimerTabId = null;
+function schedulePersist() {
+  if (persistTimer) clearTimeout(persistTimer);
+  const tabId = renderedTabId;
+  const html = messagesEl.innerHTML;
+  persistTimerTabId = tabId;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistTimerTabId = null;
+    if (tabId != null) persistTabChat(tabId, html);
+  }, 400);
 }
+
+// Observe the messages container so any DOM mutation (new message, streamed
+// delta, tool step update) eventually gets persisted.
+const persistObserver = new MutationObserver(schedulePersist);
 
 function saveInputDraftForTab(tabId, text) {
   const numericTabId = Number(tabId);
@@ -545,6 +633,7 @@ function renderClearedConversationForTab(tabId) {
   saveInputDraftForTab(tabId, '');
   setApiMutationsAllowedForTab(tabId, false);
   if (currentTabId !== tabId) return;
+  renderedTabId = tabId;
   messagesEl.innerHTML = '';
   inputEl.value = '';
   autoResizeInput();
@@ -854,7 +943,7 @@ async function drainQueuedContextMenuPromptsAfterPendingTabSwitch() {
   drainQueuedContextMenuPrompts();
 }
 
-function settleScheduledRun(event, job) {
+async function settleScheduledRun(event, job) {
   if (job?.id) crossPanelScheduledJobIds.delete(String(job.id));
   const assistantEl = job?.id ? findScheduledAssistantMessageForJob(job.id) : currentAssistantEl;
   if (assistantEl) {
@@ -872,8 +961,8 @@ function settleScheduledRun(event, job) {
     hideActivity();
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     abortRequested = false;
-    flushRenderedTabChat();
-    drainQueuedContextMenuPromptsAfterPendingTabSwitch();
+    if (renderedTabId != null) await flushRenderedTabChat();
+    await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
   if (event === 'completed') notifyCompletion({ success: job?.lastOutcome === 'success' });
 }
@@ -1128,7 +1217,7 @@ function replaceCachedScheduleComposer(tabId, composerId, html) {
   if (!form || !textEl) return;
   form.remove();
   textEl.innerHTML = html;
-  tabChats.set(tabId, wrapper.innerHTML);
+  persistTabChat(tabId, wrapper.innerHTML);
 }
 
 function updateCachedScheduleComposerError(tabId, composerId, message) {
@@ -1142,7 +1231,7 @@ function updateCachedScheduleComposerError(tabId, composerId, message) {
   if (!form || !submit || !errorEl) return;
   submit.disabled = false;
   errorEl.textContent = message || '';
-  tabChats.set(tabId, wrapper.innerHTML);
+  persistTabChat(tabId, wrapper.innerHTML);
 }
 
 async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) {
@@ -1315,9 +1404,10 @@ function clearScratchpad(tabId = currentTabId) {
 async function init() {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   currentTabId = tab?.id;
+  renderedTabId = currentTabId;
 
   browser.tabs.onActivated.addListener(async (info) => {
-    switchToTab(info.tabId);
+    await switchToTab(info.tabId);
   });
 
   browser.tabs.onUpdated?.addListener?.((tabId, changeInfo) => {
@@ -1330,6 +1420,21 @@ async function init() {
   // Load verbose setting
   const stored = await browser.storage.local.get('verboseMode');
   verboseMode = stored.verboseMode || false;
+
+  // Restore prior conversation for this tab (if any) — survives close/reopen.
+  const restoreTabId = currentTabId;
+  if (restoreTabId != null) {
+    const html = await loadTabChat(restoreTabId);
+    if (currentTabId === restoreTabId && html) {
+      messagesEl.innerHTML = html;
+      messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
+      rebindRestoredMessageControls();
+      scrollToBottom();
+    }
+  }
+
+  // Start observing the messages container for changes to persist.
+  persistObserver.observe(messagesEl, { childList: true, subtree: true, characterData: true });
 
   await loadProviders();
   await testConnection({ skipWebBrainCloud: true });
@@ -1398,36 +1503,49 @@ if (verboseBtn) {
   });
 }
 
-function switchToTab(newTabId) {
-  if (newTabId === currentTabId) { pendingTabSwitch = null; return; }
+async function switchToTab(newTabId) {
+  if (newTabId === currentTabId && renderedTabId === newTabId) { pendingTabSwitch = null; return; }
   if (isProcessing) {
     pendingTabSwitch = newTabId; // apply after the run ends
     return;
   }
   pendingTabSwitch = null;
+  tabSwitchTransitionId = newTabId;
 
-  // Save current tab's chat
-  if (currentTabId != null) {
-    flushRenderedTabChat();
-    captureInputDraftForTab(currentTabId);
+  try {
+    // Save the tab currently represented by the DOM. During an async restore,
+    // currentTabId may already point at the target while the DOM is still older.
+    if (renderedTabId != null) {
+      await flushRenderedTabChat();
+      if (isProcessing) {
+        pendingTabSwitch = newTabId;
+        return;
+      }
+      captureInputDraftForTab(renderedTabId);
+    }
+
+    currentTabId = newTabId;
+    syncApiMutationsAllowedForCurrentTab();
+
+    // Restore new tab's chat from memory or storage.
+    const html = await loadTabChat(newTabId);
+    if (currentTabId !== newTabId) return;
+    renderedTabId = newTabId;
+    if (html) {
+      messagesEl.innerHTML = html;
+      messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
+      rebindRestoredMessageControls();
+    } else {
+      messagesEl.innerHTML = '';
+      addMessage('system', t('sp.help_message'));
+    }
+    restoreInputDraftForTab(newTabId);
+    scrollToBottom();
+    refreshScheduledJobs({ tabId: newTabId });
+    refreshRecommendedActions();
+  } finally {
+    if (tabSwitchTransitionId === newTabId) tabSwitchTransitionId = null;
   }
-
-  currentTabId = newTabId;
-  syncApiMutationsAllowedForCurrentTab();
-
-  // Restore new tab's chat or start fresh
-  if (tabChats.has(newTabId)) {
-    messagesEl.innerHTML = tabChats.get(newTabId);
-    messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
-    rebindRestoredMessageControls();
-  } else {
-    messagesEl.innerHTML = '';
-    addMessage('system', t('sp.help_message'));
-  }
-  restoreInputDraftForTab(newTabId);
-  scrollToBottom();
-  refreshScheduledJobs({ tabId: newTabId });
-  refreshRecommendedActions();
   consumePendingContextMenuPrompt().then(() => drainQueuedContextMenuPrompts()).catch(() => {});
 }
 
@@ -1618,6 +1736,10 @@ function bindPlanReviewCard(card) {
       textarea.dataset.bound = 'true';
       textarea.addEventListener('input', () => {
         card.dataset.editedText = textarea.value;
+        // The persist observer only watches childList/characterData, not
+        // attributes, so the data attribute above won't trigger a save on its
+        // own — schedule one so the edit reaches storage before a panel reload.
+        schedulePersist();
       });
     }
   }
@@ -2334,7 +2456,7 @@ async function sendMessage(extraChatParams) {
       scrollToBottom();
       refreshRecommendedActions();
     }
-    if (renderToCurrentTab && currentTabId === tabId) flushRenderedTabChat();
+    if (renderToCurrentTab && renderedTabId === tabId) await flushRenderedTabChat();
     if (renderToCurrentTab && !wasAborted) notifyCompletion({ success: currentTabId === tabId && completedSuccessfully });
     await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
@@ -3162,7 +3284,7 @@ async function continueAgent() {
     hideActivity();
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     if (currentTabId === tabId) scrollToBottom();
-    if (currentTabId === tabId) flushRenderedTabChat();
+    if (currentTabId === tabId && renderedTabId === tabId) await flushRenderedTabChat();
     await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
 }
@@ -3492,7 +3614,7 @@ stopBtn.addEventListener('click', async () => {
       hideActivity();
       currentAssistantEl = null;
       abortRequested = false;
-      flushRenderedTabChat();
+      await flushRenderedTabChat();
       await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
     }
   }, 3000); // safety timeout if background takes too long

@@ -8,7 +8,6 @@ Firefox uses Manifest V2 (background page, not service worker) and has **no acce
 
 - **No trusted events** — clicks and key presses are synthetic (`el.click()`, `new KeyboardEvent()`), and some sites reject `event.isTrusted === false`. All AX-tool click/type paths use synthetic dispatch in Firefox; the CDP-backed trusted-event path in Chrome has no Firefox equivalent.
 - **No pixel-perfect / full-page screenshots** — uses `browser.tabs.captureVisibleTab()` instead of CDP `Page.captureScreenshot`.
-- **No conversation persistence** — conversations are lost when the sidebar closes (no session-storage equivalent for MV2 background pages).
 - **No shadow DOM piercing** — content script can read open shadow roots via `element.shadowRoot`, but cannot pierce closed roots.
 - **No offscreen document** — no HTTP fetch proxy for localhost LLM servers with Private Network Access / CORS issues. User must ensure their local LLM server sends permissive CORS headers.
 - **No duplicate-submit guard** — the per-tab submit-throttle (Chrome v3.6.5+) is still Chrome-only. Firefox's agent loop does not block rapid duplicate Create/Submit clicks. `blockedDone` and the ambiguous-click candidate payload were ported to Firefox in v4.0.1 (see "Overlay defenses" below).
@@ -204,16 +203,13 @@ Main Loop (max 120 steps)
     └─ If done() → return summary
 ```
 
-### No conversation persistence
+### Conversation persistence (parity with Chrome)
 
-Chrome persists conversations to `chrome.storage.session` and hydrates on service-worker restart. Firefox does **not** — conversations live only in memory on the background page and are lost when the sidebar closes or the background page unloads.
+Per-tab agent conversations and sidebar chat HTML are mirrored to `browser.storage.session` (`agentConv:<tabId>`, `tabChat:<tabId>`), same key shape as Chrome. The background page hydrates from session on the next message and the sidebar restores chat HTML on open/reopen. Session keys are cleared on `/reset` and when a tab closes (`tabChat` only for the UI layer; agent conv policy matches Chrome).
 
 ```javascript
-// Chrome has:
-this.conversations = new Map();  // + _persist() + _hydrate()
-
-// Firefox has:
-this.conversations = new Map();  // memory only, no persistence
+// Both browsers:
+this.conversations = new Map();  // + _persist() + _hydrate() → storage.session
 ```
 
 ---
@@ -384,8 +380,8 @@ All identical to Chrome:
 | Feature | Chrome | Firefox |
 |---|---|---|
 | Panel type | Side panel (MV3 API) | Sidebar action (MV2) |
-| Chat persistence | Survives panel close | Lost on close |
-| Tab tracking | `chrome.tabs.onActivated` + session storage | `browser.tabs.onActivated` + in-memory Map |
+| Chat persistence | Survives panel close | Survives sidebar close (`browser.storage.session`) |
+| Tab tracking | `chrome.tabs.onActivated` + session storage | `browser.tabs.onActivated` + session storage |
 | Background comms | `chrome.runtime.sendMessage` | `browser.runtime.sendMessage` (Promise-based) |
 | Trace viewer | Yes (`ui/traces.html`) | No |
 
@@ -446,7 +442,6 @@ when the tab conversation already has `/allow-api`.
 |---|---|---|
 | No CDP (no `debugger` permission) | Clicks are synthetic (`isTrusted: false`) | Most sites work; some banking/captcha sites may reject |
 | No offscreen document | Localhost LLM fetches fail on CORS | Configure server CORS headers |
-| No conversation persistence | Chat lost when sidebar closes | None — MV2 limitation |
 | No trusted keyboard events | `press_keys` may not land on all sites | Dispatched to both activeElement and document |
 | No full-page screenshot | Only visible viewport | Scroll + multiple captures |
 | No shadow-root piercing (closed) | Can't read closed shadow roots | `execute_js` with manual traversal |
