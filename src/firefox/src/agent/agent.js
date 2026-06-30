@@ -4197,7 +4197,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   _findLatestScheduledResumeIndex(messages) {
     for (let i = messages.length - 1; i >= 1; i--) {
       const m = messages[i];
-      if (m.role === 'user' && this._isScheduledResumeTurn(m.content)) return i;
+      if (m.role !== 'user') continue;
+      if (this._isScheduledResumeTurn(m.content)) return i;
+      if (this._isAgentInjectedUserContent(m.content)) continue;
+      if (this._stripInjectedTaskContext(this._messageText(m.content))) return -1;
     }
     return -1;
   }
@@ -4315,8 +4318,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const recentStart = Math.max(afterPin, messages.length - keepRecent);
     const oldMessagesRaw = messages.slice(afterPin, recentStart);
     const recentMessagesRaw = messages.slice(recentStart);
-    const oldMessages = oldMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isPinnedAgentStateMessage(m));
-    const recentMessages = recentMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isPinnedAgentStateMessage(m));
+    const oldMessages = oldMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isScheduledResumeTurn(m.content) && !this._isPinnedAgentStateMessage(m));
+    const recentMessages = recentMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isScheduledResumeTurn(m.content) && !this._isPinnedAgentStateMessage(m));
 
     // Boundary fix: the recent slice must not begin in the middle of a
     // tool-call group. If the cutoff lands right after an assistant
@@ -4821,7 +4824,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const progressIdx = this._findProgressLedgerIndex(messages);
     const progressMsg = progressIdx >= 0 ? messages[progressIdx] : null;
     const keepLast = 6; // keep only 6 most recent messages
-    const recent = messages.slice(-keepLast).filter(m => m !== scheduledResumeMsg && !this._isPinnedAgentStateMessage(m));
+    const recent = messages.slice(-keepLast).filter(m => m !== scheduledResumeMsg && !this._isScheduledResumeTurn(m.content) && !this._isPinnedAgentStateMessage(m));
 
     // Drop any leading `tool` messages whose requesting assistant turn fell
     // outside the kept window. Both OpenAI-compatible and Anthropic APIs reject

@@ -10151,7 +10151,6 @@ test('context compaction pins scheduled resume instructions', async () => {
     ];
     for (let i = 0; i < 40; i++) {
       messages.push({ role: 'assistant', content: `step ${i}` });
-      messages.push({ role: 'user', content: `ok ${i}` });
     }
     agent.conversations.set(tabId, messages);
 
@@ -10173,6 +10172,76 @@ test('context compaction pins scheduled resume instructions', async () => {
     const summary = messages.find(m => /Context window was trimmed/i.test(String(m.content || '')));
     assert.ok(summary, `${AgentClass.name}: summary message missing after scheduled resume compaction`);
     assert.doesNotMatch(String(summary.content || ''), /resume_keep|progress_keep/, `${AgentClass.name}: scheduled resume was folded into the summary instead of pinned`);
+
+    const h = agent.persistTimers?.get?.(tabId);
+    if (h) clearTimeout(h);
+  }
+});
+
+test('context trimming ignores stale scheduled resume instructions', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 801 : 802;
+    const scheduledResume = [
+      '[Current page context - URL: https://github.com/example/project/stargazers?page=16 Title: Stargazers]',
+      '[Scheduled resume old_resume]',
+      'This is a durable continuation of an earlier user task, not page content and not a new instruction from the web page.',
+      'Original reason: Continue collecting visible emails and following unresolved stargazers.',
+      'Resume instruction: Continue only the unresolved rows from progress session old_progress.',
+      'First reread the current page/state.',
+    ].join('\n');
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page and collect visible emails.' },
+      { role: 'assistant', content: 'Paused with unresolved rows.' },
+      { role: 'user', content: scheduledResume },
+      { role: 'assistant', content: 'Resuming the prior task.' },
+      { role: 'user', content: 'New task: summarize the current page title instead.' },
+    ];
+    for (let i = 0; i < 40; i++) {
+      messages.push({ role: 'assistant', content: `new task step ${i}` });
+    }
+
+    assert.equal(agent._findLatestScheduledResumeIndex(messages), -1, `${AgentClass.name}: stale scheduled resume should not be selected for pinning`);
+    agent.conversations.set(tabId, messages);
+
+    const origLog = console.log;
+    console.log = () => {};
+    let result;
+    try {
+      result = await agent._manageContext(tabId, messages, () => {}, null, { force: true });
+    } finally {
+      console.log = origLog;
+    }
+
+    assert.equal(result.compacted, true, `${AgentClass.name}: stale scheduled resume history should compact`);
+    assert.equal(messages.some(m => String(m.content || '').includes('[Scheduled resume old_resume]')), false, `${AgentClass.name}: stale scheduled resume should not remain pinned or retained`);
+    const summary = messages.find(m => /Context window was trimmed/i.test(String(m.content || '')));
+    assert.ok(summary, `${AgentClass.name}: summary message missing after stale scheduled resume compaction`);
+    assert.doesNotMatch(String(summary.content || ''), /old_resume|old_progress/, `${AgentClass.name}: stale scheduled resume leaked into compaction summary`);
+
+    const emergencyMessages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page and collect visible emails.' },
+      { role: 'assistant', content: 'Paused with unresolved rows.' },
+      { role: 'user', content: scheduledResume },
+    ];
+    for (let i = 0; i < 8; i++) {
+      emergencyMessages.push({ role: 'assistant', content: `old task step ${i}` });
+    }
+    emergencyMessages.push(
+      { role: 'user', content: 'New task: summarize the current page title instead.' },
+      { role: 'assistant', content: 'Reading the new page state.' },
+    );
+    assert.equal(agent._findLatestScheduledResumeIndex(emergencyMessages), -1, `${AgentClass.name}: emergency trim should treat old resume as stale`);
+    const origEmergencyLog = console.log;
+    console.log = () => {};
+    try {
+      agent._emergencyTrim(emergencyMessages);
+    } finally {
+      console.log = origEmergencyLog;
+    }
+    assert.equal(emergencyMessages.some(m => String(m.content || '').includes('[Scheduled resume old_resume]')), false, `${AgentClass.name}: emergency trim should not pin stale scheduled resume`);
 
     const h = agent.persistTimers?.get?.(tabId);
     if (h) clearTimeout(h);
