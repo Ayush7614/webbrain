@@ -3975,17 +3975,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         this.conversationIds.set(tabId, `conv_${tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
       }
     }
-    // If mode changed, update the system prompt
+    // Rebuild the system prompt on reuse so hydrated conversations pick up
+    // skills/settings loaded after the service worker restarted.
+    const messages = this.conversations.get(tabId);
     const lastMode = this.conversationModes.get(tabId);
     if (lastMode !== mode) {
-      const messages = this.conversations.get(tabId);
-      if (messages[0]?.role === 'system') {
-        messages[0].content = this._buildSystemPrompt(mode);
-      }
       this.conversationModes.set(tabId, mode);
       this._conversationMode = mode;
     }
-    return this.conversations.get(tabId);
+    if (messages[0]?.role === 'system') {
+      const nextPrompt = this._buildSystemPrompt(mode);
+      if (messages[0].content !== nextPrompt) messages[0].content = nextPrompt;
+    }
+    return messages;
   }
 
   /**

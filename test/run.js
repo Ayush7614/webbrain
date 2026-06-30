@@ -3184,6 +3184,29 @@ test('agent system prompt refreshes live conversations when custom skills change
   }
 });
 
+test('agent rebuilds stale hydrated system prompts before the next turn', () => {
+  for (const [label, AgentClass, normalizeSkills] of [
+    ['chrome', AgentCh, normalizeCustomSkillsCh],
+    ['firefox', AgentFx, normalizeCustomSkillsFx],
+  ]) {
+    const agent = new AgentClass({});
+    const tabId = label === 'chrome' ? 2311 : 2312;
+    agent.customSkills = normalizeSkills([
+      { id: 'forms', name: 'Form skill', content: 'When filling forms, prefer saved user-provided values.' },
+    ]);
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'stale system prompt without skills' },
+      { role: 'user', content: 'keep this conversation history' },
+    ]);
+    agent.conversationModes.set(tabId, 'ask');
+
+    const messages = agent.getConversation(tabId, 'ask');
+    assert.match(messages[0].content, /Enabled skills/, `${label}: reused prompt should include loaded skills`);
+    assert.match(messages[0].content, /Form skill/, `${label}: reused prompt missing skill name`);
+    assert.equal(messages[1].content, 'keep this conversation history', `${label}: non-system history should be preserved`);
+  }
+});
+
 test('Chrome model-facing tools and prompts do not advertise execute_js', () => {
   const chromePromptTexts = [
     ['ask', SYSTEM_PROMPT_ASK_CH],

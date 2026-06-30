@@ -209,7 +209,7 @@ async function loadCustomSkills() {
   } catch (e) {
     console.warn('[WebBrain] Default skills could not be refreshed', e);
   }
-  agent.customSkills = skills;
+  agent.setCustomSkills(skills);
 }
 const customSkillsReady = loadCustomSkills();
 
