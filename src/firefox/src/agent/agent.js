@@ -6379,12 +6379,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         break;
       }
 
-      // Reset the empty-output recovery flag whenever the model produces
-      // any signal of life (text or a tool call).
-      if ((result.content && result.content.trim()) || (result.toolCalls && result.toolCalls.length > 0)) {
-        emptyOutputRecoveryAttempted = false;
-      }
-
       // Fallback: if the LLM emitted tool calls as raw text instead of
       // using the structured tool_calls field, try to parse them out.
       if ((!result.toolCalls || result.toolCalls.length === 0) && result.content) {
@@ -6393,6 +6387,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           this._logDebug({ type: 'llm_text_fallback_parse', step: steps, parsed: fallback.map(tc => tc.function.name) });
           result.toolCalls = fallback;
           result.content = null;
+        }
+      }
+
+      // Reset recovery flags whenever the model produces real progress. A
+      // placeholder is not progress, but a later tool call or genuine response
+      // should make the next placeholder eligible for its own recovery nudge.
+      const hasToolCallsAfterFallback = !!(result.toolCalls && result.toolCalls.length > 0);
+      const hasContentAfterFallback = !!(result.content && result.content.trim());
+      const isCompressionPlaceholderAfterFallback = mode === 'act' && this._isCompressionPlaceholderResponse(result.content);
+      if (hasToolCallsAfterFallback || hasContentAfterFallback) {
+        emptyOutputRecoveryAttempted = false;
+        if (hasToolCallsAfterFallback || !isCompressionPlaceholderAfterFallback) {
+          compressionPlaceholderRecoveryAttempted = false;
         }
       }
 
@@ -6682,6 +6689,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         if (hasToolCalls) {
+          emptyOutputRecoveryAttempted = false;
+          compressionPlaceholderRecoveryAttempted = false;
           if (costStopMessage) {
             messages.push({ role: 'assistant', content: costStopMessage });
             onUpdate('warning', { message: costStopMessage });
@@ -6760,6 +6769,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return finish(failMsg, 'placeholder_output');
         }
         emptyOutputRecoveryAttempted = false;
+        compressionPlaceholderRecoveryAttempted = false;
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
         if (progressFinalBlock) {
           messages.push({ role: 'assistant', content: fullText });

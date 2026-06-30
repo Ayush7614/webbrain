@@ -9623,6 +9623,194 @@ test('agent detects context-compression placeholder finals', () => {
   }
 });
 
+test('context-compression placeholder recovery resets after tool progress', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const responses = [
+      { content: '[compressed]', toolCalls: [] },
+      {
+        content: null,
+        toolCalls: [{
+          id: 'progress_acted',
+          function: {
+            name: 'progress_update',
+            arguments: JSON.stringify({ items: [{ id: 'placeholder-user', status: 'acted' }] }),
+          },
+        }],
+      },
+      { content: '[compressed]', toolCalls: [] },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: 'progress_processed',
+            function: {
+              name: 'progress_update',
+              arguments: JSON.stringify({ items: [{ id: 'placeholder-user', status: 'processed' }] }),
+            },
+          },
+          {
+            id: 'done_call',
+            function: {
+              name: 'done',
+              arguments: JSON.stringify({ summary: 'Recovered after second placeholder.' }),
+            },
+          },
+        ],
+      },
+    ];
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        const next = responses.shift();
+        assert.ok(next, `${AgentClass.name}: model was called too many times`);
+        return next;
+      },
+    };
+    const agent = new AgentClass({
+      getActive: () => provider,
+      getVisionProvider: async () => null,
+    });
+    agent.planBeforeAct = false;
+    const tabId = 793;
+    agent.maxSteps = 8;
+    agent._manageContext = async () => {};
+    agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+    agent._maybeReinjectAdapter = async () => {};
+    agent._persist = () => {};
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page.' },
+    ]);
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'placeholder-user', label: 'placeholder-user', action: 'follow', status: 'pending' }],
+    });
+    agent.executeTool = async (toolTabId, name, args) => {
+      if (name === 'progress_update') return agent._progressUpdate(toolTabId, args);
+      if (name === 'done') return { done: true, summary: args.summary };
+      throw new Error(`unexpected tool ${name}`);
+    };
+    const updates = [];
+
+    const final = await agent.processMessage(tabId, 'continue', (type, data) => {
+      updates.push({ type, data });
+    }, 'act');
+
+    assert.match(final, /Recovered after second placeholder\./, `${AgentClass.name}: second placeholder did not get a fresh recovery nudge`);
+    assert.equal(responses.length, 0, `${AgentClass.name}: run stopped before the final recovery`);
+    assert.equal(
+      updates.filter(update => update.type === 'warning' && /compression placeholder/i.test(update.data?.message || '')).length,
+      2,
+      `${AgentClass.name}: each separated placeholder should receive its own recovery warning`,
+    );
+  }
+});
+
+test('streamed context-compression placeholder recovery resets after tool progress', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      calls: 0,
+      async *chatStream() {
+        this.calls++;
+        if (this.calls === 1 || this.calls === 3) {
+          yield { type: 'text', content: '[compressed]' };
+          yield { type: 'done' };
+          return;
+        }
+        if (this.calls === 2) {
+          yield {
+            type: 'tool_call',
+            content: [{
+              index: 0,
+              id: 'progress_acted',
+              function: {
+                name: 'progress_update',
+                arguments: JSON.stringify({ items: [{ id: 'stream-placeholder-user', status: 'acted' }] }),
+              },
+            }],
+          };
+          yield { type: 'done' };
+          return;
+        }
+        if (this.calls === 4) {
+          yield {
+            type: 'tool_call',
+            content: [
+              {
+                index: 0,
+                id: 'progress_processed',
+                function: {
+                  name: 'progress_update',
+                  arguments: JSON.stringify({ items: [{ id: 'stream-placeholder-user', status: 'processed' }] }),
+                },
+              },
+              {
+                index: 1,
+                id: 'done_call',
+                function: {
+                  name: 'done',
+                  arguments: JSON.stringify({ summary: 'Stream recovered after second placeholder.' }),
+                },
+              },
+            ],
+          };
+          yield { type: 'done' };
+          return;
+        }
+        throw new Error(`${AgentClass.name}: model was called too many times`);
+      },
+    };
+    const agent = new AgentClass({
+      getActive: () => provider,
+      getVisionProvider: async () => null,
+    });
+    agent.planBeforeAct = false;
+    const tabId = 792;
+    agent.maxSteps = 8;
+    agent._manageContext = async () => {};
+    agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+    agent._maybeReinjectAdapter = async () => {};
+    agent._persist = () => {};
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page.' },
+    ]);
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'stream-placeholder-user', label: 'stream-placeholder-user', action: 'follow', status: 'pending' }],
+    });
+    agent.executeTool = async (toolTabId, name, args) => {
+      if (name === 'progress_update') return agent._progressUpdate(toolTabId, args);
+      if (name === 'done') return { done: true, summary: args.summary };
+      throw new Error(`unexpected tool ${name}`);
+    };
+    const updates = [];
+
+    const final = await agent.processMessageStream(tabId, 'continue', (type, data) => {
+      updates.push({ type, data });
+    }, 'act');
+
+    assert.match(final, /Stream recovered after second placeholder\./, `${AgentClass.name}: streamed second placeholder did not get a fresh recovery nudge`);
+    assert.equal(provider.calls, 4, `${AgentClass.name}: streamed run stopped before the final recovery`);
+    assert.equal(
+      updates.filter(update => update.type === 'warning' && /compression placeholder/i.test(update.data?.message || '')).length,
+      2,
+      `${AgentClass.name}: each separated streamed placeholder should receive its own recovery warning`,
+    );
+  }
+});
+
 test('plain final answers cannot bypass unresolved progress rows', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const responses = [
