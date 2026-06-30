@@ -4445,10 +4445,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _isAgentInjectedUserContent(content) {
     const c = this._messageText(content).trimStart();
-    const stripped = this._stripInjectedTaskContext(c).trimStart();
-    return c.startsWith('[Scheduled resume')
-      || stripped.startsWith('[Scheduled resume')
-      || c.startsWith('[Site guidance')
+    return c.startsWith('[Site guidance')
       || c.startsWith('[Site context changed')
       || c.startsWith('[Context window was trimmed')
       || c.startsWith('[Context was too large')
@@ -4460,6 +4457,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       || c.startsWith('[Auto-screenshot')
       || c.startsWith('[UNTRUSTED CAPTURE')
       || c.startsWith('[UNTRUSTED DOCUMENT');
+  }
+
+  _isScheduledResumeTurn(content) {
+    const c = this._messageText(content).trimStart();
+    const stripped = this._stripInjectedTaskContext(c).trimStart();
+    return c.startsWith('[Scheduled resume') || stripped.startsWith('[Scheduled resume');
   }
 
   _stripInjectedTaskContext(text) {
@@ -4483,6 +4486,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     for (let i = messages.length - 1; i >= 1; i--) {
       const m = messages[i];
       if (m.role !== 'user') continue;
+      if (this._isScheduledResumeTurn(m.content)) continue;
       if (this._isAgentInjectedUserContent(m.content)) continue;
       const text = this._stripInjectedTaskContext(this._messageText(m.content));
       if (!text) continue;
@@ -4993,6 +4997,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return -1;
   }
 
+  _findLatestScheduledResumeIndex(messages) {
+    for (let i = messages.length - 1; i >= 1; i--) {
+      const m = messages[i];
+      if (m.role === 'user' && this._isScheduledResumeTurn(m.content)) return i;
+    }
+    return -1;
+  }
+
   /**
    * Shrink oversized tool results / message bodies in place, capping the bloat
    * without dropping any turns. Used as the fallback when we're over the token
@@ -5006,9 +5018,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _truncateOversizedMessages(tabId, messages) {
     const taskIdx = this._findOriginalTaskIndex(messages);
+    const scheduledResumeIdx = this._findLatestScheduledResumeIndex(messages);
     let trimmed = false;
     for (let i = 1; i < messages.length; i++) {
       if (i === taskIdx) continue; // never truncate the pinned original task
+      if (i === scheduledResumeIdx) continue; // preserve scheduled resume instructions
       const m = messages[i];
       if (this._isPinnedAgentStateMessage(m)) continue;
       if (typeof m.content !== 'string') continue; // image/array content handled by _pruneOldImages
@@ -5097,6 +5111,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // heading, and the pinned scratchpad). Shared with _truncateOversizedMessages.
     const originalTaskIdx = this._findOriginalTaskIndex(messages);
     const originalTask = originalTaskIdx >= 0 ? messages[originalTaskIdx] : null;
+    const scheduledResumeIdx = this._findLatestScheduledResumeIndex(messages);
+    const scheduledResumeMsg = scheduledResumeIdx >= 0 && scheduledResumeIdx !== originalTaskIdx
+      ? messages[scheduledResumeIdx]
+      : null;
     // Pin the scratchpad alongside the original task so the model's self-
     // written notes survive summarization.
     const scratchpadIdx = this._findScratchpadIndex(messages);
@@ -5118,8 +5136,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // Strip the scratchpad out of both slices — we re-pin a single copy of
     // it in the rebuild step below. Without this we'd either lose it (if it
     // fell into oldMessages and got summarized away) or duplicate it.
-    const oldMessages = oldMessagesRaw.filter(m => !this._isPinnedAgentStateMessage(m));
-    const recentMessages = recentMessagesRaw.filter(m => !this._isPinnedAgentStateMessage(m));
+    const oldMessages = oldMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isPinnedAgentStateMessage(m));
+    const recentMessages = recentMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isPinnedAgentStateMessage(m));
 
     // Boundary fix: the recent slice must not begin in the middle of a
     // tool-call group. If the cutoff lands right after an assistant
@@ -5163,7 +5181,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return true;
       };
       while (oldMessages.length < 4 && moveOldestRecentToSummary()) {}
-      const pinnedChars = this._estimateContextChars([systemMsg, originalTask, scratchpadMsg, progressMsg].filter(Boolean));
+      const pinnedChars = this._estimateContextChars([systemMsg, originalTask, scheduledResumeMsg, scratchpadMsg, progressMsg].filter(Boolean));
       const compactOverheadChars = 3000; // summary wrapper + ack + manual summary fallback
       const fixedPromptOverheadChars = fixedPromptOverheadTokens * 4;
       const maxRecentChars = Math.max(0, (tokenBudget * 4) - fixedPromptOverheadChars - pinnedChars - compactOverheadChars);
@@ -5262,15 +5280,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
-    // Rebuild: system + pinned original task + summary + recent.
+    // Rebuild: system + pinned original task + scheduled resume + summary + recent.
     // The pinned task keeps the model anchored to what was asked, while
-    // the summary + recent slice preserves progress toward it.
+    // the scheduled resume keeps durable continuation instructions concrete.
     const summaryMsg = { role: 'user', content: `[Context window was trimmed to stay within budget. Your ORIGINAL TASK is the user message above — keep working on it. ${summaryText}]` };
     const summaryAck = { role: 'assistant', content: 'Understood. I\'ll continue working on the original task.' };
 
     messages.length = 0;
     messages.push(systemMsg);
     if (originalTask) messages.push(originalTask);
+    if (scheduledResumeMsg) messages.push(scheduledResumeMsg);
     if (scratchpadMsg) messages.push(scratchpadMsg);
     if (progressMsg) messages.push(progressMsg);
     messages.push(summaryMsg, summaryAck, ...recentMessages);
@@ -5618,6 +5637,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       originalTask = m;
       break;
     }
+    const scheduledResumeIdx = this._findLatestScheduledResumeIndex(messages);
+    const scheduledResumeMsg = scheduledResumeIdx >= 0 && messages[scheduledResumeIdx] !== originalTask
+      ? messages[scheduledResumeIdx]
+      : null;
     // Pin the scratchpad too — even under emergency trim, the model's own
     // notes should survive.
     const scratchpadIdx = this._findScratchpadIndex(messages);
@@ -5625,7 +5648,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const progressIdx = this._findProgressLedgerIndex(messages);
     const progressMsg = progressIdx >= 0 ? messages[progressIdx] : null;
     const keepLast = 6; // keep only 6 most recent messages
-    const recent = messages.slice(-keepLast).filter(m => !this._isPinnedAgentStateMessage(m));
+    const recent = messages.slice(-keepLast).filter(m => m !== scheduledResumeMsg && !this._isPinnedAgentStateMessage(m));
 
     // Drop any leading `tool` messages whose requesting assistant turn fell
     // outside the kept window. Both OpenAI-compatible and Anthropic APIs reject
@@ -5657,6 +5680,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.length = 0;
     messages.push(systemMsg);
     if (originalTask) messages.push(originalTask);
+    if (scheduledResumeMsg) messages.push(scheduledResumeMsg);
     if (scratchpadMsg) messages.push(scratchpadMsg);
     if (progressMsg) messages.push(progressMsg);
     messages.push(notice, ack, ...recent);

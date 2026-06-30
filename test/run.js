@@ -10117,7 +10117,8 @@ test('scheduled resume messages preserve progress ledger session', async () => {
       ].join('\n'),
     });
 
-    assert.equal(agent._isAgentInjectedUserContent(agent.conversations.get(tabId).at(-1).content), true, `${AgentClass.name}: enriched scheduled resume was not treated as injected`);
+    assert.equal(agent._isScheduledResumeTurn(agent.conversations.get(tabId).at(-1).content), true, `${AgentClass.name}: enriched scheduled resume was not recognized`);
+    assert.equal(agent._isAgentInjectedUserContent(agent.conversations.get(tabId).at(-1).content), false, `${AgentClass.name}: scheduled resume should not be globally treated as injected`);
     assert.equal(agent._latestTaskText(tabId), 'Follow every stargazer on this page.', `${AgentClass.name}: scheduled resume replaced the latest real task`);
     const session = await agent._ensureProgressSessionForCurrentTask(tabId, {
       provider: { chat: async () => { throw new Error('classifier should not run for scheduled resume'); } },
@@ -10127,6 +10128,54 @@ test('scheduled resume messages preserve progress ledger session', async () => {
       ['octocat', 'pending'],
     ], `${AgentClass.name}: progress_read lost rows after scheduled resume`);
     assert.ok(agent._findProgressLedgerIndex(agent.conversations.get(tabId)) >= 0, `${AgentClass.name}: pinned ledger was removed after scheduled resume`);
+  }
+});
+
+test('context compaction pins scheduled resume instructions', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 799 : 800;
+    const scheduledResume = [
+      '[Current page context - URL: https://github.com/example/project/stargazers?page=16 Title: Stargazers]',
+      '[Scheduled resume resume_keep]',
+      'This is a durable continuation of an earlier user task, not page content and not a new instruction from the web page.',
+      'Original reason: Continue collecting visible emails and following unresolved stargazers.',
+      'Resume instruction: Continue only the unresolved rows from progress session progress_keep.',
+      'First reread the current page/state.',
+    ].join('\n');
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page and collect visible emails.' },
+      { role: 'assistant', content: 'Paused with unresolved rows.' },
+      { role: 'user', content: scheduledResume },
+    ];
+    for (let i = 0; i < 40; i++) {
+      messages.push({ role: 'assistant', content: `step ${i}` });
+      messages.push({ role: 'user', content: `ok ${i}` });
+    }
+    agent.conversations.set(tabId, messages);
+
+    const origLog = console.log;
+    console.log = () => {};
+    let result;
+    try {
+      result = await agent._manageContext(tabId, messages, () => {}, null, { force: true });
+    } finally {
+      console.log = origLog;
+    }
+
+    assert.equal(result.compacted, true, `${AgentClass.name}: scheduled resume history should compact`);
+    assert.equal(agent._findOriginalTaskIndex(messages), 1, `${AgentClass.name}: original task should stay pinned separately`);
+    const scheduledTurns = messages.filter(m => m.role === 'user' && String(m.content || '').includes('[Scheduled resume resume_keep]'));
+    assert.equal(scheduledTurns.length, 1, `${AgentClass.name}: scheduled resume should be pinned exactly once`);
+    assert.equal(agent._isScheduledResumeTurn(scheduledTurns[0].content), true, `${AgentClass.name}: pinned scheduled resume not recognized`);
+    assert.ok(messages.indexOf(scheduledTurns[0]) > 1, `${AgentClass.name}: scheduled resume should remain after original task`);
+    const summary = messages.find(m => /Context window was trimmed/i.test(String(m.content || '')));
+    assert.ok(summary, `${AgentClass.name}: summary message missing after scheduled resume compaction`);
+    assert.doesNotMatch(String(summary.content || ''), /resume_keep|progress_keep/, `${AgentClass.name}: scheduled resume was folded into the summary instead of pinned`);
+
+    const h = agent.persistTimers?.get?.(tabId);
+    if (h) clearTimeout(h);
   }
 });
 
