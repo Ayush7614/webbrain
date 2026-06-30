@@ -5565,6 +5565,34 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (json.length <= maxResultChars) return json;
     }
 
+    if (result && result.data && typeof result.data === 'object' && !Array.isArray(result.data)) {
+      const originalData = result.data;
+      const originalText = typeof originalData.text === 'string' ? originalData.text : null;
+      const originalSegments = Array.isArray(originalData.segments) ? originalData.segments : null;
+      if (originalText || originalSegments) {
+        const textLimits = originalText ? [4000, 3000, 2000, 1000] : [null];
+        const segmentLimits = originalSegments ? [80, 40, 20, 10, 5, 0] : [null];
+        for (const textLimit of textLimits) {
+          for (const segmentLimit of segmentLimits) {
+            const data = { ...originalData };
+            if (originalText && originalText.length > textLimit) {
+              data.text = `${originalText.slice(0, textLimit)}\n[...tool data text truncated]`;
+              data.truncated = true;
+              data.originalLength = data.originalLength ?? originalText.length;
+            }
+            if (originalSegments && originalSegments.length > segmentLimit) {
+              data.segments = originalSegments.slice(0, segmentLimit);
+              data.segmentsTruncated = true;
+              data.originalSegmentCount = data.originalSegmentCount ?? originalSegments.length;
+            }
+            const trimmed = { ...result, data };
+            json = JSON.stringify(trimmed);
+            if (json.length <= maxResultChars) return json;
+          }
+        }
+      }
+    }
+
     // If still too big, just chop the JSON
     return json.slice(0, maxResultChars) + '\n[...result truncated]';
   }
