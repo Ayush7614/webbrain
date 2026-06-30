@@ -31,6 +31,7 @@ const scheduler = new ScheduledJobManager({
   api: browser,
   agent,
   loadProviders: async () => {
+    await customSkillsReady;
     if (providerManager.providers.size === 0) await providerManager.load();
   },
   sendUpdate: (tabId, type, data) => {

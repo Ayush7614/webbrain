@@ -11986,6 +11986,24 @@ test('settings exposes custom skills tab and packaged skills resource directory'
   }
 });
 
+test('scheduled agent runs wait for custom skills hydration before provider load', () => {
+  for (const [label, prefix] of [['chrome', 'src/chrome'], ['firefox', 'src/firefox']]) {
+    const background = fs.readFileSync(path.join(ROOT, prefix, 'src/background.js'), 'utf8');
+    const schedulerStart = background.indexOf('const scheduler = new ScheduledJobManager({');
+    assert.notEqual(schedulerStart, -1, `${label}: scheduler construction missing`);
+    const loadStart = background.indexOf('loadProviders: async () => {', schedulerStart);
+    const loadEnd = background.indexOf('\n  },\n  sendUpdate:', loadStart);
+    assert.notEqual(loadStart, -1, `${label}: scheduler loadProviders hook missing`);
+    assert.notEqual(loadEnd, -1, `${label}: scheduler loadProviders hook boundary missing`);
+    const loadBody = background.slice(loadStart, loadEnd);
+    const skillsWaitIdx = loadBody.indexOf('await customSkillsReady;');
+    const providerLoadIdx = loadBody.indexOf('providerManager.providers.size');
+    assert.notEqual(skillsWaitIdx, -1, `${label}: scheduled runs should wait for custom skills hydration`);
+    assert.notEqual(providerLoadIdx, -1, `${label}: scheduler provider load check missing`);
+    assert.equal(skillsWaitIdx < providerLoadIdx, true, `${label}: skills must hydrate before scheduled provider load`);
+  }
+});
+
 test('background reasserts active viewport glow after tab reload', () => {
   for (const [label, file] of [
     ['chrome', 'src/chrome/src/background.js'],
