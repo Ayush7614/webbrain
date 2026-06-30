@@ -11982,6 +11982,7 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(freeSkillz, /```webbrain-tools/, `${label}: FreeSkillz skill tool manifest missing`);
     assert.match(freeSkillz, /"name": "read_youtube_transcript"/, `${label}: FreeSkillz transcript tool missing`);
     assert.match(freeSkillz, /"endpoint": "https:\/\/freeskillz\.xyz\/v1\/youtube\/transcript"/, `${label}: FreeSkillz transcript endpoint missing`);
+    assert.doesNotMatch(freeSkillz, /\/v1\/media\/(?:resolve|jobs)|raw FreeSkillz endpoints only|public media metadata|short-lived public media download/i, `${label}: bundled FreeSkillz skill should stay transcript-only`);
     assert.doesNotMatch(freeSkillz, /127\.0\.0\.1|localhost|Local development/i, `${label}: FreeSkillz skill should not include local development URLs`);
   }
 });
