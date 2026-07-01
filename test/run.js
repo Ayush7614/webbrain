@@ -2959,6 +2959,96 @@ test('executeHttpSkillTool runs FreeSkillz media download jobs and cleans up', a
   }
 });
 
+test('executeHttpSkillTool defers cleanup while skill downloads are still running locally', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+  try {
+    for (const [label, prefix, executeTool, normalizeSkills, buildRegistry] of [
+      ['chrome', 'src/chrome', executeHttpSkillToolCh, normalizeCustomSkillsCh, buildSkillToolRegistryCh],
+      ['firefox', 'src/firefox', executeHttpSkillToolFx, normalizeCustomSkillsFx, buildSkillToolRegistryFx],
+    ]) {
+      const skills = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
+      const tool = buildRegistry(skills).get('download_public_media');
+      assert.ok(tool, `${label}: download_public_media manifest tool missing`);
+      tool.job.timeoutMs = 1;
+
+      const providerCalls = [];
+      const downloadCalls = [];
+      const jsonResponse = (status, body) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        text: async () => JSON.stringify(body),
+      });
+      globalThis.fetch = async (url, opts = {}) => {
+        providerCalls.push({ url, opts });
+        if (url === 'https://freeskillz.xyz/v1/media/jobs' && opts.method === 'POST') {
+          return jsonResponse(200, { job_id: 'job_pending' });
+        }
+        if (url === 'https://freeskillz.xyz/v1/media/jobs/job_pending' && opts.method === 'GET') {
+          return jsonResponse(200, { status: 'complete' });
+        }
+        if (url === 'https://freeskillz.xyz/v1/media/jobs/job_pending' && opts.method === 'DELETE') {
+          throw new Error(`${label}: pending local downloads should not clean up provider jobs`);
+        }
+        throw new Error(`unexpected provider call: ${opts.method || 'GET'} ${url}`);
+      };
+
+      if (label === 'chrome') {
+        delete globalThis.browser;
+        globalThis.chrome = {
+          runtime: { lastError: null },
+          downloads: {
+            download(opts, cb) {
+              downloadCalls.push(opts);
+              cb(7201);
+            },
+            search(_query, cb) {
+              cb([{ id: 7201, filename: '/Users/x/Downloads/slow.mp4', state: 'in_progress', bytesReceived: 1, totalBytes: 100 }]);
+            },
+          },
+        };
+      } else {
+        delete globalThis.chrome;
+        globalThis.browser = {
+          downloads: {
+            async download(opts) {
+              downloadCalls.push(opts);
+              return 8201;
+            },
+            async search() {
+              return [{ id: 8201, filename: '/Users/x/Downloads/slow.mp4', state: 'in_progress', bytesReceived: 1, totalBytes: 100 }];
+            },
+          },
+        };
+      }
+
+      const result = await executeTool(tool, { url: 'https://www.instagram.com/reel/abc/' });
+      assert.equal(result.success, false, `${label}: pending browser download should not report success`);
+      assert.equal(result.pending, true, `${label}: pending browser download should be marked pending`);
+      assert.equal(result.cleanupDeferred, true, `${label}: provider cleanup should be deferred`);
+      assert.equal(result.cleanup, null, `${label}: provider cleanup should not run while local download is pending`);
+      assert.equal(result.downloadId, label === 'chrome' ? 7201 : 8201, `${label}: download id missing`);
+      assert.equal(downloadCalls.length, 1, `${label}: browser download should still be started`);
+      assert.deepEqual(
+        providerCalls.map(call => `${call.opts.method || 'GET'} ${call.url}`),
+        [
+          'POST https://freeskillz.xyz/v1/media/jobs',
+          'GET https://freeskillz.xyz/v1/media/jobs/job_pending',
+        ],
+        `${label}: pending local download should not delete provider job`,
+      );
+    }
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+  }
+});
+
 test('executeHttpSkillTool rejects blocked skill endpoints before fetching', async () => {
   for (const [label, executeTool] of [
     ['chrome', executeHttpSkillToolCh],

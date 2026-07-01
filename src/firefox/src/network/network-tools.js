@@ -384,17 +384,24 @@ async function downloadSkillFile(url, filename, waitMs = 60000) {
   if (safeName) opts.filename = safeName;
   const downloadId = await browser.downloads.download(opts);
   const info = await resolveDownloadInfo(downloadId, waitMs);
-  const result = { downloadId, success: true };
+  const result = { downloadId, success: false };
   if (info) {
     if (info.filename) result.filename = info.filename;
     if (info.state) result.state = info.state;
     if (info.error) result.error = info.error;
     if (info.bytesReceived != null) result.bytesReceived = info.bytesReceived;
     if (info.totalBytes != null) result.totalBytes = info.totalBytes;
-    if (info.state === 'interrupted') {
-      result.success = false;
+    if (info.state === 'complete') {
+      result.success = true;
+    } else if (info.state === 'interrupted') {
       result.error = info.error ? `Download interrupted: ${info.error}` : 'Download interrupted before completion.';
+    } else {
+      result.pending = true;
+      result.error = `Download did not complete before timeout${info.state ? ` (state: ${info.state})` : ''}.`;
     }
+  } else {
+    result.pending = true;
+    result.error = 'Download did not report completion before timeout.';
   }
   return result;
 }
@@ -458,7 +465,9 @@ async function executeHttpDownloadJobSkillTool(tool, payload, endpoint) {
   let cleanup = null;
   try {
     const download = await downloadSkillFile(fileEndpoint.url, payload.filename, Math.min(tool.job?.timeoutMs || 90000, 120000));
-    if (cleanupEndpoint.ok) cleanup = await cleanupSkillDownloadJob(cleanupEndpoint.url, endpoint, tool);
+    const downloadTerminal = download.state === 'complete' || download.state === 'interrupted';
+    const cleanupDeferred = cleanupEndpoint.ok && !downloadTerminal;
+    if (cleanupEndpoint.ok && downloadTerminal) cleanup = await cleanupSkillDownloadJob(cleanupEndpoint.url, endpoint, tool);
     if (!download.success) {
       return {
         success: false,
@@ -469,6 +478,7 @@ async function executeHttpDownloadJobSkillTool(tool, payload, endpoint) {
         jobStatus: finalStatus,
         fileUrl: fileEndpoint.url,
         cleanup,
+        ...(cleanupDeferred ? { cleanupDeferred: true } : {}),
         ...download,
       };
     }
