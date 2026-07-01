@@ -474,6 +474,14 @@ async function validateSkillDownloadStartUrl(url, expectedUrl) {
         error: responseUrlCheck.error,
       };
     }
+    if (!res.ok) {
+      return {
+        success: false,
+        status: res.status,
+        finalUrl: responseUrl,
+        error: `Skill download preflight failed with HTTP ${res.status}.`,
+      };
+    }
     return { success: true, status: res.status, finalUrl: responseUrl };
   } catch (e) {
     return { success: false, finalUrl: url, error: `Skill download preflight failed: ${e.message}` };

@@ -3376,6 +3376,94 @@ test('executeHttpSkillTool blocks skill download redirects before starting brows
   }
 });
 
+test('executeHttpSkillTool rejects failed skill download preflights before browser downloads', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+  try {
+    for (const [label, prefix, executeTool, normalizeSkills, buildRegistry] of [
+      ['chrome', 'src/chrome', executeHttpSkillToolCh, normalizeCustomSkillsCh, buildSkillToolRegistryCh],
+      ['firefox', 'src/firefox', executeHttpSkillToolFx, normalizeCustomSkillsFx, buildSkillToolRegistryFx],
+    ]) {
+      const skills = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
+      const tool = buildRegistry(skills).get('download_public_media');
+      assert.ok(tool, `${label}: download_public_media manifest tool missing`);
+
+      const providerCalls = [];
+      const downloadCalls = [];
+      const jsonResponse = (status, body) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        text: async () => JSON.stringify(body),
+      });
+      globalThis.fetch = async (url, opts = {}) => {
+        providerCalls.push({ url, opts });
+        if (url === 'https://freeskillz.xyz/v1/media/jobs' && opts.method === 'POST') {
+          return jsonResponse(200, { job_id: 'job_missing_file' });
+        }
+        if (url === 'https://freeskillz.xyz/v1/media/jobs/job_missing_file' && opts.method === 'GET') {
+          return jsonResponse(200, { status: 'complete' });
+        }
+        if (url === 'https://freeskillz.xyz/v1/media/jobs/job_missing_file/file' && opts.method === 'HEAD') {
+          return jsonResponse(404, { error: 'expired' });
+        }
+        if (url === 'https://freeskillz.xyz/v1/media/jobs/job_missing_file' && opts.method === 'DELETE') {
+          return jsonResponse(204, {});
+        }
+        throw new Error(`unexpected provider call: ${opts.method || 'GET'} ${url}`);
+      };
+
+      if (label === 'chrome') {
+        delete globalThis.browser;
+        globalThis.chrome = {
+          runtime: { lastError: null },
+          downloads: {
+            download(opts, cb) {
+              downloadCalls.push(opts);
+              cb(7601);
+            },
+          },
+        };
+      } else {
+        delete globalThis.chrome;
+        globalThis.browser = {
+          downloads: {
+            async download(opts) {
+              downloadCalls.push(opts);
+              return 8601;
+            },
+          },
+        };
+      }
+
+      const result = await executeTool(tool, { url: 'https://www.instagram.com/reel/abc/' });
+      assert.equal(result.success, false, `${label}: failed file preflight should fail`);
+      assert.equal(result.status, 404, `${label}: failed file preflight status missing`);
+      assert.match(result.error, /preflight failed with HTTP 404/i, `${label}: failed file preflight error missing`);
+      assert.equal(result.finalUrl, 'https://freeskillz.xyz/v1/media/jobs/job_missing_file/file', `${label}: failed preflight should report file URL`);
+      assert.equal(result.cleanup?.success, true, `${label}: provider job should be cleaned up after failed preflight`);
+      assert.equal(downloadCalls.length, 0, `${label}: browser download must not start after failed preflight`);
+      assert.deepEqual(
+        providerCalls.map(call => `${call.opts.method || 'GET'} ${call.url}`),
+        [
+          'POST https://freeskillz.xyz/v1/media/jobs',
+          'GET https://freeskillz.xyz/v1/media/jobs/job_missing_file',
+          'HEAD https://freeskillz.xyz/v1/media/jobs/job_missing_file/file',
+          'DELETE https://freeskillz.xyz/v1/media/jobs/job_missing_file',
+        ],
+        `${label}: failed preflight lifecycle mismatch`,
+      );
+    }
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+  }
+});
+
 test('executeHttpSkillTool cleans up provider jobs on pre-download failures', async () => {
   const originalFetch = globalThis.fetch;
   const originalChrome = globalThis.chrome;
