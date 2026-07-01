@@ -5684,8 +5684,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               data.text = `${originalText.slice(0, textLimit)}\n[...tool data text truncated]`;
               data.truncated = true;
               data.originalLength = data.originalLength ?? originalText.length;
-              const rawTextOffset = Number(originalData.text_offset);
-              const rawNextTextOffset = Number(originalData.next_text_offset);
+              // `null` means "offset absent" (e.g. the provider's final
+              // transcript window), not offset 0 — Number(null) would be 0.
+              const rawTextOffset = originalData.text_offset == null ? NaN : Number(originalData.text_offset);
+              const rawNextTextOffset = originalData.next_text_offset == null ? NaN : Number(originalData.next_text_offset);
               const hasTextOffset = Number.isFinite(rawTextOffset) && rawTextOffset >= 0;
               const hasNextTextOffset = Number.isFinite(rawNextTextOffset) && rawNextTextOffset >= 0;
               const inferredTextOffset = hasTextOffset
