@@ -6000,11 +6000,12 @@ test('API mutation observer setting is opt-in and controls the request observer'
 });
 
 test('settings async test controls surface rejected background results', () => {
-  for (const [label, settingsRel] of [
-    ['chrome', 'src/chrome/src/ui/settings.js'],
-    ['firefox', 'src/firefox/src/ui/settings.js'],
+  for (const [label, settingsRel, htmlRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js', 'src/chrome/src/ui/settings.html'],
+    ['firefox', 'src/firefox/src/ui/settings.js', 'src/firefox/src/ui/settings.html'],
   ]) {
     const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    const html = fs.readFileSync(path.join(ROOT, htmlRel), 'utf8');
 
     assert.match(
       settings,
@@ -6106,6 +6107,11 @@ test('settings async test controls surface rejected background results', () => {
       settings,
       /document\.querySelectorAll\('\.loaded-model-dialog'\)\.forEach\(dialog => \{[\s\S]*?dialog\.addEventListener\('click', \(event\) => \{[\s\S]*?event\.target === dialog[\s\S]*?closeLoadedModelDialog\(dialog\);[\s\S]*?event\.target\.closest\('\.loaded-model-option'\);[\s\S]*?const providerId = dialog\.dataset\.loadedModelsFor;[\s\S]*?input\.value = option\.dataset\.model \|\| '';[\s\S]*?closeLoadedModelDialog\(dialog\);[\s\S]*?\}\);[\s\S]*?\}\);/,
       `${label}: choosing a loaded model should write it back to the provider model input`,
+    );
+    assert.match(
+      html,
+      /\.loaded-model-dialog \{[\s\S]*?position: fixed;[\s\S]*?inset: 0;[\s\S]*?margin: auto;[\s\S]*?width: min\(520px, calc\(100vw - 32px\)\);/,
+      `${label}: loaded-model dialog should stay centered despite the global margin reset`,
     );
     const localeDir = path.join(ROOT, label === 'chrome' ? 'src/chrome/src/ui/locales' : 'src/firefox/src/ui/locales');
     for (const filename of fs.readdirSync(localeDir).filter((name) => name.endsWith('.js'))) {
