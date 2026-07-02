@@ -1186,6 +1186,65 @@
     .pn-bubble.deepseek { background: rgba(72,191,255,0.12); color: #48bfff; border-color: rgba(72,191,255,0.25); }
     .pn-bubble.mistral { background: rgba(255,127,80,0.12); color: #ff7f50; border-color: rgba(255,127,80,0.25); }
 
+    .provider-promo {
+      max-width: 880px;
+      margin: 68px auto 0;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1fr);
+      align-items: stretch;
+      box-shadow: 0 16px 48px var(--shadow-card);
+    }
+    .provider-promo-media {
+      background: #090d18;
+      min-height: 220px;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .provider-promo-media img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+      border-radius: 12px;
+    }
+    .provider-promo-copy {
+      padding: 30px;
+      text-align: start;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 12px;
+    }
+    .provider-promo-label {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+    }
+    .provider-promo h3 {
+      font-size: clamp(22px, 3vw, 30px);
+      line-height: 1.15;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+    }
+    .provider-promo p {
+      color: var(--text-dim);
+      font-size: 14px;
+      line-height: 1.7;
+      max-width: 520px;
+    }
+    .provider-promo .btn {
+      width: fit-content;
+      margin-top: 6px;
+    }
+
     /* Reduced-motion: kill the float + ring pulse so users on
        prefers-reduced-motion see a static layout. */
     @media (prefers-reduced-motion: reduce) {
@@ -1527,6 +1586,20 @@
       .pn-bubble { width: 46px; height: 46px; font-size: 18px; }
       .pn-label { font-size: 11px; }
       .cc-core { width: 64px; height: 64px; font-size: 28px; }
+      .provider-promo {
+        grid-template-columns: 1fr;
+        margin-top: 48px;
+      }
+      .provider-promo-media {
+        min-height: 0;
+        aspect-ratio: 1200 / 630;
+      }
+      .provider-promo-copy {
+        padding: 24px;
+      }
+      .provider-promo .btn {
+        width: 100%;
+      }
       .video-showcase { max-width: 380px; }
       .video-frame { padding-bottom: 177.78%; }
       /* Wide (16:9) showcase stays full-width and keeps its ratio on phones. */
@@ -2016,6 +2089,18 @@
       <div class="pn-label">Mistral</div>
     </a>
   </div>
+
+  <article class="provider-promo">
+    <a class="provider-promo-media" href="https://webbrain.one/blog/ollama-launch-handoff" aria-label="Leer el anuncio">
+      <img src="/assets/webbrain-ollama-heart.png" alt="Logotipo de WebBrain, un corazón y el logotipo de Ollama para el anuncio del traspaso de lanzamiento" loading="lazy" decoding="async">
+    </a>
+    <div class="provider-promo-copy">
+      <div class="provider-promo-label">Traspaso de lanzamiento de Ollama</div>
+      <h3>Elige un modelo de Ollama y pásalo a WebBrain</h3>
+      <p>Una nueva ruta de lanzamiento puede configurar WebBrain para un modelo local de Ollama con un solo comando de terminal. Ya está disponible desde nuestra rama de Ollama mientras trabajamos para integrarla en upstream.</p>
+      <a href="https://webbrain.one/blog/ollama-launch-handoff" class="btn btn-secondary">Leer el anuncio</a>
+    </div>
+  </article>
 </section>
 
 <!-- MODES -->

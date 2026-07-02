@@ -36,6 +36,10 @@ const LOCALES_DIR = path.join(BUILD_DIR, 'locales');
 const TEMPLATE_PATH = path.join(BUILD_DIR, 'template.html');
 const SITE_ORIGIN = 'https://webbrain.one';
 const SOCIAL_IMAGE_URL = `${SITE_ORIGIN}/og-image.png`;
+const FEATURED_HOME_PROMO = {
+  urlPath: '/blog/ollama-launch-handoff',
+  imagePath: '/assets/webbrain-ollama-heart.png',
+};
 
 // Locale config. The default locale (en) renders to web/index.html;
 // the others render to web/<code>/index.html.
@@ -317,6 +321,8 @@ async function main() {
     const shareText = dict['share.text'] || '';
     dict = {
       ...dict,
+      'featured_home_promo.url': `${SITE_ORIGIN}${FEATURED_HOME_PROMO.urlPath}`,
+      'featured_home_promo.image': FEATURED_HOME_PROMO.imagePath,
       'share.x_intent_url': `https://x.com/intent/post?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(homeUrl)}`,
       'share.linkedin_intent_url': `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(homeUrl)}`,
     };
