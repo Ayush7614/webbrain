@@ -242,14 +242,20 @@
     };
 
     // Cleanup if the underlying capture stream goes away (tab/window closed,
-    // user revoked capture, etc.). We can't notify the service worker
-    // synchronously, but it can poll recorder-state.
+    // user revoked capture, Chrome's Stop sharing control, etc.). We can't
+    // notify the service worker synchronously, but it can poll recorder-state.
     for (const t of captureStream.getTracks()) {
       t.addEventListener('ended', () => {
+        const s = session;
+        if (!s || s.captureEndedCleanupStarted) return;
+        s.captureEndedCleanupStarted = true;
         log(`${source} track ended unexpectedly:`, t.kind);
-        if (session && session.recorder.state !== 'inactive') {
-          try { session.recorder.stop(); } catch {}
+        if (s.recorder.state !== 'inactive') {
+          try { s.recorder.stop(); } catch {}
         }
+        releaseSession(s).catch((e) => {
+          log('capture-ended cleanup failed:', e?.message || e);
+        });
       });
     }
 
@@ -355,10 +361,16 @@
   }
 
   async function releaseSession(s) {
-    try { for (const t of s.captureStream?.getTracks?.() || []) t.stop(); } catch {}
-    try { for (const t of s.micStream?.getTracks?.() || []) t.stop(); } catch {}
+    const captureStream = s.captureStream;
+    const micStream = s.micStream;
+    const audioContext = s.audioContext;
+    s.captureStream = null;
+    s.micStream = null;
+    s.audioContext = null;
+    try { for (const t of captureStream?.getTracks?.() || []) t.stop(); } catch {}
+    try { for (const t of micStream?.getTracks?.() || []) t.stop(); } catch {}
     try {
-      if (s.audioContext && s.audioContext.state !== 'closed') await s.audioContext.close();
+      if (audioContext && audioContext.state !== 'closed') await audioContext.close();
     } catch {}
   }
 

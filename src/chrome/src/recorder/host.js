@@ -105,12 +105,12 @@ function saveRecordingState() {
   chrome.storage.session?.set({ [RECORDING_STATE_KEY]: recordingState }).catch(() => {});
 }
 
-export async function getRecordingStateFresh() {
+export async function getRecordingStateFresh({ beforeFinalizeRecording = null } = {}) {
   await ensureRecordingStateLoaded();
   if (recordingState.active) {
-    await reconcileStaleRecordingState({ finalizeInactiveSession: true });
+    await reconcileStaleRecordingState({ finalizeInactiveSession: true, beforeFinalizeRecording });
     if (recordingState.active && Date.now() >= getRecordingSafetyDueAt(recordingState)) {
-      await stopRecordingForSafetyCap();
+      await stopRecordingForSafetyCap({ beforeFinalizeRecording });
     }
   }
   return recordingState;
@@ -185,7 +185,16 @@ async function readOffscreenRecorderState() {
   }
 }
 
-async function reconcileStaleRecordingState({ finalizeInactiveSession = false } = {}) {
+async function beforeRecordingFinalize(beforeFinalizeRecording) {
+  if (!recordingState?.transcribeAfter || typeof beforeFinalizeRecording !== 'function') return;
+  try {
+    await beforeFinalizeRecording();
+  } catch (e) {
+    console.warn('[WebBrain] recording finalize provider preload failed:', e);
+  }
+}
+
+async function reconcileStaleRecordingState({ finalizeInactiveSession = false, beforeFinalizeRecording = null } = {}) {
   const offscreenState = await readOffscreenRecorderState();
   // Couldn't reach a verdict (document exists but didn't answer). Stay
   // conservative and leave the flag as-is rather than risk tearing down a live
@@ -197,6 +206,7 @@ async function reconcileStaleRecordingState({ finalizeInactiveSession = false } 
   // MediaRecorder stopped before the Stop message landed). Finalize it so the
   // captured bytes are saved instead of dropped.
   if (offscreenState.tabId && finalizeInactiveSession) {
+    await beforeRecordingFinalize(beforeFinalizeRecording);
     await stopTabRecording();
     return recordingState.active === false;
   }
@@ -338,7 +348,7 @@ export async function startDisplayRecording(options = {}) {
  *
  * @returns {Promise<{ok:true, filename, downloadId, ...}|{ok:false, error}>}
  */
-async function stopRecordingForSafetyCap() {
+async function stopRecordingForSafetyCap({ beforeFinalizeRecording = null } = {}) {
   await ensureRecordingStateLoaded();
   if (!recordingState.active) {
     clearRecordingSafetyWatchdog();
@@ -349,6 +359,7 @@ async function stopRecordingForSafetyCap() {
     scheduleRecordingSafetyWatchdog(recordingState);
     return { ok: true, notDue: true };
   }
+  await beforeRecordingFinalize(beforeFinalizeRecording);
   return stopTabRecording({ reason: 'safety_cap' });
 }
 
@@ -454,6 +465,16 @@ async function runTranscription({ dataUrl, mimeType, baseFilename }) {
     return broadcastTranscribed({
       ok: false,
       error: 'No provider manager wired — internal error. Transcription unavailable until background.js calls setProviderManager().',
+    });
+  }
+  try {
+    if (providerManagerRef.providers?.size === 0) {
+      await providerManagerRef.load();
+    }
+  } catch (e) {
+    return broadcastTranscribed({
+      ok: false,
+      error: `Couldn't load transcription providers: ${e.message || e}`,
     });
   }
 

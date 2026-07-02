@@ -940,7 +940,12 @@ async function handleMessage(msg, sender) {
     case 'stop_tab_recording':
       return await stopTabRecording();
     case 'get_recording_state':
-      return { ok: true, state: await getRecordingStateFresh() };
+      return {
+        ok: true,
+        state: await getRecordingStateFresh({
+          beforeFinalizeRecording: loadProvidersForRecordingFinalize,
+        }),
+      };
 
     // --- Chat / Agent ---
     case 'chat': {
@@ -1292,5 +1297,11 @@ async function handleMessage(msg, sender) {
 
     default:
       throw new Error(`Unknown action: ${msg.action}`);
+  }
+}
+
+async function loadProvidersForRecordingFinalize() {
+  if (providerManager.providers.size === 0) {
+    await providerManager.load();
   }
 }

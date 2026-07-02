@@ -4855,6 +4855,12 @@ test('chrome /record-full-screen is slash-only, Chrome-only, and hidden from the
   assert.match(host, /function scheduleRecordingSafetyWatchdog[\s\S]*?chrome\.alarms\?\.create/, 'chrome: hidden recordings should have a background-owned safety cap');
   assert.match(offscreen, /navigator\.mediaDevices\.getDisplayMedia\(\{[\s\S]*?audio: audio !== false,[\s\S]*?video: true,[\s\S]*?\}\)/, 'chrome: offscreen recorder should open the screen/window picker through getDisplayMedia');
   assert.doesNotMatch(offscreen, /chrome\.desktopCapture/, 'chrome: offscreen recorder cannot use extension APIs beyond chrome.runtime');
+  assert.match(offscreen, /addEventListener\('ended', \(\) => \{[\s\S]*?s\.captureEndedCleanupStarted = true;[\s\S]*?s\.recorder\.stop\(\);[\s\S]*?releaseSession\(s\)\.catch/, 'chrome: capture-ended cleanup should release mic/context immediately after stopping the recorder');
+  assert.match(offscreen, /async function releaseSession\(s\) \{[\s\S]*?s\.captureStream = null;[\s\S]*?s\.micStream = null;[\s\S]*?s\.audioContext = null;[\s\S]*?micStream\?\.getTracks/, 'chrome: releaseSession should be idempotent and stop the separately-acquired mic stream');
+  assert.match(background, /case 'get_recording_state':[\s\S]*?getRecordingStateFresh\(\{[\s\S]*?beforeFinalizeRecording: loadProvidersForRecordingFinalize,[\s\S]*?\}\)/, 'chrome: get_recording_state should preload providers before finalizing transcribed stopped recordings');
+  assert.match(background, /async function loadProvidersForRecordingFinalize\(\) \{[\s\S]*?providerManager\.providers\.size === 0[\s\S]*?await providerManager\.load\(\);[\s\S]*?\}/, 'chrome: recording finalize provider preload should load the provider manager only when empty');
+  assert.match(host, /async function beforeRecordingFinalize\(beforeFinalizeRecording\)[\s\S]*?recordingState\?\.transcribeAfter[\s\S]*?await beforeFinalizeRecording\(\)/, 'chrome: recorder host should only preload providers before finalize when transcription was requested');
+  assert.match(host, /async function runTranscription[\s\S]*?providerManagerRef\.providers\?\.size === 0[\s\S]*?await providerManagerRef\.load\(\)/, 'chrome: transcription should also lazy-load providers as a fallback');
 
   const firefoxSlashList = firefoxPanel.slice(firefoxPanel.indexOf('const SLASH_COMMANDS = ['), firefoxPanel.indexOf('const OUT_OF_BAND_SLASH_COMMANDS'));
   assert.doesNotMatch(firefoxSlashList, /\/record-full-screen/, 'firefox: autocomplete should not advertise /record-full-screen');
