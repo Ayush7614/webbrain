@@ -50,11 +50,34 @@ function safeDecodePath(pathname) {
   }
 }
 
+const KNOWN_MASTODON_HOSTS = new Set([
+  'fosstodon.org',
+  'hachyderm.io',
+  'infosec.exchange',
+  'mas.to',
+  'mastodon.online',
+  'mastodon.social',
+  'mastodon.world',
+  'mastoturk.org',
+  'mstdn.social',
+  'social.vivaldi.net',
+  'techhub.social',
+  'types.pl',
+  'universeodon.com',
+]);
+
+function isKnownMastodonHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^www\./, '');
+  return KNOWN_MASTODON_HOSTS.has(host) || /^mastodon[.-]/.test(host);
+}
+
 function isMastodonUrl(url) {
   const u = new URL(url);
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
   const path = safeDecodePath(u.pathname);
-  return /^\/@[A-Za-z0-9_]+(?:@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?(?:\/\d+)?\/?$/.test(path)
+  return /^\/@[A-Za-z0-9_]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\/\d+)?\/?$/.test(path)
+    || /^\/@[A-Za-z0-9_]+(?:@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?\/\d+\/?$/.test(path)
+    || (/^\/@[A-Za-z0-9_]+\/?$/.test(path) && isKnownMastodonHost(u.hostname))
     || /^\/(interact|authorize_interaction)\/?$/.test(path);
 }
 
