@@ -53,6 +53,32 @@
     });
   }
 
+  function pickRecorderMimeType({ hasVideo, hasAudio, requestedMime }) {
+    const candidates = hasVideo
+      ? (hasAudio
+          ? [
+              'video/webm;codecs=vp9,opus',
+              'video/webm;codecs=vp8,opus',
+              'video/webm',
+            ]
+          : [
+              'video/webm;codecs=vp9',
+              'video/webm;codecs=vp8',
+              'video/webm',
+            ])
+      : [
+          'audio/webm;codecs=opus',
+          'audio/webm',
+        ];
+    const chosenMime = (requestedMime && MediaRecorder.isTypeSupported(requestedMime))
+      ? requestedMime
+      : candidates.find(m => MediaRecorder.isTypeSupported(m));
+    if (!chosenMime) {
+      throw new Error('No supported MediaRecorder mimeType found.');
+    }
+    return chosenMime;
+  }
+
   async function start(message) {
     let { streamId, tabId, options } = message || {};
     if (session) {
@@ -73,26 +99,6 @@
       mic = true,
       mimeType: requestedMime,
     } = options || {};
-
-    // Pick a MediaRecorder mimeType the browser actually supports. VP9 is
-    // best quality-per-byte; VP8 is the wide-compat fallback. Audio-only
-    // gets webm/opus.
-    const candidates = video
-      ? [
-          'video/webm;codecs=vp9,opus',
-          'video/webm;codecs=vp8,opus',
-          'video/webm',
-        ]
-      : [
-          'audio/webm;codecs=opus',
-          'audio/webm',
-        ];
-    const chosenMime = (requestedMime && MediaRecorder.isTypeSupported(requestedMime))
-      ? requestedMime
-      : candidates.find(m => MediaRecorder.isTypeSupported(m));
-    if (!chosenMime) {
-      throw new Error('No supported MediaRecorder mimeType found.');
-    }
 
     // 1. Capture stream — chrome.tabCapture exposes the active tab as a
     // MediaStream when we pass the streamId we got from
@@ -172,24 +178,29 @@
     // them. Release everything we acquired before rethrowing.
     let audioContext = null;
     let recorder;
+    let chosenMime;
     try {
-      audioContext = new AudioContext();
-      const mixDest = audioContext.createMediaStreamDestination();
-
       const capturedAudioTracks = captureStream.getAudioTracks();
-      if (capturedAudioTracks.length) {
-        const capturedAudioSource = audioContext.createMediaStreamSource(
-          new MediaStream(capturedAudioTracks)
-        );
-        capturedAudioSource.connect(mixDest); // into the recording
-        if (source === 'tab') {
-          capturedAudioSource.connect(audioContext.destination);
-        }
-      }
+      const hasAudioSources = capturedAudioTracks.length > 0 || !!micStream;
+      let mixDest = null;
+      if (hasAudioSources) {
+        audioContext = new AudioContext();
+        mixDest = audioContext.createMediaStreamDestination();
 
-      if (micStream) {
-        const micSource = audioContext.createMediaStreamSource(micStream);
-        micSource.connect(mixDest); // into the recording (do NOT loop to speaker — feedback)
+        if (capturedAudioTracks.length) {
+          const capturedAudioSource = audioContext.createMediaStreamSource(
+            new MediaStream(capturedAudioTracks)
+          );
+          capturedAudioSource.connect(mixDest); // into the recording
+          if (source === 'tab') {
+            capturedAudioSource.connect(audioContext.destination);
+          }
+        }
+
+        if (micStream) {
+          const micSource = audioContext.createMediaStreamSource(micStream);
+          micSource.connect(mixDest); // into the recording (do NOT loop to speaker — feedback)
+        }
       }
 
       // 4. Build the final stream the recorder consumes.
@@ -197,16 +208,33 @@
       if (video) {
         for (const t of captureStream.getVideoTracks()) finalStream.addTrack(t);
       }
-      for (const t of mixDest.stream.getAudioTracks()) finalStream.addTrack(t);
+      if (mixDest) {
+        for (const t of mixDest.stream.getAudioTracks()) finalStream.addTrack(t);
+      }
+      const finalHasVideo = finalStream.getVideoTracks().length > 0;
+      const finalHasAudio = finalStream.getAudioTracks().length > 0;
+      if (!finalHasVideo && !finalHasAudio) {
+        throw new Error('No media tracks available to record.');
+      }
+      chosenMime = pickRecorderMimeType({
+        hasVideo: finalHasVideo,
+        hasAudio: finalHasAudio,
+        requestedMime,
+      });
 
       // 5. MediaRecorder. Collect dataavailable chunks. Pass a timeslice so
       // partial data survives a crash and gives us progress estimates.
-      recorder = new MediaRecorder(finalStream, {
+      const recorderOptions = {
         mimeType: chosenMime,
-        // ~256 kbps audio is plenty for speech; the rest is video budget.
-        audioBitsPerSecond: 192_000,
-        videoBitsPerSecond: 2_500_000,
-      });
+      };
+      if (finalHasAudio) {
+        // ~192 kbps audio is plenty for speech; the rest is video budget.
+        recorderOptions.audioBitsPerSecond = 192_000;
+      }
+      if (finalHasVideo) {
+        recorderOptions.videoBitsPerSecond = 2_500_000;
+      }
+      recorder = new MediaRecorder(finalStream, recorderOptions);
     } catch (e) {
       try { for (const t of captureStream.getTracks()) t.stop(); } catch {}
       if (micStream) { try { for (const t of micStream.getTracks()) t.stop(); } catch {} }

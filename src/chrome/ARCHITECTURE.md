@@ -1,6 +1,6 @@
 # WebBrain Chrome/Edge Extension — Architecture
 
-> Version 20.1.2 · Manifest V3 · Service Worker background
+> Version 20.1.3 · Manifest V3 · Service Worker background
 
 ## High-Level Overview
 
@@ -192,8 +192,8 @@ offscreen/recorder.js
       │     captured audio ─→ mixDestination
       │     mic            ─→ mixDestination
       │     tab audio only ─→ audioContext.destination   (passthrough so user hears the call)
-      ├─ MediaStream(video tracks ∪ mixDestination audio tracks)
-      └─ MediaRecorder(mimeType: 'video/webm;codecs=vp9,opus')
+      ├─ MediaStream(video tracks ∪ mixDestination audio tracks when audio exists)
+      └─ MediaRecorder(mimeType selected from actual final video/audio tracks)
               └─ ondataavailable → chunks[]
                                   → on stop, Blob → dataURL → background
 
