@@ -13880,7 +13880,7 @@ test('schedule_resume falls back to all-sessions progress read for legacy unscop
 
     assert.equal(result.success, true, `${AgentClass.name}: legacy schedule_resume should succeed`);
     const instruction = scheduledPayload?.args?.resume_instruction || '';
-    assert.ok(instruction.includes('progress_read({allSessions: true, limit: 50})'), `${AgentClass.name}: legacy guard should fall back to all-session progress_read`);
+    assert.ok(instruction.includes('progress_read({currentTaskOnly: true, limit: 50})'), `${AgentClass.name}: legacy guard should fall back to all-session progress_read`);
     assert.doesNotMatch(instruction, /App-owned progress session id:/, `${AgentClass.name}: legacy guard should not invent a session id`);
     assert.match(instruction, /1 row\(s\), 1 unresolved/, `${AgentClass.name}: legacy guard should include safe counts`);
     assert.ok(instruction.indexOf('source of truth') < instruction.indexOf('@eXeDK'), `${AgentClass.name}: legacy ledger guard must come before the stale next-user hint`);
@@ -13927,7 +13927,7 @@ test('schedule_resume falls back to legacy rows when active session has no scope
 
     assert.equal(result.success, true, `${AgentClass.name}: empty-scoped legacy schedule_resume should succeed`);
     const instruction = scheduledPayload?.args?.resume_instruction || '';
-    assert.ok(instruction.includes('progress_read({allSessions: true, limit: 50})'), `${AgentClass.name}: empty scoped session should fall back to all-session progress_read`);
+    assert.ok(instruction.includes('progress_read({currentTaskOnly: true, limit: 50})'), `${AgentClass.name}: empty scoped session should fall back to all-session progress_read`);
     assert.doesNotMatch(instruction, /App-owned progress session id:/, `${AgentClass.name}: empty scoped session should not ask the model to read an empty session`);
     assert.match(instruction, /1 row\(s\), 1 unresolved/, `${AgentClass.name}: empty scoped legacy guard should include safe counts`);
     assert.ok(instruction.indexOf('source of truth') < instruction.indexOf('@eXeDK'), `${AgentClass.name}: empty scoped legacy guard must come before the stale next-user hint`);
@@ -14095,7 +14095,7 @@ test('schedule_resume guards unscoped rows via task key match for non-English ta
     assert.equal(result.success, true, `${AgentClass.name}: non-English schedule_resume should succeed`);
     const instruction = scheduledPayload?.args?.resume_instruction || '';
     assert.match(instruction, /^Continue the active Act-mode progress-ledger task/, `${AgentClass.name}: taskKey match should attach the guard where the lexical heuristic cannot`);
-    assert.ok(instruction.includes('progress_read({allSessions: true, limit: 50})'), `${AgentClass.name}: unscoped taskKey-matched rows should use the all-sessions read`);
+    assert.ok(instruction.includes('progress_read({currentTaskOnly: true, limit: 50})'), `${AgentClass.name}: unscoped taskKey-matched rows should use the all-sessions read`);
   }
 });
 
@@ -14160,6 +14160,9 @@ test('schedule_resume mixed migration state: foreign stamped row does not starve
     const guarded = agent._legacyUnscopedProgressRowsForResumeGuard(tabId, agent.progressLedgers.get(tabId));
     assert.deepEqual(guarded.map(r => r.id), ['legacy_pending'], `${AgentClass.name}: unstamped current-task rows must still pass the lexical heuristic despite a foreign stamped row`);
 
+    const scopedRead = agent._progressRead(tabId, { currentTaskOnly: true });
+    assert.deepEqual(scopedRead.rows.map(r => r.id), ['legacy_pending'], `${AgentClass.name}: currentTaskOnly progress_read must exclude rows the resume guard excluded`);
+
     let scheduledPayload = null;
     agent.setScheduler({
       createResumeJob: async payload => {
@@ -14185,6 +14188,131 @@ test('schedule_resume mixed migration state: foreign stamped row does not starve
     const instruction = scheduledPayload?.args?.resume_instruction || '';
     assert.match(instruction, /^Continue the active Act-mode progress-ledger task/, `${AgentClass.name}: mixed-state guard should still attach via the legacy heuristic`);
     assert.match(instruction, /1 row\(s\), 1 unresolved/, `${AgentClass.name}: guard counts must exclude the foreign stamped row`);
+  }
+});
+
+test('schedule_resume does not revive a stale scoped session for an unrelated new task', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 825 : 826;
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversationIds.set(tabId, 'conv_stale_session_revival_guard');
+    agent._persist = () => {};
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: "follow 100 accounts i don't follow yet here" },
+    ]);
+    allowProgress(agent, tabId, ['follow']);
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'next_real', label: 'next_real', action: 'follow', status: 'pending' }],
+    });
+    const followTaskText = agent.progressSessions.get(tabId)?.taskText;
+    agent.conversations.get(tabId).push(
+      { role: 'assistant', content: 'Paused.' },
+      { role: 'user', content: 'Check the deployment again in one minute.' },
+    );
+
+    let scheduledPayload = null;
+    agent.setScheduler({
+      createResumeJob: async payload => {
+        scheduledPayload = payload;
+        return {
+          success: true,
+          scheduled: true,
+          jobId: 'resume_stale_revival_test',
+          scheduledAt: '2026-06-30T09:01:30.000Z',
+          summary: 'Resume scheduled.',
+          done: true,
+        };
+      },
+    });
+
+    const rawInstruction = 'Check whether the deployment has completed.';
+    const result = await agent.executeTool(tabId, 'schedule_resume', {
+      after_seconds: 60,
+      reason: 'wait for deployment',
+      resume_instruction: rawInstruction,
+    });
+
+    assert.equal(result.success, true, `${AgentClass.name}: unrelated schedule_resume should succeed`);
+    assert.equal(scheduledPayload?.args?.resume_instruction, rawInstruction, `${AgentClass.name}: an unrelated resume must not revive the stale scoped ledger session`);
+    assert.equal(agent.progressSessions.get(tabId)?.taskText, followTaskText, `${AgentClass.name}: the stored session's task text must not be rewritten to the unrelated task`);
+  }
+});
+
+test('schedule_resume rebuilds the session from stamped rows after a restart', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 827 : 828;
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversationIds.set(tabId, 'conv_restart_rederive_guard');
+    agent._persist = () => {};
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: "follow 100 accounts i don't follow yet here" },
+    ]);
+    allowProgress(agent, tabId, ['follow']);
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'next_real', label: 'next_real', action: 'follow', status: 'pending' }],
+    });
+    const sessionId = agent.progressSessions.get(tabId)?.sessionId;
+    assert.ok(sessionId, `${AgentClass.name}: setup did not create a progress session`);
+    agent.progressSessions.delete(tabId);
+
+    let scheduledPayload = null;
+    agent.setScheduler({
+      createResumeJob: async payload => {
+        scheduledPayload = payload;
+        return {
+          success: true,
+          scheduled: true,
+          jobId: 'resume_restart_rederive_test',
+          scheduledAt: '2026-06-30T09:01:30.000Z',
+          summary: 'Resume scheduled.',
+          done: true,
+        };
+      },
+    });
+
+    const result = await agent.executeTool(tabId, 'schedule_resume', {
+      after_seconds: 60,
+      reason: '60-second pause between follows',
+      resume_instruction: 'Next account to follow is @eXeDK.',
+    });
+
+    assert.equal(result.success, true, `${AgentClass.name}: post-restart schedule_resume should succeed`);
+    const instruction = scheduledPayload?.args?.resume_instruction || '';
+    assert.ok(instruction.includes(`progress_read({sessionId: "${sessionId}", limit: 50})`), `${AgentClass.name}: stamped rows matching the current task should still rebuild the session-scoped guard after a restart`);
+  }
+});
+
+test('progress_update adoption merges same-id legacy rows instead of duplicating them', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 829 : 830;
+    agent.conversationModes.set(tabId, 'act');
+    agent._persist = () => {};
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: "follow 100 accounts i don't follow yet here" },
+    ]);
+    const taskKey = agent._progressTaskKeyHash(tabId);
+    agent.progressLedgers.set(tabId, [
+      { id: 'octocat', label: 'octocat', action: 'follow', status: 'pending', taskKey, fields: { email: 'a@b.com' } },
+    ]);
+    allowProgress(agent, tabId, ['follow']);
+    const sessionId = agent.progressSessions.get(tabId)?.sessionId;
+    assert.ok(sessionId, `${AgentClass.name}: setup did not create a progress session`);
+
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'octocat', label: 'octocat', action: 'follow', status: 'processed' }],
+    });
+
+    const octoRows = (agent.progressLedgers.get(tabId) || []).filter(r => String(r.id).toLowerCase() === 'octocat');
+    assert.equal(octoRows.length, 1, `${AgentClass.name}: adoption must not create a duplicate sessionId::id row`);
+    assert.equal(octoRows[0].sessionId, sessionId, `${AgentClass.name}: the surviving row should be the scoped one`);
+    assert.equal(octoRows[0].status, 'processed', `${AgentClass.name}: the scoped row's status must win over the legacy copy`);
+    assert.equal(octoRows[0].fields?.email, 'a@b.com', `${AgentClass.name}: collected fields from the legacy copy must be folded into the scoped row`);
   }
 });
 

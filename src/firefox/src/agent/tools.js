@@ -751,6 +751,7 @@ export const AGENT_TOOLS = [
           offset: { type: 'number', description: 'Pagination offset, default 0.' },
           sessionId: { type: 'string', description: 'Optional advanced override to read a specific session.' },
           allSessions: { type: 'boolean', description: 'If true, read every stored session. Usually omit this.' },
+          currentTaskOnly: { type: 'boolean', description: 'If true, return only rows the app attributes to the current task (active session rows, or legacy rows matched to this task). Scheduled-resume instructions use this.' },
         },
         required: [],
       },

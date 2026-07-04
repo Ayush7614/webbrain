@@ -4568,16 +4568,44 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const taskKey = this._progressTaskKeyHash(tabId);
     if (!taskKey) return false;
     const rows = this.progressLedgers.get(tabId) || [];
+    const scopedIds = new Set(rows
+      .filter(row => row && typeof row === 'object' && String(row.sessionId || row.session_id || '').trim() === safeSessionId)
+      .map(row => String(row.id || '').trim().toLowerCase()));
+    const legacyFieldsById = new Map();
     let changed = false;
-    const next = rows.map(row => {
-      if (!row || typeof row !== 'object') return row;
-      if (String(row.sessionId || row.session_id || '').trim()) return row;
-      if (String(row.taskKey || '').trim() !== taskKey) return row;
+    const next = [];
+    for (const row of rows) {
+      const adoptable = row && typeof row === 'object'
+        && !String(row.sessionId || row.session_id || '').trim()
+        && String(row.taskKey || '').trim() === taskKey;
+      if (!adoptable) {
+        next.push(row);
+        continue;
+      }
+      const idKey = String(row.id || '').trim().toLowerCase();
+      if (scopedIds.has(idKey)) {
+        // The session already tracks this item under sessionId::id; stamping
+        // would create a duplicate key. Drop the legacy copy and fold its
+        // collected fields into the scoped row (scoped values win).
+        if (row.fields && typeof row.fields === 'object') legacyFieldsById.set(idKey, row.fields);
+        changed = true;
+        continue;
+      }
       changed = true;
-      return { ...row, sessionId: safeSessionId };
-    });
-    if (changed) this.progressLedgers.set(tabId, next);
-    return changed;
+      next.push({ ...row, sessionId: safeSessionId });
+    }
+    if (!changed) return false;
+    const merged = legacyFieldsById.size
+      ? next.map(row => {
+        if (!row || typeof row !== 'object') return row;
+        if (String(row.sessionId || row.session_id || '').trim() !== safeSessionId) return row;
+        const legacyFields = legacyFieldsById.get(String(row.id || '').trim().toLowerCase());
+        if (!legacyFields) return row;
+        return { ...row, fields: { ...legacyFields, ...(row.fields || {}) } };
+      })
+      : next;
+    this.progressLedgers.set(tabId, merged);
+    return true;
   }
 
   _progressSessionMatchesTask(session, taskText, pageScope = '') {
@@ -4874,6 +4902,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _progressRead(tabId, args = {}) {
+    if (args.currentTaskOnly || args.current_task_only) {
+      const limit = Number.isFinite(Number(args.limit)) ? Math.max(1, Math.min(200, Math.floor(Number(args.limit)))) : 50;
+      const offset = Number.isFinite(Number(args.offset)) ? Math.max(0, Math.floor(Number(args.offset))) : 0;
+      const guard = this._progressRowsForResumeGuard(tabId);
+      return {
+        success: true,
+        counts: progressCounts(guard.rows),
+        rows: selectLedgerRows(guard.rows, { status: args.status, limit, offset }),
+        offset,
+        limit,
+        ...(guard.sessionId ? { sessionId: guard.sessionId } : {}),
+        note: guard.rows.length
+          ? 'Rows the app attributes to the current task. Use progress_update to close pending/acted rows.'
+          : 'No progress rows recorded for the current task.',
+      };
+    }
     const explicitSessionId = String(args.sessionId || args.session_id || '').trim();
     const session = args.allSessions || explicitSessionId ? null : this._currentProgressSession(tabId);
     const rows = args.allSessions
@@ -5429,7 +5473,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _progressRowsForResumeGuard(tabId) {
-    const session = this._currentProgressSession(tabId) || this._deriveProgressSessionFromRows(tabId);
+    let session = this._currentProgressSession(tabId);
+    if (!session) {
+      // Rebuild a session from persisted rows (e.g. after a service-worker
+      // restart) only when those rows provably belong to the current task;
+      // otherwise an unrelated new resume would revive a stale ledger session.
+      const currentKey = this._progressTaskKeyHash(tabId);
+      const rowKeys = Array.from(new Set(unresolvedLedgerRows(this.progressLedgers.get(tabId) || [])
+        .map(row => String(row?.taskKey || '').trim())
+        .filter(Boolean)));
+      if (currentKey && rowKeys.length === 1 && rowKeys[0] === currentKey) {
+        session = this._deriveProgressSessionFromRows(tabId);
+      }
+    }
     const sessionId = String(session?.sessionId || '').trim();
     const safeSessionId = /^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId) ? sessionId : '';
     const allRows = this.progressLedgers.get(tabId) || [];
@@ -5469,7 +5525,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const readCall = readSessionId
       ? `progress_read({sessionId: "${readSessionId}", limit: 50})`
-      : 'progress_read({allSessions: true, limit: 50})';
+      : 'progress_read({currentTaskOnly: true, limit: 50})';
     const guard = [
       'Continue the active Act-mode progress-ledger task after this scheduled pause.',
       ...(readSessionId ? [`App-owned progress session id: ${readSessionId}.`] : []),
