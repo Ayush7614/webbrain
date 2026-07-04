@@ -3925,8 +3925,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return (Array.isArray(rows) ? rows : []).filter(row => String(row?.sessionId || '').trim() === id);
   }
 
-  _deriveProgressSessionFromRows(tabId) {
-    const rows = unresolvedLedgerRows(this.progressLedgers.get(tabId) || []);
+  _deriveProgressSessionFromRows(tabId, opts = {}) {
+    const wantedTaskKey = String(opts.taskKey || '').trim();
+    let rows = unresolvedLedgerRows(this.progressLedgers.get(tabId) || []);
+    if (wantedTaskKey) rows = rows.filter(row => String(row?.taskKey || '').trim() === wantedTaskKey);
     const sessionIds = Array.from(new Set(rows.map(row => String(row?.sessionId || '').trim()).filter(Boolean)));
     if (sessionIds.length !== 1) return null;
     const sessionId = sessionIds[0];
@@ -4747,15 +4749,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let session = this._currentProgressSession(tabId);
     if (!session) {
       // Rebuild a session from persisted rows (e.g. after a service-worker
-      // restart) only when those rows provably belong to the current task;
-      // otherwise an unrelated new resume would revive a stale ledger session.
+      // restart) only from rows stamped for the current task; unresolved rows
+      // left over from other tasks must neither be revived nor block the
+      // rebuild of the current task's session.
       const currentKey = this._progressTaskKeyHash(tabId);
-      const rowKeys = Array.from(new Set(unresolvedLedgerRows(this.progressLedgers.get(tabId) || [])
-        .map(row => String(row?.taskKey || '').trim())
-        .filter(Boolean)));
-      if (currentKey && rowKeys.length === 1 && rowKeys[0] === currentKey) {
-        session = this._deriveProgressSessionFromRows(tabId);
-      }
+      session = currentKey ? this._deriveProgressSessionFromRows(tabId, { taskKey: currentKey }) : null;
     }
     const sessionId = String(session?.sessionId || '').trim();
     const safeSessionId = /^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId) ? sessionId : '';

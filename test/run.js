@@ -14309,6 +14309,16 @@ test('schedule_resume rebuilds the session from stamped rows after a restart', a
     const sessionId = agent.progressSessions.get(tabId)?.sessionId;
     assert.ok(sessionId, `${AgentClass.name}: setup did not create a progress session`);
     agent.progressSessions.delete(tabId);
+    // Leftover unresolved rows from an older task on the same tab must
+    // neither be revived nor block rebuilding the current task's session.
+    agent.progressLedgers.get(tabId).push({
+      id: 'old_task_row',
+      label: 'old_task_row',
+      action: 'follow',
+      status: 'pending',
+      taskKey: 'tk_00000000',
+      sessionId: 'progress_old_session',
+    });
 
     let scheduledPayload = null;
     agent.setScheduler({
@@ -14334,6 +14344,8 @@ test('schedule_resume rebuilds the session from stamped rows after a restart', a
     assert.equal(result.success, true, `${AgentClass.name}: post-restart schedule_resume should succeed`);
     const instruction = scheduledPayload?.args?.resume_instruction || '';
     assert.ok(instruction.includes(`progress_read({sessionId: "${sessionId}", limit: 50})`), `${AgentClass.name}: stamped rows matching the current task should still rebuild the session-scoped guard after a restart`);
+    assert.doesNotMatch(instruction, /progress_old_session/, `${AgentClass.name}: the older task's session must not be revived`);
+    assert.match(instruction, /1 row\(s\), 1 unresolved/, `${AgentClass.name}: guard counts must exclude the older task's unresolved rows`);
   }
 });
 
