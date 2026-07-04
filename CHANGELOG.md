@@ -4,6 +4,20 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [20.5.2] - 2026-07-04
+
+### Changed
+- Reduced the Chrome and Firefox sidepanel composer plus and microphone button hit areas from 32px to 28px while keeping the icon size and send button unchanged.
+- Updated release metadata, Settings subtitle versions, Chrome / Firefox manifests, package versions, and browser architecture docs for 20.5.2.
+
+### Fixed
+- Completed missing Chrome and Firefox UI locale strings for attachments, microphone controls, queued composer messages, progress-ledger output, recording copy, and voice-input settings.
+- Completed localized website share and footer social labels for Mastodon and Bluesky across the generated locale pages.
+- Synced localized busy-run slash-command notices so every app locale lists `/check-progress` as an immediate command alongside the other allowed commands.
+
+### Tests
+- Updated Chrome and Firefox regression coverage for the busy-run slash-command notice and verified the full test suite plus prompt-injection corpus.
+
 ## [20.5.0] - 2026-07-04
 
 ### Added
