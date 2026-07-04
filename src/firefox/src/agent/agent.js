@@ -4102,6 +4102,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
   }
 
+  async getProgress(tabId, args = {}) {
+    await this._hydrate(tabId);
+    return this._progressRead(tabId, args);
+  }
+
   _messageText(content) {
     return messageContentToText(content);
   }
