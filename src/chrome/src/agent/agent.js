@@ -4286,7 +4286,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * Page/iframe-side probe for likely form submits. Keep this function fully
    * self-contained: it is serialized into tabs and cannot close over Agent.
    */
-  static _submitActionProbe(toolName, args = {}) {
+  static _submitActionProbe = function _submitActionProbe(toolName, args = {}) {
     const compact = (value, max = 160) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
     const doc = document;
     const host = (() => {
@@ -4555,7 +4555,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     } catch {}
     return null;
-  }
+  };
 
   async _promptSubmitConfirmation(tabId, submitInfo, onUpdate) {
     const clarifyId = `submit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;

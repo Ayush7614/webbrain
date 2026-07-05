@@ -12352,6 +12352,7 @@ test('submit detector source covers submit controls, Enter, set_field, iframes, 
   ]) {
     const agent = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     assert.match(agent, /static _submitActionProbe/, `${label}: submit probe missing`);
+    assert.match(agent, /static _submitActionProbe = function _submitActionProbe/, `${label}: submit probe should serialize as a standalone function expression`);
     assert.match(agent, /input\[type="submit"\]/, `${label}: click target resolver should include input[type=submit]`);
     assert.match(agent, /tag === 'input'[\s\S]*type === 'submit'/, `${label}: submit detector should catch input[type=submit]`);
     assert.match(agent, /tag === 'button'[\s\S]*!type \|\| type === 'submit'/, `${label}: submit detector should catch default form buttons`);
