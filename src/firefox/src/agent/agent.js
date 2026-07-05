@@ -3489,13 +3489,26 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return rect.width > 0 && rect.height > 0;
       } catch { return true; }
     };
-    const deepQuerySelector = (root, selector) => {
-      try {
-        const hit = root.querySelector(selector);
-        if (hit) return hit;
-      } catch {
-        return null;
+    const safeQuerySelector = (root, selector) => {
+      if (!root || typeof selector !== 'string' || !selector) return null;
+      try { return root.querySelector(selector); } catch {}
+      if (selector.startsWith('#') && !/[\s>+~,\[\]\.:]/.test(selector.slice(1).replace(/\\:/g, ''))) {
+        const rawId = selector.slice(1).replace(/\\:/g, ':');
+        try {
+          const byId = typeof root.getElementById === 'function' ? root.getElementById(rawId) : null;
+          if (byId) return byId;
+        } catch {}
+        try { return root.querySelector(`[id="${rawId.replace(/"/g, '\\"')}"]`); } catch {}
       }
+      try {
+        const escaped = selector.replace(/(^|[^\\]):/g, '$1\\:');
+        return root.querySelector(escaped);
+      } catch {}
+      return null;
+    };
+    const deepQuerySelector = (root, selector) => {
+      const hit = safeQuerySelector(root, selector);
+      if (hit) return hit;
       let walker = null;
       try { walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT); } catch { return null; }
       let node = walker.currentNode;
