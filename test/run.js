@@ -5809,6 +5809,8 @@ test('sidepanel suppresses streamed raw tool-call text before rendering tool ste
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     assert.match(panel, /function looksLikeRawToolCallText\(text\) \{[\s\S]*?ref_id\\s\*/, `${label}: raw tool-call detector should recognize ref_id payloads`);
     assert.match(panel, /textEl\.dataset\.suppressToolCallStream = 'true';/, `${label}: text_delta should suppress later raw tool-call chunks`);
+    assert.match(panel, /textEl\.dataset\.streamedAssistantText = nextText;/, `${label}: text_delta should track visible streamed text for final dedupe`);
+    assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);/, `${label}: final text should format an already visible stream instead of appending a duplicate`);
     const start = panel.indexOf("case 'tool_call':");
     const end = panel.indexOf("case 'tool_result':", start);
     assert.notEqual(start, -1, `${label}: tool_call handler missing`);
@@ -5821,6 +5823,7 @@ test('sidepanel suppresses streamed raw tool-call text before rendering tool ste
     assert.notEqual(clearEnd, -1, `${label}: clearTransientAssistantTextForToolCall boundary missing`);
     const clearBody = panel.slice(clearStart, clearEnd);
     assert.match(clearBody, /textEl\.textContent = '';/, `${label}: tool-call prose should be cleared when a tool call begins`);
+    assert.match(clearBody, /delete textEl\.dataset\.streamedAssistantText;/, `${label}: clearing pre-tool prose should drop streamed-text dedupe state`);
     assert.doesNotMatch(clearBody, /if \(!verboseMode \|\| looksLikeRawToolCallText\(text\)\)/, `${label}: verbose mode must not preserve pre-tool assistant prose`);
   }
 });

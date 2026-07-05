@@ -3215,31 +3215,7 @@ function handleAgentUpdateMessage(msg) {
       // Don't wipe any previously-rendered assistant text — earlier steps
       // may already have put useful intermediate prose in the bubble.
       if (currentAssistantEl && data.content) {
-        const textEl = currentAssistantEl.querySelector('.message-text');
-        if (textEl) {
-          if (verboseMode) {
-            // Verbose mode: append each turn's reasoning as its own
-            // paragraph so intermediate prose ("I'll click X", "the modal
-            // is still open", "page changed, retrying") is preserved
-            // alongside the steps log instead of being overwritten by the
-            // next turn's blurb.
-            const para = document.createElement('div');
-            para.className = 'reasoning-step';
-            para.innerHTML = formatMarkdown(data.content);
-            textEl.appendChild(para);
-          } else {
-            // Compact mode keeps only the latest blurb. Replacing is
-            // intentional here — most pre-tool reasoning is "I'll click X"
-            // boilerplate that becomes obsolete once X is clicked, and the
-            // steps log already captures what was done. Toggle Verbose
-            // (V button) to retain the full reasoning trail.
-            textEl.innerHTML = formatMarkdown(data.content);
-          }
-          // Add copy button if not already present
-          if (!currentAssistantEl.querySelector('.msg-copy-btn')) {
-            addMessageCopyButton(currentAssistantEl);
-          }
-        }
+        renderAssistantTextUpdate(currentAssistantEl, data.content);
       }
       break;
 
@@ -3250,9 +3226,11 @@ function handleAgentUpdateMessage(msg) {
           const nextText = textEl.textContent + data.content;
           if (looksLikeRawToolCallText(nextText)) {
             textEl.textContent = '';
+            delete textEl.dataset.streamedAssistantText;
             textEl.dataset.suppressToolCallStream = 'true';
           } else {
             textEl.textContent = nextText;
+            textEl.dataset.streamedAssistantText = nextText;
           }
         }
       }
@@ -3767,16 +3745,49 @@ function looksLikeRawToolCallText(text) {
   return /<\/?(?:tool_call|function|parameter)\b|<\|\/?tool_call|ref_id\s*["']?\s*[:=]\s*["']?ref_\d+/i.test(String(text || ''));
 }
 
+function renderAssistantTextUpdate(assistantEl, content) {
+  const textEl = assistantEl.querySelector('.message-text');
+  if (!textEl) return;
+
+  const streamedText = textEl.dataset.streamedAssistantText || '';
+  const isDuplicateStreamFinal = streamedText && streamedText === String(content);
+
+  if (verboseMode && !isDuplicateStreamFinal) {
+    // Verbose mode: append each non-streamed turn as its own paragraph so
+    // intermediate prose is preserved alongside the steps log. Streaming
+    // finals are already visible live, so format the existing stream instead
+    // of appending a duplicate paragraph at run completion.
+    const para = document.createElement('div');
+    para.className = 'reasoning-step';
+    para.innerHTML = formatMarkdown(content);
+    textEl.appendChild(para);
+  } else {
+    // Compact mode keeps only the latest blurb. A streamed final lands here
+    // too so the live plain text becomes the normal formatted final answer.
+    textEl.innerHTML = formatMarkdown(content);
+  }
+
+  delete textEl.dataset.streamedAssistantText;
+  delete textEl.dataset.suppressToolCallStream;
+
+  // Add copy button if not already present
+  if (!assistantEl.querySelector('.msg-copy-btn')) {
+    addMessageCopyButton(assistantEl);
+  }
+}
+
 function clearTransientAssistantTextForToolCall() {
   if (!currentAssistantEl) return;
   const textEl = currentAssistantEl.querySelector('.message-text');
   if (!textEl) return;
   const text = textEl.textContent || '';
   if (!text.trim()) {
+    delete textEl.dataset.streamedAssistantText;
     delete textEl.dataset.suppressToolCallStream;
     return;
   }
   textEl.textContent = '';
+  delete textEl.dataset.streamedAssistantText;
   delete textEl.dataset.suppressToolCallStream;
 }
 
