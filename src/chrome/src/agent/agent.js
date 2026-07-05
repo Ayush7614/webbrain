@@ -3910,7 +3910,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _plannerFollowUpText(message) {
-    return userMessageToText(message).replace(/\s+/g, ' ').trim();
+    const text = this._stripInjectedTaskContext(userMessageToText(message));
+    return text.replace(/\s+/g, ' ').trim();
   }
 
   _plannerFollowUpHasExplicitUrl(text) {

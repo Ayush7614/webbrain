@@ -17883,10 +17883,11 @@ test('planner gate: skips one short follow-up after a newly approved try-mode pl
       assert.equal(agent.plannerFollowUpSkipTabs.has(tabId), true, `${label} should arm one short follow-up skip`);
 
       const followUp = "you get the idea, just make it send ready BUT don't send";
+      const enrichedFollowUp = `[Current page context — applies to this user message and supersedes older page context for phrases like "this page". URL: https://example.com/draft — Title: Draft]\n\n${followUp}`;
       const outcome = await agent._maybeRunPlannerGate(
         tabId,
         agent.conversations.get(tabId),
-        { role: 'user', content: followUp },
+        { role: 'user', content: enrichedFollowUp },
         () => {},
         'act',
         null,
@@ -17895,7 +17896,7 @@ test('planner gate: skips one short follow-up after a newly approved try-mode pl
 
       assert.equal(outcome.proceed, true, `${label} should proceed`);
       assert.equal(plannerCalls, 1, `${label} should not run a fresh planner call for a short planned follow-up`);
-      assert.equal(agent.conversations.get(tabId).at(-1).content, followUp, `${label} should still append the follow-up turn`);
+      assert.equal(agent.conversations.get(tabId).at(-1).content, enrichedFollowUp, `${label} should still append the enriched follow-up turn`);
       assert.equal(agent.plannerFollowUpSkipTabs.has(tabId), false, `${label} should consume the one short follow-up skip`);
 
       const secondFollowUp = await agent._maybeRunPlannerGate(
