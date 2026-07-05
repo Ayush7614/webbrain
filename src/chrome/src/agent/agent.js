@@ -4432,8 +4432,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const type = String(candidate.getAttribute?.('type') || candidate.type || '').toLowerCase();
       const form = candidate.form || candidate.closest?.('form');
       if (!form) return false;
-      if (tag === 'input') return type === 'submit' || type === 'image';
-      if (tag === 'button') return !type || type === 'submit';
+      if (tag === 'input') return type === 'submit' || type === 'image' || type === 'button';
+      if (tag === 'button') return !type || type === 'submit' || type === 'button';
       return false;
     };
     const formForSubmitControl = (el) => {

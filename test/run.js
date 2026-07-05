@@ -12420,6 +12420,8 @@ test('submit detector source covers submit controls, Enter, set_field, iframes, 
     assert.match(agent, /input\[type="submit"\]/, `${label}: click target resolver should include input[type=submit]`);
     assert.match(agent, /tag === 'input'[\s\S]*type === 'submit'/, `${label}: submit detector should catch input[type=submit]`);
     assert.match(agent, /tag === 'button'[\s\S]*!type \|\| type === 'submit'/, `${label}: submit detector should catch default form buttons`);
+    assert.match(agent, /tag === 'input'[\s\S]*type === 'button'/, `${label}: JS-driven input buttons inside forms should fail closed as submit candidates`);
+    assert.match(agent, /tag === 'button'[\s\S]*type === 'button'/, `${label}: JS-driven form buttons should fail closed as submit candidates`);
     assert.match(agent, /name === 'set_field' && !args\?\.submit/, `${label}: set_field({submit:true}) precheck missing`);
     assert.match(agent, /set_field\(\{submit:true\}\)/, `${label}: set_field submit reason missing`);
     assert.match(agent, /Enter key in a form field/, `${label}: Enter-in-form-field detection missing`);
