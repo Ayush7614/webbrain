@@ -697,6 +697,16 @@ test('matches trendyol.com and includes marketplace guidance', () => {
   assert.match(a?.notes || '', /Sepete Ekle/);
 });
 
+test('matches hepsiburada.com and includes marketplace guidance', () => {
+  assert.equal(getActiveAdapter('https://www.hepsiburada.com/')?.name, 'hepsiburada');
+  assert.equal(getActiveAdapter('https://hepsiburada.com/ara?q=telefon')?.name, 'hepsiburada');
+  // lookalike / suffix domains must NOT match
+  assert.notEqual(getActiveAdapter('https://hepsiburada.com.phishing.example/')?.name, 'hepsiburada');
+  const a = getActiveAdapter('https://www.hepsiburada.com/telefonlar-c-371965');
+  assert.match(a?.notes || '', /marketplace/i);
+  assert.match(a?.notes || '', /Diğer Satıcılar/);
+});
+
 test('matches stripe dashboard', () => {
   const a = getActiveAdapter('https://dashboard.stripe.com/payments');
   assert.equal(a?.name, 'stripe');

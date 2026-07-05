@@ -16124,6 +16124,18 @@ const ADAPTERS = [
 - Sort with the "Sıralama" dropdown ("En düşük fiyat" = price low→high, "En yüksek fiyat", "En yeniler", "Çok satanlar"); set filters in the left rail ("Marka" brand, "Fiyat" price, "Beden", rating) instead of guessing URL params.
 - Add-to-cart opens a drawer ("Sepete Git" vs keep shopping); the cart lives at /sepetim and checkout requires login. "Trendyol Go" (food/grocery quick-commerce) is a separate flow from the marketplace catalog.`,
   },
+  {
+    name: 'hepsiburada',
+    category: 'general',
+    match: (url) => /^https?:\/\/(www\.)?hepsiburada\.com\//.test(url),
+    notes: `
+- Hepsiburada is a major Turkish e-commerce MARKETPLACE (electronics-heavy, but sells everything) with third-party sellers per product. Turkish labels: "Sepete Ekle" = add to cart, "Sepetim" = cart, "Favorilerime Ekle" = wishlist (needs login), "Giriş Yap" = log in, "Sıralama" = sort, "Filtreler" = filters, "Değerlendirmeler" = reviews.
+- Variant trap: pick color/size/capacity (e.g. "Renk", "Beden", storage) BEFORE "Sepete Ekle" — until a required variant is chosen the button won't add the item.
+- Multiple-seller trap: the buy box is for ONE seller; open "Diğer Satıcılar" / "Tüm Satıcıları Gör" to compare price and cargo speed before quoting "the price". The default seller isn't always the cheapest.
+- Price trap: the listed price is not the final total. Hepsiburada shows "Sepette %X indirim" (extra discount applied only in the cart) plus extra "HepsiPay ile ödemede" (pay-with-HepsiPay) discounts — quote the cart/payment total, not the card price.
+- Sort with the "Sıralama" dropdown ("En düşük fiyat" = price low→high, "En yüksek fiyat", "En yeniler", "En çok değerlendirilen"); set filters in the left rail ("Marka" brand, "Fiyat" price, "Satıcı" seller, "Kargo" shipping) rather than editing URL params.
+- "Hepsiexpress" (quick grocery/market delivery) and "Hepsiburada Seyahat" (travel) are separate flows from the main product catalog — don't expect the standard product/cart layout there.`,
+  },
 
   {
     name: 'apple',
