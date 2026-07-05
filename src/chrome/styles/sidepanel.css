@@ -2107,10 +2107,29 @@ body {
   color: var(--text-secondary);
 }
 
+/* The card's data-editing attribute is the single source of truth for
+   read-only vs editing mode; JS only flips the attribute. */
+.plan-review-card:not([data-editing="true"]) .plan-review-hint,
+.plan-review-card:not([data-editing="true"]) .plan-review-edit {
+  display: none;
+}
+.plan-review-card[data-editing="true"] .plan-review-view,
+.plan-review-card[data-editing="true"] .plan-review-change {
+  display: none;
+}
+
 .plan-review-view {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+.plan-review-summary {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .plan-review-steps {
@@ -2211,6 +2230,12 @@ body {
 .plan-reviewed {
   border-color: var(--success, #4caf50);
   background: rgba(76, 175, 80, 0.06);
+}
+
+.plan-auto-approved-note {
+  margin: 6px 0;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .plan-review-note {

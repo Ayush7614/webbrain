@@ -2334,19 +2334,24 @@ function planReviewConfidenceText(plan) {
 function renderPlanReviewView(plan, fallbackMarkdown = '') {
   const view = document.createElement('div');
   view.className = 'plan-review-view';
-  const steps = Array.isArray(plan?.steps)
-    ? plan.steps.map((step, index) => ({
-      id: String(step?.id || index + 1).trim() || String(index + 1),
-      action: String(step?.action || '').trim(),
-    })).filter(step => step.action)
-    : [];
+  // plan is always normalizePlan output (steps arrive trimmed, non-empty),
+  // so the steps can be rendered as-is.
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  const summary = String(plan?.summary || '').trim();
 
   if (!steps.length) {
     const fallback = document.createElement('div');
     fallback.className = 'plan-review-step-fallback';
-    fallback.textContent = String(plan?.summary || fallbackMarkdown || '').replace(/^#+\s*/gm, '').trim();
+    fallback.textContent = (summary || String(fallbackMarkdown || '')).replace(/^#+\s*/gm, '').trim();
     view.appendChild(fallback);
     return view;
+  }
+
+  if (summary) {
+    const summaryEl = document.createElement('div');
+    summaryEl.className = 'plan-review-summary';
+    summaryEl.textContent = summary;
+    view.appendChild(summaryEl);
   }
 
   const list = document.createElement('div');
@@ -2359,7 +2364,7 @@ function renderPlanReviewView(plan, fallbackMarkdown = '') {
 
     const number = document.createElement('span');
     number.className = 'plan-review-step-number';
-    number.textContent = step.id.replace(/\.$/, '') || String(index + 1);
+    number.textContent = String(step.id).replace(/\.$/, '') || String(index + 1);
 
     const action = document.createElement('span');
     action.className = 'plan-review-step-action';
@@ -2376,15 +2381,9 @@ function renderPlanReviewView(plan, fallbackMarkdown = '') {
 function revealPlanReviewEditor(card, focus = false) {
   const textarea = card?.querySelector?.('.plan-review-edit');
   if (!textarea) return;
+  // The data-editing attribute is the single source of truth; sidepanel.css
+  // shows/hides the read-only view, hint, Change button, and textarea from it.
   card.dataset.editing = 'true';
-  const view = card.querySelector('.plan-review-view');
-  const hint = card.querySelector('.plan-review-hint');
-  const changeBtn = card.querySelector('.plan-review-change');
-  if (view) view.hidden = true;
-  if (hint) hint.hidden = false;
-  if (changeBtn) changeBtn.hidden = true;
-  textarea.hidden = false;
-  textarea.setAttribute('aria-hidden', 'false');
   if (focus) {
     try {
       textarea.focus();
@@ -3766,6 +3765,10 @@ function handleAgentUpdateMessage(msg) {
     case 'plan_review':
       renderPlanReviewCard(data);
       break;
+
+    case 'plan_auto_approved':
+      addPlanAutoApprovedNote(data);
+      break;
   }
 }
 
@@ -3968,7 +3971,6 @@ function renderPlanReviewCard(data) {
   const editHint = document.createElement('div');
   editHint.className = 'plan-review-hint';
   editHint.textContent = typeof t === 'function' ? t('sp.plan.edit_hint') : 'Optional: edit the plan before approving';
-  editHint.hidden = true;
   card.appendChild(editHint);
 
   const textarea = document.createElement('textarea');
@@ -3976,8 +3978,6 @@ function renderPlanReviewCard(data) {
   textarea.rows = useVerbosePlan ? 8 : 5;
   textarea.value = originalMarkdown;
   textarea.defaultValue = originalMarkdown;
-  textarea.hidden = true;
-  textarea.setAttribute('aria-hidden', 'true');
   card.appendChild(textarea);
 
   const actions = document.createElement('div');
@@ -4451,6 +4451,22 @@ function addMessage(role, content, options = {}) {
   scrollToBottom();
 
   return msgEl;
+}
+
+function addPlanAutoApprovedNote(data) {
+  const note = document.createElement('div');
+  note.className = 'plan-auto-approved-note';
+  const confidence = planReviewConfidenceText(data) || '—';
+  note.textContent = typeof t === 'function'
+    ? t('sp.plan.auto_approved', { confidence })
+    : `Plan auto-approved (confidence ${confidence}) — running…`;
+  const stepsContainer = getOrCreateStepsContainer();
+  if (stepsContainer) {
+    stepsContainer.appendChild(note);
+  } else {
+    messagesEl.appendChild(note);
+  }
+  scrollToBottom();
 }
 
 /**

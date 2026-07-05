@@ -16996,7 +16996,7 @@ test('planner: parse and format structured plan', () => {
   assert.equal(plan.memory.use_progress_ledger, true);
   assert.equal(plan.scheduling.tool, 'schedule_task');
   const md = formatPlanMarkdown(plan);
-  assert.doesNotMatch(md, /Follow GitHub stargazers/, 'compact plan should show steps only when steps exist');
+  assert.match(md, /Follow GitHub stargazers/, 'compact plan should keep the summary');
   assert.match(md, /1\. Open stargazers/);
   assert.doesNotMatch(md, /navigate|wait_for_stable/, 'compact plan should hide tool names');
   assert.doesNotMatch(md, /Progress ledger|Scratchpad|schedule_task|bulk follow/, 'compact plan should hide planner internals');
@@ -17142,6 +17142,11 @@ test('plan before act: try is default while explicit off is preserved', () => {
     agent.setPlanReviewSettings({ mode: 'confidence', confidenceThreshold: 0.9 });
     assert.equal(agent._shouldReviewPlan({ confidence: 0.89 }), true, `${label} below-threshold plans should review`);
     assert.equal(agent._shouldReviewPlan({ confidence: 0.9 }), false, `${label} at-threshold plans should auto-approve`);
+    agent.setPlanReviewSettings({ confidenceThreshold: 0 });
+    assert.equal(agent.planReviewConfidenceThreshold, 0.5, `${label} out-of-band low threshold clamps to the slider floor`);
+    agent.setPlanReviewSettings({ confidenceThreshold: 1 });
+    assert.equal(agent.planReviewConfidenceThreshold, 0.99, `${label} out-of-band high threshold clamps to the slider ceiling`);
+    agent.setPlanReviewSettings({ confidenceThreshold: 0.9 });
     agent.setPlanBeforeActMode('try');
     assert.equal(agent.planBeforeAct, true, `${label} try enables legacy mirror`);
     assert.equal(agent._plannerMode(), 'try', `${label} try mode`);
@@ -17437,7 +17442,7 @@ test('planner gate: review exposes compact markdown plus verbose markdown', asyn
       agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
       agent._chatWithCostAllowance = async () => ({ content: plannerFixtureJson() });
       agent._waitForPlanReview = async (_tabId, _planId, _plan, markdown, _onUpdate, verboseMarkdown) => {
-        assert.doesNotMatch(markdown, /Open the page and collect visible account links/, `${label} compact plan should hide summary`);
+        assert.match(markdown, /Open the page and collect visible account links/, `${label} compact plan should keep the summary`);
         assert.match(markdown, /1\. Read the current page/, `${label} compact plan should include steps`);
         assert.doesNotMatch(markdown, /read_page|Scratchpad|Progress ledger/, `${label} compact plan should hide tools and memory internals`);
         assert.match(verboseMarkdown, /Confidence: 75%/, `${label} verbose plan should include confidence`);
@@ -17476,16 +17481,20 @@ test('planner gate: high-confidence plans auto-approve by default', async () => 
         throw new Error('high-confidence default should not wait for side panel plan approval');
       };
 
+      const autoApprovedEvents = [];
       const gate = await agent._runPlannerGate(
         tabId,
         { role: 'user', content: 'collect account links' },
-        (type) => {
+        (type, data) => {
           assert.notEqual(type, 'plan_review', `${label} should not emit a plan review prompt`);
+          if (type === 'plan_auto_approved') autoApprovedEvents.push(data);
         },
         null,
       );
 
       assert.equal(gate.proceed, true, `${label} should proceed`);
+      assert.equal(autoApprovedEvents.length, 1, `${label} should emit a visible auto-approve trace`);
+      assert.equal(autoApprovedEvents[0].confidence, 0.95, `${label} auto-approve trace should carry the plan confidence`);
       assert.match(gate.approvedScratchpadText, /\[Approved plan — pinned by planner\]/, `${label} should pin the auto-approved plan`);
       assert.match(gate.approvedScratchpadText, /Confidence: 95%/, `${label} auto-approved handoff should keep confidence`);
       assert.match(gate.approvedScratchpadText, /read_page/, `${label} auto-approved handoff should keep verbose tool detail`);
@@ -17574,7 +17583,10 @@ test('sidepanel: restored plan review cards rebind approve and cancel actions', 
     assert.match(source, /plan-review-change[\s\S]*revealPlanReviewEditor\(card, true\)/, `${file} should reveal editing only through Change`);
     assert.match(source, /plan-review-cancel[\s\S]*submitPlanReview\(card, tabId, planId, 'reject'/, `${file} should rebind cancel`);
     assert.match(source, /renderPlanReviewView\(data\.plan, compactMarkdown\)/, `${file} should render a read-only steps view`);
-    assert.match(source, /textarea\.hidden = true;/, `${file} should hide the plan edit textarea by default`);
+    assert.match(source, /card\.dataset\.editing = 'false';/, `${file} should start plan cards in read-only mode`);
+    const css = fs.readFileSync(path.join(ROOT, file.replace(/src\/ui\/sidepanel\.js$/, 'styles/sidepanel.css')), 'utf8');
+    assert.match(css, /\.plan-review-card:not\(\[data-editing="true"\]\) \.plan-review-edit/, `${file} css should hide the plan edit textarea until editing`);
+    assert.match(css, /\.plan-review-card\[data-editing="true"\] \.plan-review-view/, `${file} css should hide the read-only view while editing`);
     assert.match(source, /const useVerbosePlan = verboseMode && !!data\.verboseMarkdown;/, `${file} should use the verbose plan only in verbose mode`);
     assert.match(source, /card\.dataset\.planMarkdownMode = useVerbosePlan \? 'verbose' : 'compact';/, `${file} should remember which plan text was displayed`);
     assert.match(source, /markdownMode === 'verbose'/, `${file} should pin the displayed verbose plan when approved`);

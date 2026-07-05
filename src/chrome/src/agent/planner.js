@@ -171,14 +171,13 @@ export function normalizePlan(obj) {
 export function formatPlanCompactMarkdown(plan) {
   if (!plan) return '';
   const lines = [];
+  if (plan.summary) lines.push(`**${plan.summary}**`, '');
 
   if (plan.steps?.length) {
     lines.push('### Steps');
     for (const step of plan.steps) {
       lines.push(`${step.id}. ${step.action}`);
     }
-  } else {
-    lines.push(plan.summary);
   }
 
   return lines.join('\n').trim();

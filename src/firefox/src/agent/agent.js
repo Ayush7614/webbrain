@@ -3097,7 +3097,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let threshold = Number(value);
     if (!Number.isFinite(threshold)) threshold = 0.9;
     if (threshold > 1 && threshold <= 100) threshold /= 100;
-    return Math.max(0, Math.min(1, threshold));
+    // Clamp to the same [50%, 99%] range the settings slider enforces, so an
+    // out-of-band stored value (e.g. 0) can't silently disable the review gate
+    // while the settings UI displays an in-range percentage.
+    return Math.max(0.5, Math.min(0.99, threshold));
   }
 
   setPlanReviewSettings(settings = {}) {
@@ -3289,11 +3292,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const markdown = formatPlanMarkdown(plan);
       const verboseMarkdown = formatPlanMarkdown(plan, { verbose: true });
       const scheduledPolicy = this.scheduledRunPolicies.get(tabId);
-      if (scheduledPolicy?.autoApprovePlanReview === true) {
-        const approvedScratchpadText = formatPlanScratchpad(plan, '', verboseMarkdown);
-        return { proceed: true, approvedScratchpadText, planId };
-      }
-      if (!this._shouldReviewPlan(plan)) {
+      const scheduledAutoApprove = scheduledPolicy?.autoApprovePlanReview === true;
+      if (scheduledAutoApprove || !this._shouldReviewPlan(plan)) {
+        // Confidence-gated skips leave a visible trace in the conversation so
+        // the run isn't silent; scheduled runs stay quiet as before.
+        if (!scheduledAutoApprove) {
+          onUpdate('plan_auto_approved', { planId, confidence: plan.confidence });
+        }
         const approvedScratchpadText = formatPlanScratchpad(plan, '', verboseMarkdown);
         return { proceed: true, approvedScratchpadText, planId };
       }
