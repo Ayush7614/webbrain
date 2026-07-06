@@ -1440,6 +1440,7 @@ function handleScheduledJobEvent(data, tabId) {
     isProcessing = true;
     abortRequested = false;
     syncSendButtonState();
+    hideRecommendedActions();
     currentAssistantEl = addMessage('assistant', '');
     if (jobId) currentAssistantEl.dataset.scheduledJobId = jobId;
     showActivity(t('sp.scheduled.running', { title }));
@@ -1457,6 +1458,7 @@ function handleScheduledJobEvent(data, tabId) {
       clearActiveChatPayloadForTab(tabId ?? currentTabId);
       isProcessing = true;
       syncSendButtonState();
+      hideRecommendedActions();
     } else {
       isProcessing = false;
       syncSendButtonState();
@@ -2041,6 +2043,7 @@ function conversationHasUserMessages() {
 }
 
 function hideRecommendedActions() {
+  recommendationsRequestId += 1;
   if (!recommendedActionsEl || !recommendedActionsListEl) return;
   recommendedActionsListEl.replaceChildren();
   recommendedActionsEl.classList.add('hidden');
@@ -3458,6 +3461,7 @@ function renderClarifyCard(data) {
   const tabId = data?.scheduledTabId ?? data?.tabId ?? currentTabId;
   if (tabId == null) return;
   const scheduledJobId = data?.scheduledJobId ? String(data.scheduledJobId) : '';
+  if (scheduledJobId) hideRecommendedActions();
   let assistantEl = currentAssistantEl;
   if (scheduledJobId && data.forceNewScheduledCard) {
     assistantEl = addMessage('assistant', '');
@@ -3795,6 +3799,7 @@ function submitClarify(card, tabId, clarifyId, answer, source) {
     }
     isProcessing = true;
     syncSendButtonState();
+    hideRecommendedActions();
     showActivity(t('sp.activity.thinking'));
   }
   sendToBackground('clarify_response', { tabId, clarifyId, answer, source })
