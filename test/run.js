@@ -806,9 +806,13 @@ test('user memory browser wiring is mirrored and non-blocking', () => {
     assert.match(background, /while \(true\) \{\s*if \(!await isUserMemoryExtractionEnabled\(\)\) return;/, `${label}: drain should not send memory when memory is disabled`);
     assert.match(background, /let userMemoryExtractionQueueLock = Promise\.resolve\(\);/, `${label}: extraction queue writes should be serialized`);
     assert.match(background, /async function updateUserMemoryExtractionQueue\(updater\)[\s\S]*withUserMemoryExtractionQueueLock/, `${label}: extraction queue mutations should use the lock`);
+    assert.match(background, /let userMemoryStoreLock = Promise\.resolve\(\);/, `${label}: memory store writes should be serialized`);
+    assert.match(background, /async function applyUserMemoryExtractionOperationsToCurrentStore\(jobId, operations\)[\s\S]*const latestStore = await userMemoryStore\.load\(\);[\s\S]*userMemoryStore\.save\(applied\.store\)/, `${label}: extraction saves should rebase on current memory store`);
+    assert.match(background, /case 'clear_user_memory': \{[\s\S]*await updateUserMemoryExtractionQueue\(\(\) => \[\]\);[\s\S]*userMemoryStore\.clear\(\)/, `${label}: clearing memory should clear pending extraction jobs`);
+    assert.doesNotMatch(background, /const applied = applyUserMemoryExtractionOperations\(store, operations\);[\s\S]*userMemoryStore\.save\(applied\.store\)/, `${label}: extraction must not save a stale pre-LLM store snapshot`);
     assert.match(background, /await updateUserMemoryExtractionQueue\(\(queue\) => \{[\s\S]*queue\.push\(\{[\s\S]*createdAt: Date\.now\(\),[\s\S]*return queue;/, `${label}: enqueue should append through serialized queue update`);
     assert.match(background, /const job = await peekUserMemoryExtractionJob\(\);/, `${label}: drain should not shift a stale queue snapshot before extraction`);
-    assert.match(background, /await removeUserMemoryExtractionJob\(job\.id\);/, `${label}: completed extraction should remove jobs from the current queue by id`);
+    assert.match(background, /if \(!await claimUserMemoryExtractionJob\(jobId\)\) return \{ changed: false, claimed: false \};/, `${label}: completed extraction should claim jobs from the current queue before saving`);
     assert.doesNotMatch(background, /const queue = await loadUserMemoryExtractionQueue\(\);[\s\S]*const job = queue\.shift\(\);/, `${label}: drain must not hold and save a stale queue snapshot`);
     assert.match(background, /queueMicrotask\(\(\) => \{[\s\S]*enqueueUserMemoryExtraction\(payload\)/, `${label}: extraction enqueue should be off-path`);
     assert.doesNotMatch(background, /await enqueueUserMemoryExtractionAfterTurn/, `${label}: chat path must not await extraction enqueue`);
@@ -831,6 +835,8 @@ test('user memory browser wiring is mirrored and non-blocking', () => {
     assert.match(settingsJs, /USER_MEMORY_AUTO_CAPTURE_KEY/, `${label}: settings JS should use auto-capture key`);
     assert.match(settingsJs, /sendToBackground\('get_user_memory'\)/, `${label}: settings should read memory through background`);
     assert.match(settingsJs, /sendToBackground\('import_user_memory', \{ json \}\)/, `${label}: settings should import JSON through background`);
+    assert.match(settingsJs, /const rawMaxPromptChars = String\(userMemoryMaxCharsInput\.value \|\| ''\)\.trim\(\);[\s\S]*Number\.isFinite\(parsedMaxPromptChars\)[\s\S]*Math\.floor\(parsedMaxPromptChars\)/, `${label}: settings should preserve a zero memory prompt cap`);
+    assert.doesNotMatch(settingsJs, /Number\(userMemoryMaxCharsInput\.value\) \|\| USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS/, `${label}: settings should not coerce zero prompt cap to default`);
     assert.match(locale, /user memory is stored in plaintext/, `${label}: privacy copy missing`);
   }
 });

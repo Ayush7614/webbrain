@@ -1109,7 +1109,11 @@ if (userMemoryAutoToggle) {
 
 if (userMemoryMaxCharsInput) {
   userMemoryMaxCharsInput.addEventListener('change', async () => {
-    const value = Math.max(0, Math.min(10000, Number(userMemoryMaxCharsInput.value) || USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS));
+    const rawMaxPromptChars = String(userMemoryMaxCharsInput.value || '').trim();
+    const parsedMaxPromptChars = rawMaxPromptChars === '' ? NaN : Number(rawMaxPromptChars);
+    const value = Number.isFinite(parsedMaxPromptChars)
+      ? Math.max(0, Math.min(10000, Math.floor(parsedMaxPromptChars)))
+      : USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS;
     userMemoryMaxCharsInput.value = String(value);
     await browser.storage.local.set({ [USER_MEMORY_MAX_PROMPT_CHARS_KEY]: value }).catch(() => {});
   });

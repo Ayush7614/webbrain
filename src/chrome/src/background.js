@@ -184,6 +184,7 @@ const USER_MEMORY_EXTRACTION_DELAY_MS = 1200;
 let userMemoryExtractionDrainPromise = null;
 let userMemoryExtractionTimer = null;
 let userMemoryExtractionQueueLock = Promise.resolve();
+let userMemoryStoreLock = Promise.resolve();
 
 async function loadUserMemoryExtractionQueue() {
   const stored = await chrome.storage.local.get(USER_MEMORY_EXTRACTION_QUEUE_KEY);
@@ -225,6 +226,20 @@ async function updateUserMemoryExtractionQueue(updater) {
   });
 }
 
+async function claimUserMemoryExtractionJob(jobId) {
+  if (!jobId) return false;
+  let claimed = false;
+  await updateUserMemoryExtractionQueue((queue) => {
+    const index = queue.findIndex((job) => job?.id === jobId);
+    if (index >= 0) {
+      queue.splice(index, 1);
+      claimed = true;
+    }
+    return queue;
+  });
+  return claimed;
+}
+
 async function peekUserMemoryExtractionJob() {
   let job = null;
   await withUserMemoryExtractionQueueLock(async () => {
@@ -250,6 +265,22 @@ async function markUserMemoryExtractionJobFailed(jobId) {
       if (attempts >= 1) return null;
       return { ...job, attempts: attempts + 1 };
     }).filter(Boolean);
+  });
+}
+
+async function withUserMemoryStoreLock(task) {
+  const run = userMemoryStoreLock.then(task, task);
+  userMemoryStoreLock = run.catch(() => {});
+  return run;
+}
+
+async function applyUserMemoryExtractionOperationsToCurrentStore(jobId, operations) {
+  return withUserMemoryStoreLock(async () => {
+    if (!await claimUserMemoryExtractionJob(jobId)) return { changed: false, claimed: false };
+    const latestStore = await userMemoryStore.load();
+    const applied = applyUserMemoryExtractionOperations(latestStore, operations);
+    if (applied.changed) applied.store = await userMemoryStore.save(applied.store);
+    return { ...applied, claimed: true };
   });
 }
 
@@ -314,12 +345,8 @@ async function drainUserMemoryExtractionQueue() {
           succeeded: job.succeeded,
         }), { maxTokens: 600, temperature: 0 }, costState);
         const operations = parseUserMemoryExtractionResult(result?.content || '');
-        const applied = applyUserMemoryExtractionOperations(store, operations);
-        if (applied.changed) {
-          await userMemoryStore.save(applied.store);
-          await syncAgentUserMemoryFromStorage();
-        }
-        await removeUserMemoryExtractionJob(job.id);
+        const applied = await applyUserMemoryExtractionOperationsToCurrentStore(job.id, operations);
+        if (applied.changed) await syncAgentUserMemoryFromStorage();
       } catch (error) {
         if (agent._isCostAllowanceError?.(error)) {
           await removeUserMemoryExtractionJob(job.id);
@@ -1220,12 +1247,12 @@ async function handleMessage(msg, sender) {
     }
 
     case 'add_user_memory': {
-      const result = await userMemoryStore.add(msg.text, {
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.add(msg.text, {
         kind: msg.kind,
         scope: msg.scope,
         source: 'manual',
         confidence: 1,
-      });
+      }));
       if (result.changed) {
         await chrome.storage.local.set({ [USER_MEMORY_ENABLED_KEY]: true });
         await syncAgentUserMemoryFromStorage();
@@ -1234,24 +1261,27 @@ async function handleMessage(msg, sender) {
     }
 
     case 'update_user_memory': {
-      const result = await userMemoryStore.update(String(msg.id || ''), {
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.update(String(msg.id || ''), {
         text: msg.text,
         kind: msg.kind,
         scope: msg.scope,
         confidence: msg.confidence,
-      });
+      }));
       if (result.changed) await syncAgentUserMemoryFromStorage();
       return { ok: result.changed, ...result };
     }
 
     case 'delete_user_memory': {
-      const result = await userMemoryStore.archive(String(msg.id || ''));
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.archive(String(msg.id || '')));
       if (result.changed) await syncAgentUserMemoryFromStorage();
       return { ok: result.changed, ...result };
     }
 
     case 'clear_user_memory': {
-      const store = await userMemoryStore.clear();
+      const store = await withUserMemoryStoreLock(async () => {
+        await updateUserMemoryExtractionQueue(() => []);
+        return userMemoryStore.clear();
+      });
       await syncAgentUserMemoryFromStorage();
       return { ok: true, store };
     }
@@ -1264,7 +1294,7 @@ async function handleMessage(msg, sender) {
     case 'import_user_memory': {
       let payload = msg.store || msg.json || {};
       if (typeof payload === 'string') payload = JSON.parse(payload);
-      const store = await userMemoryStore.replace(payload);
+      const store = await withUserMemoryStoreLock(() => userMemoryStore.replace(payload));
       await syncAgentUserMemoryFromStorage();
       return { ok: true, store };
     }
