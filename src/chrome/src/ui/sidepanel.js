@@ -8,6 +8,7 @@ import { sanitizeMarkdownLinks } from './markdown-link.js';
 import { applyMode, loadMode, watch } from './theme.js';
 import { buildRecommendedActions, shouldShowRecommendedActions } from './recommended-actions.js';
 import { createContextMenuPromptHandler } from './context-menu-prompts.js';
+import { saveChatHistoryRecord } from './chat-history-store.js';
 import {
   STORAGE_KEY as STORE_REVIEW_STORAGE_KEY,
   recordSuccessfulTask,
@@ -1067,6 +1068,7 @@ function renderClearedConversationForTab(tabId) {
   if (sameTabId(currentTabId, tabId)) releaseRetryAttachmentsInTree(messagesEl);
   clearRetryAttachmentsForTab(tabId);
   setApiMutationsAllowedForTab(tabId, false);
+  resetChatHistoryStateForTab(tabId);
   if (currentTabId !== tabId) return;
   renderedTabId = tabId;
   messagesEl.innerHTML = '';
@@ -1092,11 +1094,161 @@ function schedulePersist() {
     persistTimerTabId = null;
     if (tabId != null) persistTabChat(tabId, html);
   }, 400);
+  if (tabId != null) scheduleHistoryPersist(tabId);
 }
 
 // Observe the messages container so any DOM mutation (new message, streamed
 // delta, tool step update) eventually gets persisted.
 const persistObserver = new MutationObserver(schedulePersist);
+
+// Durable offline chat history. The live per-tab restore above stays in
+// storage.session; this writes a compact, queryable record to IndexedDB so
+// finished conversations remain available after browser restarts.
+const chatHistoryRecordIdsByTab = new Map();
+const chatHistoryConversationIdsByTab = new Map();
+const chatHistoryCreatedAtByTab = new Map();
+const chatHistoryTabInfoByTab = new Map();
+let chatHistoryFallbackSeq = 0;
+let historyPersistTimer = null;
+let historyPersistTimerTabId = null;
+
+function normalizeHistoryText(value) {
+  return String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function roleFromMessageElement(el) {
+  if (el.classList.contains('user')) return 'user';
+  if (el.classList.contains('assistant')) return 'assistant';
+  if (el.classList.contains('error')) return 'error';
+  if (el.classList.contains('system')) return 'system';
+  return 'unknown';
+}
+
+function extractChatHistoryMessages(root = messagesEl) {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll(':scope > .message')).map((msgEl, index) => {
+    const clone = msgEl.cloneNode(true);
+    clone.querySelectorAll('button, input, textarea, select, .msg-copy-btn, .code-copy-btn, .error-retry-btn')
+      .forEach((el) => el.remove());
+    const textEl = clone.querySelector('.message-text') || clone.querySelector('.message-content') || clone;
+    return {
+      role: roleFromMessageElement(msgEl),
+      text: normalizeHistoryText(textEl.textContent),
+      index,
+      createdAt: Date.now(),
+    };
+  }).filter((message) => message.text);
+}
+
+function fallbackHistoryRecordId(tabId) {
+  const numericTabId = Number(tabId);
+  if (!chatHistoryRecordIdsByTab.has(numericTabId)) {
+    chatHistoryRecordIdsByTab.set(
+      numericTabId,
+      `local_${numericTabId || 'tab'}_${Date.now()}_${++chatHistoryFallbackSeq}`,
+    );
+  }
+  return chatHistoryRecordIdsByTab.get(numericTabId);
+}
+
+async function getTabInfoForHistory(tabId) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return { url: '', tabTitle: '' };
+  try {
+    const tab = await chrome.tabs.get(numericTabId);
+    return { url: tab?.url || '', tabTitle: tab?.title || '' };
+  } catch {
+    return chatHistoryTabInfoByTab.get(numericTabId) || { url: '', tabTitle: '' };
+  }
+}
+
+async function prepareChatHistoryForTurn(tabId, mode) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return;
+  if (!chatHistoryCreatedAtByTab.has(numericTabId)) {
+    chatHistoryCreatedAtByTab.set(numericTabId, Date.now());
+  }
+  const [identity, tabInfo] = await Promise.all([
+    sendToBackground('ensure_conversation_id', { tabId: numericTabId, mode }).catch(() => null),
+    getTabInfoForHistory(numericTabId),
+  ]);
+  if (identity?.conversationId) {
+    chatHistoryConversationIdsByTab.set(numericTabId, identity.conversationId);
+    chatHistoryRecordIdsByTab.set(numericTabId, identity.conversationId);
+  } else {
+    fallbackHistoryRecordId(numericTabId);
+  }
+  chatHistoryTabInfoByTab.set(numericTabId, tabInfo);
+}
+
+async function persistChatHistorySnapshot(tabId, { refreshTabInfo = false } = {}) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId) || renderedTabId !== numericTabId) return;
+  const messages = extractChatHistoryMessages(messagesEl);
+  if (!messages.some((message) => message.role === 'user')) return;
+  if (!chatHistoryCreatedAtByTab.has(numericTabId)) {
+    chatHistoryCreatedAtByTab.set(numericTabId, Date.now());
+  }
+  if (refreshTabInfo || !chatHistoryTabInfoByTab.has(numericTabId)) {
+    chatHistoryTabInfoByTab.set(numericTabId, await getTabInfoForHistory(numericTabId));
+  }
+  const tabInfo = chatHistoryTabInfoByTab.get(numericTabId) || {};
+  const recordId = chatHistoryRecordIdsByTab.get(numericTabId) || fallbackHistoryRecordId(numericTabId);
+  const conversationId = chatHistoryConversationIdsByTab.get(numericTabId) || null;
+  await saveChatHistoryRecord({
+    id: recordId,
+    conversationId,
+    tabId: numericTabId,
+    url: tabInfo.url || '',
+    tabTitle: tabInfo.tabTitle || '',
+    mode: agentMode,
+    providerId: providerSelect?.value || '',
+    providerLabel: providerSelect?.selectedOptions?.[0]?.textContent || '',
+    createdAt: chatHistoryCreatedAtByTab.get(numericTabId),
+    updatedAt: Date.now(),
+    messages,
+  }).catch((error) => {
+    console.warn('[WebBrain] failed to save chat history:', error);
+  });
+}
+
+function scheduleHistoryPersist(tabId) {
+  if (historyPersistTimer) clearTimeout(historyPersistTimer);
+  historyPersistTimerTabId = tabId;
+  historyPersistTimer = setTimeout(() => {
+    const targetTabId = historyPersistTimerTabId;
+    historyPersistTimer = null;
+    historyPersistTimerTabId = null;
+    void persistChatHistorySnapshot(targetTabId);
+  }, 1200);
+}
+
+async function flushChatHistorySnapshot(tabId, options = {}) {
+  if (historyPersistTimer && sameTabId(historyPersistTimerTabId, tabId)) {
+    clearTimeout(historyPersistTimer);
+    historyPersistTimer = null;
+    historyPersistTimerTabId = null;
+  }
+  await persistChatHistorySnapshot(tabId, options);
+}
+
+function resetChatHistoryStateForTab(tabId) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return;
+  if (historyPersistTimer && sameTabId(historyPersistTimerTabId, numericTabId)) {
+    clearTimeout(historyPersistTimer);
+    historyPersistTimer = null;
+    historyPersistTimerTabId = null;
+  }
+  chatHistoryRecordIdsByTab.delete(numericTabId);
+  chatHistoryConversationIdsByTab.delete(numericTabId);
+  chatHistoryCreatedAtByTab.delete(numericTabId);
+  chatHistoryTabInfoByTab.delete(numericTabId);
+}
 
 // Tool names → i18n key for the human-friendly label. Resolved at render
 // time so language changes take effect without a reload.
@@ -3296,6 +3448,7 @@ async function sendMessage(extraChatParams = {}) {
     syncSendButtonState();
     return;
   }
+  await prepareChatHistoryForTurn(tabId, modeForSend);
 
   let assistantEl = null;
   const attachmentsForSend = retryOptions
@@ -3338,6 +3491,10 @@ async function sendMessage(extraChatParams = {}) {
       ...(attachmentsForSend.length ? { attachments: attachmentsForSend } : {}),
       ...chatExtraParams,
     });
+    if (res?.conversationId) {
+      chatHistoryConversationIdsByTab.set(tabId, res.conversationId);
+      chatHistoryRecordIdsByTab.set(tabId, res.conversationId);
+    }
     accepted = true;
     completedSuccessfully = updatesContainSuccessfulDone(res?.updates);
     promptEligibleCompletion = completedSuccessfully || isSuccessfulAskCompletion(modeForSend, res);
@@ -3413,6 +3570,7 @@ async function sendMessage(extraChatParams = {}) {
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     if (renderToCurrentTab && currentTabId === tabId) scrollToBottom();
     if (renderToCurrentTab && renderedTabId === tabId) await flushRenderedTabChat();
+    if (renderToCurrentTab && renderedTabId === tabId) await flushChatHistorySnapshot(tabId, { refreshTabInfo: true });
     if (renderToCurrentTab && !wasAborted) {
       notifyCompletion({
         success: currentTabId === tabId && completedSuccessfully,
@@ -4589,6 +4747,10 @@ async function continueAgent() {
       tabId,
       mode: modeForSend,
     });
+    if (res?.conversationId) {
+      chatHistoryConversationIdsByTab.set(tabId, res.conversationId);
+      chatHistoryRecordIdsByTab.set(tabId, res.conversationId);
+    }
 
     if (currentTabId === tabId && res?.content && assistantEl) {
       const textEl = assistantEl.querySelector('.message-text');
@@ -4615,6 +4777,7 @@ async function continueAgent() {
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     if (currentTabId === tabId) scrollToBottom();
     if (currentTabId === tabId && renderedTabId === tabId) await flushRenderedTabChat();
+    if (currentTabId === tabId && renderedTabId === tabId) await flushChatHistorySnapshot(tabId, { refreshTabInfo: true });
     await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
 }

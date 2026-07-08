@@ -17,6 +17,7 @@ const filterText = document.getElementById('filter-text');
 const filterModel = document.getElementById('filter-model');
 const imgModal = document.getElementById('img-modal');
 const imgModalImg = document.getElementById('img-modal-img');
+const initialRunId = new URLSearchParams(location.search).get('runId');
 
 let allRuns = [];
 let selectedRunId = null;
@@ -580,5 +581,10 @@ document.addEventListener('visibilitychange', () => {
 // polling if the freshly-loaded data shows a live run.
 (async () => {
   await refresh();
+  if (initialRunId && allRuns.some((run) => run.runId === initialRunId)) {
+    selectedRunId = initialRunId;
+    renderList();
+    await renderRun(initialRunId);
+  }
   if (hasRunningJob()) scheduleAutoRefresh();
 })();
