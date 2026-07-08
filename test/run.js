@@ -7262,6 +7262,11 @@ test('sidepanel preserves stale residual slash-command prompts without hidden ru
       /if \(!text\) \{[\s\S]*?return;[\s\S]*?\}\s*isProcessing = true;\s*abortRequested = false;\s*inputEl\.value = '';\s*autoResizeInput\(\);\s*syncSendButtonState\(\);\s*await prepareChatHistoryForTurn\(tabId, modeForSend\);/,
       `${label}: send should enter a busy state and clear the composer before async history hydration`,
     );
+    assert.match(
+      sendBody,
+      /await prepareChatHistoryForTurn\(tabId, modeForSend\);\s*if \(abortRequested\) \{[\s\S]*?isProcessing = false;[\s\S]*?abortRequested = false;[\s\S]*?syncSendButtonState\(\);[\s\S]*?return false;[\s\S]*?\}[\s\S]*?renderToCurrentTab = sameTabId\(currentTabId, tabId\) && sameTabId\(renderedTabId, tabId\);/,
+      `${label}: aborted sends during history hydration should stop before chat dispatch`,
+    );
     const staleReturnIdx = sendBody.indexOf('if (!renderToCurrentTab) {');
     const sendIdx = sendBody.indexOf("sendToBackground('chat'");
     assert.notEqual(staleReturnIdx, -1, `${label}: stale-tab residual guard missing`);
@@ -7507,7 +7512,7 @@ test('sidepanel continue runs use the initiating tab state', () => {
     assert.match(body, /const tabId = currentTabId;[\s\S]*?const modeForSend = agentMode;[\s\S]*?sendToBackground\('continue', \{[\s\S]*?tabId,[\s\S]*?mode: modeForSend,/, `${label}: Continue should send with the tab and mode captured before awaiting`);
     assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?tabId: currentTabId/, `${label}: Continue should not read currentTabId inside the async send payload`);
     assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?mode: agentMode/, `${label}: Continue should not read agentMode inside the async send payload`);
-    assert.match(body, /await prepareChatHistoryForTurn\(tabId, modeForSend\);[\s\S]*?if \(!sameTabId\(currentTabId, tabId\) \|\| !sameTabId\(renderedTabId, tabId\)\) return false;[\s\S]*?assistantEl = addMessage\('assistant', ''\);/, `${label}: Continue should hydrate history and re-check the initiating tab before rendering`);
+    assert.match(body, /await prepareChatHistoryForTurn\(tabId, modeForSend\);[\s\S]*?if \(abortRequested\) return false;[\s\S]*?if \(!sameTabId\(currentTabId, tabId\) \|\| !sameTabId\(renderedTabId, tabId\)\) return false;[\s\S]*?assistantEl = addMessage\('assistant', ''\);/, `${label}: Continue should hydrate history, honor aborts, and re-check the initiating tab before rendering`);
     assert.match(body, /let assistantEl = null;[\s\S]*?assistantEl = addMessage\('assistant', ''\);[\s\S]*?currentAssistantEl = assistantEl;[\s\S]*?if \(currentTabId === tabId && res\?\.content && assistantEl\) \{[\s\S]*?addMessageCopyButton\(assistantEl\);/, `${label}: Continue should render only into its captured assistant bubble for the initiating tab`);
     assert.match(body, /if \(currentTabId === tabId && assistantEl\) finalizeSteps\(assistantEl\);[\s\S]*?if \(currentAssistantEl === assistantEl\) currentAssistantEl = null;/, `${label}: Continue should finalize and clear only its captured assistant bubble`);
   }

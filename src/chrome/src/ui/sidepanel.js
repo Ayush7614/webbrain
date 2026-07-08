@@ -3456,6 +3456,12 @@ async function sendMessage(extraChatParams = {}) {
   syncSendButtonState();
 
   await prepareChatHistoryForTurn(tabId, modeForSend);
+  if (abortRequested) {
+    isProcessing = false;
+    abortRequested = false;
+    syncSendButtonState();
+    return false;
+  }
   renderToCurrentTab = sameTabId(currentTabId, tabId) && sameTabId(renderedTabId, tabId);
   if (!renderToCurrentTab) {
     if (text) saveInputDraftForTab(tabId, text);
@@ -4753,6 +4759,7 @@ async function continueAgent() {
 
   try {
     await prepareChatHistoryForTurn(tabId, modeForSend);
+    if (abortRequested) return false;
     if (!sameTabId(currentTabId, tabId) || !sameTabId(renderedTabId, tabId)) return false;
 
     // Remove the continue bar only after the durable history id is hydrated.
