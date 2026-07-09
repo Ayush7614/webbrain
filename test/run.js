@@ -825,6 +825,7 @@ test('user memory browser wiring is mirrored and non-blocking', () => {
     assert.match(background, /const formCompletionTurn = sourceContext === 'form_completion';/, `${label}: form-derived memory should be classified before extraction text is built`);
     assert.match(background, /if \(!await isUserMemoryFormCaptureEnabled\(\)\) \{[\s\S]*return \{ queued: false, reason: 'form_capture_disabled' \};/, `${label}: form-derived memory should be gated by its opt-in setting`);
     assert.match(background, /return \{ queued: false, reason: 'form_capture_disabled' \};/, `${label}: disabled form capture should skip form-derived jobs`);
+    assert.doesNotMatch(background, /sourceContext = 'clarification_response';/, `${label}: disabled form-derived clarifications should not be downgraded into normal clarification memory`);
     assert.match(background, /return \{ queued: false, reason: 'form_capture_empty' \};/, `${label}: enabled form capture should skip empty sanitized form jobs`);
     assert.match(background, /formCompletionTurn \? '' : payload\.userText/, `${label}: form-derived memory should not send raw form turn text`);
     assert.match(background, /formCompletionTurn \? 'Completed form task; explicit clarification answers recorded\.' : payload\.assistantText/, `${label}: form-derived memory should not send raw form assistant text`);

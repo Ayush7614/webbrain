@@ -396,8 +396,7 @@ async function enqueueUserMemoryExtraction(payload = {}) {
   const formCompletionTurn = sourceContext === 'form_completion';
   if (formCompletionTurn) {
     if (!await isUserMemoryFormCaptureEnabled()) {
-      if (!clarificationText) return { queued: false, reason: 'form_capture_disabled' };
-      sourceContext = 'clarification_response';
+      return { queued: false, reason: 'form_capture_disabled' };
     } else if (!clarificationText) {
       return { queued: false, reason: 'form_capture_empty' };
     }
