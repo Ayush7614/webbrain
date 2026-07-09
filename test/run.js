@@ -673,6 +673,15 @@ test('user memory store normalizes, dedupes, archives, and rejects sensitive tex
     assert.ok(archived.record.archivedAt, `${label}: archivedAt should be set`);
     assert.deepEqual(memory.activeUserMemoryRecords(archived.store), [], `${label}: archived rows should not be active`);
 
+    now += 1000;
+    const removable = await storeApi.add('Prefer actionable checklists.');
+    const deleted = await storeApi.delete(removable.record.id);
+    assert.equal(deleted.changed, true, `${label}: delete should apply`);
+    assert.equal(deleted.record.id, removable.record.id, `${label}: delete should identify the removed row`);
+    assert.equal(deleted.record.text, undefined, `${label}: delete result should not echo deleted plaintext`);
+    assert.equal(deleted.store.records.some((record) => record.id === removable.record.id), false, `${label}: delete should hard-remove the row`);
+    assert.doesNotMatch(JSON.stringify(deleted.store), /Prefer actionable checklists/, `${label}: deleted plaintext should not remain in exported store data`);
+
     const oversized = memory.normalizeUserMemoryStore({
       updatedAt: -1,
       records: [
@@ -804,6 +813,8 @@ test('user memory browser wiring is mirrored and non-blocking', () => {
     assert.ok(addMemoryRoute, `${label}: add_user_memory route not found`);
     assert.match(addMemoryRoute[1], /if \(result\.changed\) await syncAgentUserMemoryFromStorage\(\);/, `${label}: manual memory saves should refresh live prompts`);
     assert.doesNotMatch(addMemoryRoute[1], new RegExp(`${runtime}\\.storage\\.local\\.set\\(\\{ \\[USER_MEMORY_ENABLED_KEY\\]: true \\}\\)`), `${label}: manual memory saves should not re-enable disabled memory`);
+    assert.match(background, /case 'delete_user_memory': \{[\s\S]*userMemoryStore\.delete\(String\(msg\.id \|\| ''\)\)[\s\S]*syncAgentUserMemoryFromStorage/, `${label}: user-facing memory delete should hard-delete records`);
+    assert.doesNotMatch(background, /case 'delete_user_memory': \{[\s\S]*userMemoryStore\.archive\(String\(msg\.id \|\| ''\)\)/, `${label}: user-facing memory delete should not archive plaintext`);
     assert.match(background, new RegExp(`${runtime}\\.storage\\.local\\.get\\(\\[\\s*USER_MEMORY_ENABLED_KEY,[\\s\\S]*USER_MEMORY_AUTO_CAPTURE_KEY`), `${label}: extraction should read both memory and auto-capture toggles`);
     assert.match(background, /async function isUserMemoryExtractionEnabled\(\)[\s\S]*stored\[USER_MEMORY_ENABLED_KEY\] !== false[\s\S]*stored\[USER_MEMORY_AUTO_CAPTURE_KEY\] === true/, `${label}: extraction should be gated by the main memory toggle`);
     assert.match(background, /if \(!await isUserMemoryExtractionEnabled\(\)\) return \{ queued: false, reason: 'disabled' \};/, `${label}: enqueue should not run when memory is disabled`);

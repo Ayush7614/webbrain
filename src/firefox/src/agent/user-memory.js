@@ -200,6 +200,15 @@ export function archiveUserMemoryRecord(storeInput, id, opts = {}) {
   return updateUserMemoryRecord(storeInput, id, { archivedAt: normalizeTimestamp(opts.now, nowMs()) }, opts);
 }
 
+export function deleteUserMemoryRecord(storeInput, id, opts = {}) {
+  const ts = normalizeTimestamp(opts.now, nowMs());
+  const store = normalizeUserMemoryStore(storeInput, { now: ts });
+  const index = store.records.findIndex((item) => item.id === id);
+  if (index < 0) return { store, record: null, changed: false, reason: 'not_found' };
+  const [record] = store.records.splice(index, 1);
+  return { store: updateStoreTimestamp(store, ts), record: { id: record.id }, changed: true };
+}
+
 export function clearUserMemoryStore(opts = {}) {
   const ts = normalizeTimestamp(opts.now, nowMs());
   return { version: STORE_VERSION, updatedAt: ts, records: [] };
@@ -321,6 +330,11 @@ export function createUserMemoryStore(storageArea, opts = {}) {
     },
     async archive(id) {
       const result = archiveUserMemoryRecord(await read(), id, { now: now() });
+      if (result.changed) result.store = await write(result.store);
+      return result;
+    },
+    async delete(id) {
+      const result = deleteUserMemoryRecord(await read(), id, { now: now() });
       if (result.changed) result.store = await write(result.store);
       return result;
     },

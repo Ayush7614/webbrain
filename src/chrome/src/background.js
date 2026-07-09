@@ -1288,7 +1288,7 @@ async function handleMessage(msg, sender) {
     }
 
     case 'delete_user_memory': {
-      const result = await withUserMemoryStoreLock(() => userMemoryStore.archive(String(msg.id || '')));
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.delete(String(msg.id || '')));
       if (result.changed) await syncAgentUserMemoryFromStorage();
       return { ok: result.changed, ...result };
     }
