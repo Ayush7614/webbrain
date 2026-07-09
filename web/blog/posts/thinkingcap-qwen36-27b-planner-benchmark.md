@@ -1,24 +1,24 @@
 ---
 title: >
-  ThinkingCap ties Qwen 3.6 27B after fixing the vLLM config
+  ThinkingCap Qwen 3.6 27B is a serious WebBrain planner candidate
 slug: thinkingcap-qwen36-27b-planner-benchmark
 sortOrder: -60
 date: 2026-07-09
 readTime: 8 min read
 description: >
-  We reran ThinkingCap-Qwen3.6-27B INT4 AutoRound through WebBrain's frozen browser-agent first-tool benchmark after removing debug vLLM settings. The model tied Qwen 3.6 27B on all-case Sonnet alignment and returned in 2.25s median latency.
+  We ran ThinkingCap-Qwen3.6-27B INT4 AutoRound through WebBrain's frozen browser-agent first-tool benchmark. The model tied Qwen 3.6 27B on all-case Sonnet alignment, returned in 2.25s median latency, and exposed a sharper boundary-behavior tradeoff.
 excerpt: >
-  ThinkingCap's first run looked painfully slow because the serve script was in a debug-shaped profile. With prefix caching, MTP speculative decoding, and CUDA graph capture enabled, it scores 77% Sonnet alignment with 2.25s median latency.
+  ThinkingCap lands at 77% Sonnet alignment, 91 parsed tool calls, 19 exact first actions, and 2.25s median latency. It looks like a real local planner candidate, but not a clean replacement for the Qwen baselines.
 titleTag: >
   ThinkingCap Qwen 3.6 27B WebBrain planner benchmark - WebBrain Blog
 ogTitle: >
   ThinkingCap Qwen 3.6 27B in WebBrain's frozen planner benchmark
 ogDescription: >
-  ThinkingCap matches Qwen 3.6 27B's 77% all-case Sonnet alignment once the local vLLM config is fixed, while trading off parsed calls and ideal-name matches.
+  ThinkingCap matches Qwen 3.6 27B's 77% all-case Sonnet alignment in WebBrain's frozen planner benchmark, while trading off parsed calls and ideal-name matches.
 twitterTitle: >
   ThinkingCap Qwen 3.6 27B WebBrain benchmark
 twitterDescription: >
-  ThinkingCap-Qwen3.6-27B via local vLLM: 91 parsed calls, 19 exact first actions, 77% Sonnet alignment, and a 2.25s median latency after the serve-script fix.
+  ThinkingCap-Qwen3.6-27B via local vLLM: 91 parsed calls, 19 exact first actions, 77% Sonnet alignment, and a 2.25s median latency.
 keywords:
   - WebBrain
   - ThinkingCap
@@ -30,7 +30,7 @@ keywords:
   - planner benchmark
   - tool calling
 lede: >
-  BottleCap AI's **ThinkingCap-Qwen3.6-27B** is pitched as a minimally invasive finetune of Qwen 3.6 27B that keeps the base model's capability while using fewer thinking tokens. Our first local WebBrain run seemed to contradict the speed story: it landed near the top of the planner table, but took 33.7s median latency. That was the wrong lesson. The serve script was running with debug-style CUDA synchronization, no prefix caching, no speculative decoding, and CUDA graph capture disabled. After fixing those serving settings and rerunning the full frozen benchmark, ThinkingCap ties the older Qwen 3.6 27B row on all-case Sonnet alignment and returns in 2.25s median latency.
+  BottleCap AI's **ThinkingCap-Qwen3.6-27B** is pitched as a minimally invasive finetune of Qwen 3.6 27B that keeps the base model's capability while using fewer thinking tokens. That is exactly the kind of claim worth testing against WebBrain's frozen browser-agent planner harness. We loaded a local INT4 AutoRound derivative behind vLLM as `thinkingcap-27b` and compared it with the saved Qwen 3.6 27B rows. The result: ThinkingCap ties the older Qwen 3.6 27B row on all-case Sonnet alignment, beats both saved Qwen 3.6 rows on strict exact first-call count, and runs close enough to the NVFP4 row to be taken seriously.
 ---
 
 ## The claim
@@ -49,23 +49,7 @@ One caveat up front: the endpoint we tested was not the official BF16 model or t
 }
 ```
 
-So read the planner-quality result as a useful ThinkingCap-family signal. Read the latency result as specific to this local INT4 AutoRound serving path and the patched vLLM config below.
-
-## What changed
-
-The first run used a serve script that was fine for debugging crashes, but bad for latency:
-
-| Setting | First run | Rerun |
-| --- | --- | --- |
-| `CUDA_LAUNCH_BLOCKING` | `1` | disabled |
-| `TORCH_USE_CUDA_DSA` | `1` | disabled |
-| Prefix caching | off | `--enable-prefix-caching` |
-| Speculative decoding | off | `--speculative-config '{"method":"mtp","num_speculative_tokens":1}'` |
-| CUDA graph capture | `{"cudagraph_mode":"NONE"}` | `{"cudagraph_capture_sizes":[1,2,4]}` |
-
-We did not switch to the official FP8 model for this rerun. The model stayed on the same INT4 AutoRound derivative, so the comparison isolates the serving profile rather than changing both model artifact and server config at the same time.
-
-There is still a serving caveat: vLLM warned that prefix caching with the Qwen 3.6 Mamba cache alignment path is experimental. Startup also became slower because compile and warmup work moved ahead of inference. The server took several minutes to become ready. Once ready, first-tool latency was much better.
+So read the planner-quality result as a useful ThinkingCap-family signal. Read the latency result as specific to this local INT4 AutoRound serving path, with the broader serving-stack caveat at the end.
 
 ## What we ran
 
@@ -98,7 +82,7 @@ test/llm/results/2026-07-09-thinkingcap-27b-fast-localhost8000_chrome_thinkingca
 
 ## Headline result
 
-| Metric | ThinkingCap 27B INT4 AutoRound, patched serve |
+| Metric | ThinkingCap 27B INT4 AutoRound |
 | --- | ---: |
 | Completed cases | 100/100 |
 | Transport errors | 0 |
@@ -116,9 +100,9 @@ test/llm/results/2026-07-09-thinkingcap-27b-fast-localhost8000_chrome_thinkingca
 
 That changes the conclusion a lot.
 
-The first ThinkingCap run scored 76% all-case Sonnet alignment with 33.7s median latency and 51.7s p95. After the serve-script fix, the full 100-case frozen rerun scored 77% all-case Sonnet alignment with 2.25s median latency and 3.94s p95.
+The short version: this is a top-tier local planner row, but not a clean winner.
 
-The model was not inherently slow in this harness. The debug-shaped local serving profile was slow.
+ThinkingCap ties old Qwen 3.6 27B on all-case Sonnet alignment and gains one strict exact first-call match. It also beats the Qwen 3.6 27B NVFP4 row on all-case Sonnet alignment and p95 latency. But it trails the Qwen rows on parsed tool calls, ideal-name matches, and tool-required Sonnet alignment.
 
 ## Against Qwen 3.6 27B
 
@@ -127,7 +111,7 @@ There are two useful Qwen comparisons: the older saved Qwen 3.6 27B row and the 
 | Model | Parsed calls | Exact | Ideal name | Sonnet all | Sonnet tooled | Median | p95 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Qwen 3.6 27B | 92/100 | 18/100 | 37/100 | 77.0% | 77.2% | 10.2s | 15.0s |
-| ThinkingCap 27B INT4, patched | 91/100 | 19/100 | 35/100 | 77.0% | 76.1% | 2.25s | 3.94s |
+| ThinkingCap 27B INT4 | 91/100 | 19/100 | 35/100 | 77.0% | 76.1% | 2.25s | 3.94s |
 | Qwen 3.6 27B NVFP4 | 96/100 | 18/100 | 38/100 | 74.0% | 77.2% | 1.76s | 6.49s |
 
 Against the older Qwen 3.6 27B row, ThinkingCap is now a real candidate rather than a curiosity. It ties all-case Sonnet alignment, gains one strict exact first-call match, and is much faster in this local comparison. It still loses one parsed tool call, two ideal-name matches, and one Sonnet-tooled match.
@@ -152,11 +136,11 @@ That is not a clean sweep. It is a serious local result.
 
 Sonnet returned no tool on eight frozen cases. These are important because they test whether a browser agent knows when not to touch the browser yet: under-specified instructions, short knowledge answers, and cases where the right first move is not an action.
 
-ThinkingCap matched seven of those eight Sonnet no-tool decisions in the patched full run.
+ThinkingCap matched seven of those eight Sonnet no-tool decisions in the full run.
 
 | Model | Sonnet no-tool decisions matched |
 | --- | ---: |
-| ThinkingCap 27B INT4, patched | 7/8 |
+| ThinkingCap 27B INT4 | 7/8 |
 | Qwen 3.6 27B | 6/8 |
 | Qwen 3.6 27B NVFP4 | 3/8 |
 
@@ -166,7 +150,7 @@ The ambiguous band shows the same shape:
 
 | Model | Ambiguous / clarify Sonnet matches |
 | --- | ---: |
-| ThinkingCap 27B INT4, patched | 3/8 |
+| ThinkingCap 27B INT4 | 3/8 |
 | Qwen 3.6 27B | 2/8 |
 | Qwen 3.6 27B NVFP4 | 0/8 |
 
@@ -176,7 +160,7 @@ There is still a protocol mismatch: ThinkingCap sometimes answered in prose inst
 
 ## Where it is strong
 
-The patched run's first-call distribution is normal enough:
+The run's first-call distribution is normal enough:
 
 | Tool or output | First calls |
 | --- | ---: |
@@ -237,18 +221,17 @@ The GitHub slice is the clearest quality miss. ThinkingCap matched only 2/6 Sonn
 
 Ideal-name score is the other drag. ThinkingCap's 35/100 is solid, but it trails both Qwen 3.6 27B rows. That means the model often makes a Sonnet-like first move without choosing the planner's preferred tool name.
 
-## Latency after the fix
+## Latency
 
-The speed picture flipped after the config fix:
+In this run, ThinkingCap was not the slow option. NVFP4 still has the faster median, but ThinkingCap's tail was tighter in the saved frozen comparison:
 
-| Model / run | Average | Median | p95 | Slowest |
+| Model | Average | Median | p95 | Slowest |
 | --- | ---: | ---: | ---: | ---: |
-| ThinkingCap 27B INT4, first debug-shaped run | 35.46s | 33.67s | 51.71s | 92.53s |
-| ThinkingCap 27B INT4, patched serve | 2.47s | 2.25s | 3.94s | 6.47s |
 | Qwen 3.6 27B NVFP4 | 2.19s | 1.76s | 6.49s | 8.66s |
+| ThinkingCap 27B INT4 | 2.47s | 2.25s | 3.94s | 6.47s |
 | Qwen 3.6 27B | 10.24s | 10.18s | 15.00s | 15.97s |
 
-This is the answer to the "isn't ThinkingCap supposed to be faster?" question: in our first local run, no, because the serve config was dominated by debug and conservative settings. In the patched run, yes, it is much faster than the older Qwen 3.6 27B row and close to the NVFP4 row. It is not faster than NVFP4 on median latency, but it is faster on p95 in this frozen comparison.
+That makes the speed read fairly simple. ThinkingCap is much faster than the older saved Qwen 3.6 27B row in this local comparison. It is not faster than Qwen 3.6 27B NVFP4 on median latency, but it is better on p95 here.
 
 ## Token-efficiency claim, in this harness
 
@@ -258,7 +241,7 @@ Still, the vLLM usage counters show a small completion-token reduction:
 
 | Model | Total completion tokens | Average per case |
 | --- | ---: | ---: |
-| ThinkingCap 27B INT4, patched | 7,348 | 73.5 |
+| ThinkingCap 27B INT4 | 7,348 | 73.5 |
 | Qwen 3.6 27B | 7,720 | 77.2 |
 | Qwen 3.6 27B NVFP4 | 8,460 | 84.6 |
 
@@ -273,7 +256,7 @@ Rows are ranked by all-case Sonnet match, then Sonnet-tooled match.
 | 1 | Gemma 4 31B QAT w4a16 | 95/100 | 19/100 | 37/100 | 77.0% | 78.3% | 0.55s |
 | 2 | Qwen 3.6 27B | 92/100 | 18/100 | 37/100 | 77.0% | 77.2% | 10.18s |
 | 3 | MiniMax M2.7 | 88/100 | 23/100 | 36/100 | 77.0% | 76.1% | 3.05s |
-| 4 | ThinkingCap 27B INT4, patched | 91/100 | 19/100 | 35/100 | 77.0% | 76.1% | 2.25s |
+| 4 | ThinkingCap 27B INT4 | 91/100 | 19/100 | 35/100 | 77.0% | 76.1% | 2.25s |
 | 5 | Qwen 3.7 Plus | 95/100 | 19/100 | 41/100 | 75.0% | 77.2% | 3.74s |
 | 6 | Agents-A1 AWQ INT4 | 88/100 | 15/100 | 33/100 | 75.0% | 75.0% | 1.66s |
 | 7 | MiniMax M3 | 85/100 | 17/100 | 32/100 | 75.0% | 73.9% | 3.06s |
@@ -283,16 +266,24 @@ Rows are ranked by all-case Sonnet match, then Sonnet-tooled match.
 | 11 | Ornith-1.0-35B NVFP4 | 88/100 | 21/100 | 36/100 | 71.0% | 70.7% | 2.38s |
 | 12 | Qwen 3.6 35B-A3B | 90/100 | 18/100 | 38/100 | 70.0% | 70.7% | 10.29s |
 
-That table is why I would keep ThinkingCap in the serious-candidate bucket. It is tied for the headline top score, has a practical local latency profile after the serve fix, and keeps the boundary behavior that made the first run interesting.
+That table is why I would keep ThinkingCap in the serious-candidate bucket. It is tied for the headline top score, has a practical local latency profile, and shows better boundary behavior than the NVFP4 row.
 
 But the ranking hides the tradeoff. ThinkingCap's all-case score is helped by no-tool boundary behavior. On tool-required prompts, it trails Qwen 3.6 27B, Qwen 3.6 27B NVFP4, Gemma 4 31B, and Qwen 3.7 Plus. It is a candidate, not an automatic replacement.
 
 ## Bottom line
 
-ThinkingCap-Qwen3.6-27B looks much better after the vLLM config fix.
+ThinkingCap-Qwen3.6-27B is a real WebBrain planner candidate.
 
-The corrected read is: ThinkingCap is not slower than Qwen 3.6 27B in this frozen WebBrain setup. It ties the older Qwen 3.6 27B row on all-case Sonnet alignment, beats it on strict exact count, and runs about 4.5x faster on median latency. Compared with Qwen 3.6 27B NVFP4, it is better on all-case Sonnet alignment and p95 latency, but worse on median latency, parsed tool calls, and ideal-name matches.
+It ties the older Qwen 3.6 27B row on all-case Sonnet alignment, beats it on strict exact count, and runs about 4.5x faster on median latency. Compared with Qwen 3.6 27B NVFP4, it is better on all-case Sonnet alignment and p95 latency, but worse on median latency, parsed tool calls, and ideal-name matches.
 
-My read: this is now a real planner candidate. I would not make it the default from this frozen run alone, because the tool-required and ideal-name metrics still favor the Qwen baselines. But the "too slow" objection is gone. The next useful work is a live-schema run and a focused look at GitHub, refusal-worthy, and clarify behavior.
+My read: I would not make it the default from this frozen run alone, because the tool-required and ideal-name metrics still favor the Qwen baselines. But it absolutely belongs in the next round. The useful follow-up is a live-schema run and a focused look at GitHub, refusal-worthy, and clarify behavior.
+
+## A serving-stack note
+
+One lesson from this run is methodological. We initially got a much worse latency result from the same local ThinkingCap artifact because the vLLM serve script was still carrying debug and conservative settings: CUDA launch blocking, CUDA device-side assertions, no prefix caching, no speculative decoding, and CUDA graph capture disabled. With the production-shaped profile, the same frozen benchmark moved from a 33.7s median to a 2.25s median.
+
+That does not just matter for this one post. Some earlier benchmark rows may also be partially shaped by their serving stack rather than only by model quality. The saved table mixes OpenRouter-hosted models, local vLLM endpoints, llama.cpp, LM Studio, and Ollama. That was the practical way to build the first comparison set, but it is not perfectly apples-to-apples.
+
+Going forward, the benchmark should become more **standardized**: clearer serving profiles, more consistent concurrency, warmer local servers, and explicit notes when a row comes from a managed API versus a local runtime. The model-ranking signal is still useful, but the latency columns deserve that extra discipline.
 
 Tags: #ThinkingCap #BottleCapAI #Qwen36 #Qwen36_27B #vLLM #ToolCalling #BrowserAgent #WebBrain
