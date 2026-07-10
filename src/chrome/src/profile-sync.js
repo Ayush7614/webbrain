@@ -178,7 +178,8 @@ export class ProfileSyncManager {
   }
   async updateChangeMetadata(changes) {
     if (this.applying) return;
-    const stored = await this.storage.get(PROFILE_SYNC_KEYS.metadata);
+    const stored = await this.storage.get([PROFILE_SYNC_KEYS.metadata, PROFILE_SYNC_KEYS.enabled]);
+    if (stored[PROFILE_SYNC_KEYS.enabled] !== true) return;
     const meta = stored[PROFILE_SYNC_KEYS.metadata] || {};
     const now = Date.now();
     if (changes.providers) { meta.providersAt = now; meta.providerItemsAt = meta.providerItemsAt || {}; const before = changes.providers.oldValue || {}, after = changes.providers.newValue || {}; for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) if (stable(before[id]) !== stable(after[id])) meta.providerItemsAt[id] = now; }

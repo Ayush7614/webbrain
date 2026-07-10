@@ -20040,7 +20040,7 @@ test('profile sync serializes metadata updates and re-reads local state before a
   );
   let metadata = {};
   const storage = {
-    get: async () => ({ profileSyncMetadataV1: structuredClone(metadata) }),
+    get: async () => ({ profileSyncEnabled: true, profileSyncMetadataV1: structuredClone(metadata) }),
     set: async values => { if (values.profileSyncMetadataV1) metadata = structuredClone(values.profileSyncMetadataV1); },
   };
   const manager = new ProfileSyncManager(storage);
