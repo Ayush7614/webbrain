@@ -1,6 +1,5 @@
 import {
-  MIN_CONTEXT_WINDOW,
-  MAX_CONTEXT_WINDOW,
+  normalizeDetectedContextWindow,
 } from './providers/context-windows.js';
 
 const OLLAMA_LAUNCH_PROVIDER_ID = 'ollama';
@@ -45,9 +44,11 @@ function normalizeBaseUrl(value) {
 }
 
 function normalizeContextWindow(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CONTEXT_WINDOW;
-  return Math.max(MIN_CONTEXT_WINDOW, Math.min(MAX_CONTEXT_WINDOW, Math.floor(n)));
+  if (value == null || value === '') return DEFAULT_CONTEXT_WINDOW;
+  // Same semantics as detection: keep positive values (including below the
+  // Settings "usable" 4k hint), clamp only the upper bound; invalid → default.
+  const normalized = normalizeDetectedContextWindow(value);
+  return normalized == null ? DEFAULT_CONTEXT_WINDOW : normalized;
 }
 
 export function normalizeOllamaLaunchHandoff(raw = {}) {

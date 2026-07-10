@@ -12,6 +12,7 @@ import { AwsBedrockProvider } from './aws-bedrock.js';
 // fetch ever ran, so onboarding reported "no models" for a reachable server.)
 import { fetchWithFallback } from './fetch-with-fallback.js';
 import {
+  lmStudioContextWindowIsLive,
   parseLlamaCppPropsContextWindow,
   parseLmStudioModelsContextWindow,
   parseOllamaPsContextWindow,
@@ -868,16 +869,24 @@ export class ProviderManager {
 
   async _attachDetectedContextWindow(id, provider, result, options = {}) {
     if (!result?.ok || !LOCAL_MODEL_LIST_PROVIDER_IDS.includes(id)) return result;
-    const contextWindow = await this._detectLocalContextWindow(id, provider, options);
-    if (contextWindow == null) return result;
+    const detected = await this._detectLocalContextWindow(id, provider, options);
+    if (detected?.contextWindow == null) return result;
     const current = this.providers.get(id) || provider;
-    if (!shouldApplyDetectedContextWindow(current?.config?.contextWindow, contextWindow)) {
+    if (!shouldApplyDetectedContextWindow(current?.config?.contextWindow, detected.contextWindow, {
+      shrinkOverride: detected.shrinkOverride === true,
+    })) {
       return result;
     }
-    await this._updateProviderContextWindow(id, contextWindow);
-    return { ...result, contextWindow };
+    await this._updateProviderContextWindow(id, detected.contextWindow);
+    return { ...result, contextWindow: detected.contextWindow };
   }
 
+  /**
+   * Best-effort local context detection. Only llama.cpp / Ollama / LM Studio
+   * report usable windows today; other local ids no-op. Returns
+   * `{ contextWindow, shrinkOverride }` where shrinkOverride means the value
+   * came from live/runtime allocation (safe to shrink a manual override).
+   */
   async _detectLocalContextWindow(id, provider, options = {}) {
     if (!LOCAL_MODEL_LIST_PROVIDER_IDS.includes(id)) return null;
     const headers = this._modelListHeaders(provider);
@@ -890,31 +899,42 @@ export class ProviderManager {
 
     try {
       if (id === 'lmstudio') {
-        if (options.lmStudioData) {
-          return parseLmStudioModelsContextWindow(options.lmStudioData, model);
+        const payload = options.lmStudioData || null;
+        let data = payload;
+        if (!data) {
+          const host = root || rawBaseUrl.replace(/\/v1\/?$/, '');
+          if (!host) return null;
+          const res = await fetchWithFallback(`${host}/api/v0/models`, { method: 'GET', headers });
+          if (!res.ok) return null;
+          data = await res.json();
         }
-        const host = root || rawBaseUrl.replace(/\/v1\/?$/, '');
-        if (!host) return null;
-        const res = await fetchWithFallback(`${host}/api/v0/models`, { method: 'GET', headers });
-        if (!res.ok) return null;
-        return parseLmStudioModelsContextWindow(await res.json(), model);
+        const contextWindow = parseLmStudioModelsContextWindow(data, model);
+        if (contextWindow == null) return null;
+        return {
+          contextWindow,
+          shrinkOverride: lmStudioContextWindowIsLive(data, model),
+        };
       }
 
       if (id === 'llamacpp') {
         const res = await fetchWithFallback(`${root}/props`, { method: 'GET', headers });
         if (!res.ok) return null;
-        return parseLlamaCppPropsContextWindow(await res.json());
+        const contextWindow = parseLlamaCppPropsContextWindow(await res.json());
+        if (contextWindow == null) return null;
+        return { contextWindow, shrinkOverride: true };
       }
 
       if (id === 'ollama') {
         // Prefer live allocated context from /api/ps (honors runtime num_ctx /
         // OLLAMA_CONTEXT_LENGTH). Fall back to /api/show num_ctx — never the
         // architecture max in model_info.*.context_length (overstates).
+        // Show-only is good enough to refresh the 16k default, but not to
+        // shrink a deliberate manual override.
         try {
           const psRes = await fetchWithFallback(`${root}/api/ps`, { method: 'GET', headers });
           if (psRes.ok) {
             const live = parseOllamaPsContextWindow(await psRes.json(), model);
-            if (live != null) return live;
+            if (live != null) return { contextWindow: live, shrinkOverride: true };
           }
         } catch { /* fall through to /api/show */ }
 
@@ -925,7 +945,9 @@ export class ProviderManager {
           body: JSON.stringify({ name: model }),
         });
         if (!res.ok) return null;
-        return parseOllamaShowContextWindow(await res.json());
+        const contextWindow = parseOllamaShowContextWindow(await res.json());
+        if (contextWindow == null) return null;
+        return { contextWindow, shrinkOverride: false };
       }
     } catch {
       return null;

@@ -102,7 +102,7 @@ OLLAMA_ORIGINS="chrome-extension://*,moz-extension://*" ./ollama serve
 ./ollama launch webbrain --model <model>
 ```
 
-> **Context window:** For reliable agent runs, load a local model with **at least a 16k-token context window** (the usable minimum). 8k can work with **Compact mode** enabled (Settings → per-provider Prompt tier); 4k is too small to hold the system prompt + tool schemas. WebBrain auto-compacts the conversation as it nears the window. Local providers default to 16k unless you set an explicit size in Settings, and **Test connection** / **Load models** auto-detect the server's real window when the backend reports it (llama.cpp `/props`, Ollama `/api/ps` then `/api/show` `num_ctx`, LM Studio `/api/v0/models`). Detection refreshes the default 16k and will shrink an overstated value; a smaller manual override is left alone.
+> **Context window:** For reliable agent runs, load a local model with **at least a 16k-token context window** (the usable minimum). 8k can work with **Compact mode** enabled (Settings → per-provider Prompt tier); 4k is too small to hold the system prompt + tool schemas. WebBrain auto-compacts the conversation as it nears the window. Local providers default to 16k unless you set an explicit size in Settings. **Test connection** / **Load models** auto-detect the real window for **llama.cpp**, **Ollama**, and **LM Studio** when those backends report it (llama.cpp `/props`, Ollama `/api/ps` then `/api/show` `num_ctx`, LM Studio `/api/v0/models`). Detection refreshes the default 16k; it shrinks a larger manual override only from live/runtime context (llama.cpp `/props`, Ollama `/api/ps`, LM Studio loaded context). Other local backends (Jan, vLLM, SGLang, LocalAI) keep the manual/default value.
 
 ### Use it
 

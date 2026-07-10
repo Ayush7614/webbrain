@@ -11,33 +11,41 @@ function clean(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function modelIdsMatch(left, right) {
+  const a = String(left || '').trim().toLowerCase();
+  const b = String(right || '').trim().toLowerCase();
+  if (!a || !b) return false;
+  return a === b || a.startsWith(`${b}:`) || b.startsWith(`${a}:`);
+}
+
 /**
  * Clamp a detected/server-reported context window into the range Settings
- * accepts. Returns null when the value is missing, unusable, or below the
- * Settings minimum — callers keep the existing config/default rather than
- * inventing a larger window than the server reported.
+ * accepts ([MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW] = 4k–1M). Returns null only
+ * when the value is missing or unusable (non-positive / NaN). A sub-4k server
+ * clamps up to the 4k usable minimum (still far below the overstated 16k
+ * default) so the value stays consistent with the Settings field and savable.
  */
 export function normalizeDetectedContextWindow(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   const floored = Math.floor(n);
-  if (floored < MIN_CONTEXT_WINDOW) return null;
-  return Math.min(MAX_CONTEXT_WINDOW, floored);
+  return Math.max(MIN_CONTEXT_WINDOW, Math.min(MAX_CONTEXT_WINDOW, floored));
 }
 
 /**
  * Whether an auto-detected window should replace the stored Settings value.
- * Always refresh when unset/default; always shrink when the server reports a
- * smaller window (fixes overstated compaction budgets); never enlarge a
- * non-default user override.
+ * Always refresh when unset/default; never enlarge a non-default user
+ * override; shrink a non-default override only when the caller marks the
+ * detection as trusted live/runtime (`shrinkOverride: true`).
  */
-export function shouldApplyDetectedContextWindow(current, detected) {
+export function shouldApplyDetectedContextWindow(current, detected, options = {}) {
   const next = normalizeDetectedContextWindow(detected);
   if (next == null) return false;
   const cur = Number(current);
   if (!Number.isFinite(cur) || cur <= 0) return true;
   if (cur === DEFAULT_LOCAL_CONTEXT_WINDOW) return true;
-  return next < cur;
+  if (next >= cur) return false;
+  return options.shrinkOverride === true;
 }
 
 /**
@@ -61,29 +69,29 @@ export function parseOllamaNumCtx(parameters) {
     return normalizeDetectedContextWindow(parameters.num_ctx ?? parameters.numCtx);
   }
   const text = String(parameters);
-  const match = text.match(/(?:^|[\s;])num_ctx\s*[=\s]\s*(\d+)/i) || text.match(/\bnum_ctx\s+(\d+)/i);
+  const match = /(?:^|[\s;])num_ctx[\s=]+(\d+)/i.exec(text);
   return match ? normalizeDetectedContextWindow(match[1]) : null;
 }
 
 /**
  * Ollama `GET /api/ps` — live allocated context for a running model.
  * Field is `context_length` on each entry (see `ollama ps` CONTEXT column).
+ * When a preferred model is set but not running, returns null (do not borrow
+ * another model's window).
  */
 export function parseOllamaPsContextWindow(data, preferredModel = '') {
   const models = Array.isArray(data?.models) ? data.models : [];
   if (!models.length) return null;
 
-  const want = String(preferredModel || '').trim().toLowerCase();
+  const want = String(preferredModel || '').trim();
   const candidates = want
-    ? models.filter((m) => {
-        const name = String(m?.name || m?.model || '').trim().toLowerCase();
-        return name === want || name.startsWith(`${want}:`) || want.startsWith(`${name}:`);
-      })
+    ? models.filter((m) => modelIdsMatch(m?.name || m?.model, want))
     : models;
+  if (!candidates.length) return null;
 
-  for (const model of candidates.length ? candidates : models) {
+  for (const model of candidates) {
     const n = normalizeDetectedContextWindow(
-      model?.context_length ?? model?.contextLength ?? model?.size_vram?.context_length
+      model?.context_length ?? model?.contextLength
     );
     if (n != null) return n;
   }
@@ -91,58 +99,38 @@ export function parseOllamaPsContextWindow(data, preferredModel = '') {
 }
 
 /**
- * Ollama `POST /api/show` — prefer Modelfile/runtime `num_ctx`, not
- * `model_info.*.context_length` (architecture max; overstates the live window).
+ * Ollama `POST /api/show` — only Modelfile/runtime `num_ctx` from
+ * `parameters`. Never use `model_info.*.context_length` or other top-level
+ * context fields (architecture max / ambiguous; overstates the live window).
  */
 export function parseOllamaShowContextWindow(data) {
   if (!data || typeof data !== 'object') return null;
-
-  const fromParams = parseOllamaNumCtx(data.parameters);
-  if (fromParams != null) return fromParams;
-
-  return normalizeDetectedContextWindow(
-    data.context_length ?? data.details?.context_length
-  );
-}
-
-/**
- * Architecture max from `/api/show` `model_info.*.context_length`. Not used for
- * auto-persist (overstates), but exported for tests / future UI hints.
- */
-export function parseOllamaModelMaxContextWindow(data) {
-  if (!data || typeof data !== 'object') return null;
-  const info = data.model_info;
-  if (info && typeof info === 'object') {
-    for (const [key, value] of Object.entries(info)) {
-      if (String(key).toLowerCase().endsWith('.context_length')) {
-        const n = normalizeDetectedContextWindow(value);
-        if (n != null) return n;
-      }
-    }
-  }
-  return null;
+  return parseOllamaNumCtx(data.parameters);
 }
 
 /**
  * LM Studio `GET /api/v0/models` — prefer a matching/loaded model's
  * loaded_context_length, then max_context_length.
+ * When a preferred model is set but missing, returns null (do not borrow
+ * another model's window). Model id matching is case-insensitive.
  */
 export function parseLmStudioModelsContextWindow(data, preferredModel = '') {
   const source = Array.isArray(data?.data) ? data.data : [];
   if (!source.length) return null;
 
   const want = String(preferredModel || '').trim();
-  const chat = source.filter((m) => m && m.id && m.type !== 'embeddings');
+  const chat = source.filter((m) => m?.id && m.type !== 'embeddings');
   const loaded = chat.filter((m) => m.state === 'loaded');
-  const preferred = want
-    ? chat.find((m) => m.id === want) || loaded.find((m) => m.id === want)
-    : null;
-  const candidates = [
-    preferred,
-    ...(loaded.length ? loaded : []),
-    ...chat,
-  ].filter(Boolean);
 
+  if (want) {
+    const preferred = chat.find((m) => modelIdsMatch(m.id, want));
+    if (!preferred) return null;
+    return normalizeDetectedContextWindow(
+      preferred.loaded_context_length ?? preferred.max_context_length ?? preferred.context_length
+    );
+  }
+
+  const candidates = [...(loaded.length ? loaded : []), ...chat];
   for (const model of candidates) {
     const n = normalizeDetectedContextWindow(
       model.loaded_context_length ?? model.max_context_length ?? model.context_length
@@ -150,6 +138,21 @@ export function parseLmStudioModelsContextWindow(data, preferredModel = '') {
     if (n != null) return n;
   }
   return null;
+}
+
+/**
+ * True when LM Studio detection came from a loaded model's
+ * `loaded_context_length` (safe to shrink a manual override).
+ */
+export function lmStudioContextWindowIsLive(data, preferredModel = '') {
+  const source = Array.isArray(data?.data) ? data.data : [];
+  const want = String(preferredModel || '').trim();
+  const chat = source.filter((m) => m?.id && m.type !== 'embeddings');
+  const target = want
+    ? chat.find((m) => modelIdsMatch(m.id, want))
+    : chat.find((m) => m.state === 'loaded');
+  if (target?.state !== 'loaded') return false;
+  return normalizeDetectedContextWindow(target.loaded_context_length) != null;
 }
 
 /**
