@@ -65,6 +65,7 @@ const FAQ_KEYS = [
   // Order matters — this is the rendered order in-page AND in JSON-LD.
   'faq.alt_claude',
   'faq.cloud_subscription',
+  'faq.cloud_sync',
   'faq.vs_frameworks',
   'faq.offline',
   'faq.models_supported',

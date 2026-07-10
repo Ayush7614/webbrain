@@ -94,6 +94,14 @@
     },
     {
       "@type": "Question",
+      "name": "How does encrypted Cloud Sync work?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Cloud Sync is an optional feature for active WebBrain Cloud subscribers. It syncs your WebBrain memories, Profile auto-fill text, and supported provider configuration, including API keys. It does not sync chat history, browser history, page screenshots, or legacy OAuth access and refresh tokens. Your browser encrypts the sync vault before upload with a password you choose. WebBrain Cloud stores only the encrypted vault; it cannot read your memories, profile text, provider settings, or API keys, and it cannot recover the sync password for you. The email field is for WebBrain Cloud magic-link billing/subscription authentication. It is not an account password. If the UI says change password in Cloud Sync, it means the sync encryption password, not a WebBrain account password. If you forget the sync password, the old encrypted cloud vault cannot be decrypted. You can reset the cloud vault and upload a new encrypted copy from a device that still has the data locally."
+      }
+    },
+    {
+      "@type": "Question",
       "name": "Чем WebBrain отличается от OpenClaw, Browser-Use и других agent-фреймворков?",
       "acceptedAnswer": {
         "@type": "Answer",
@@ -2259,6 +2267,11 @@
     <details class="faq-item">
       <summary>Сколько стоит подписка WebBrain Cloud?</summary>
       <p>WebBrain Cloud сейчас стоит <strong>5 долларов в месяц за профиль устройства</strong>, то есть пока значительно дешевле Claude Pro. Использование сейчас безлимитное в рамках политики добросовестного использования: обычное личное использование допустимо, но злоупотребления, автоматизированная нагрузка, перепродажа или необычно большие объёмы не разрешены.</p><p>Подписка привязана к идентификатору устройства, который расширение создаёт для этого GUID браузера + ОС, а не к аккаунту пользователя. Если этот идентификатор потерян из-за сброса хранилища расширения, удаления профиля браузера, переустановки браузера, смены браузера/ОС или потери устройства, мы не можем восстановить или перенести его и не возвращаем деньги за такую потерю.</p><p>Оформить подписку или управлять оплатой можно в разделе <strong>Account</strong> на странице настроек плагина с помощью кнопки <strong>Manage billing</strong>. Для ручной отмены напишите нам по электронной почте с адреса, который использовали при оплате.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How does encrypted Cloud Sync work?</summary>
+      <p>Cloud Sync is an optional feature for active WebBrain Cloud subscribers. It syncs your WebBrain memories, Profile auto-fill text, and supported provider configuration, including API keys. It does <strong>not</strong> sync chat history, browser history, page screenshots, or legacy OAuth access and refresh tokens.</p><p>Your browser encrypts the sync vault before upload with a password you choose. WebBrain Cloud stores only the encrypted vault; it cannot read your memories, profile text, provider settings, or API keys, and it cannot recover the sync password for you.</p><p>The email field is for WebBrain Cloud magic-link billing/subscription authentication. It is not an account password. If the UI says change password in Cloud Sync, it means the <strong>sync encryption password</strong>, not a WebBrain account password.</p><p>If you forget the sync password, the old encrypted cloud vault cannot be decrypted. You can reset the cloud vault and upload a new encrypted copy from a device that still has the data locally.</p>
     </details>
 
     <details class="faq-item">
