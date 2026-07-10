@@ -86,6 +86,21 @@ maximum prompt characters injected. `/remember <text>` writes an explicit memory
 immediately without an extractor call. Export/import JSON is local-only and is
 the v1 bridge for moving memory between browser profiles.
 
+### Optional Encrypted Cloud Sync
+
+Active WebBrain Cloud subscribers may explicitly enable encrypted profile sync in
+Settings. The extension combines user memory, profile autofill, and provider
+configuration (including API keys and OAuth credentials) into one vault and
+encrypts it in the browser with AES-256-GCM. Its key is derived from the sync
+password with PBKDF2-HMAC-SHA-256 (600,000 iterations). The password and derived
+key are retained in memory only for the browser session.
+
+WebBrain Cloud receives only ciphertext and cryptographic/version metadata. It
+cannot decrypt the vault or recover a forgotten password. Authentication uses a
+separate email-approved, scoped token; the billing device GUID alone cannot read
+a vault. Sync is off by default, local writes continue while locked or offline,
+and chat history, traces, tasks, permissions, and extraction queues are excluded.
+
 ### API Shortcut Observer
 
 The background script keeps a small in-memory buffer of same-tab XHR/fetch

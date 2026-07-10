@@ -19913,4 +19913,30 @@ test('sidepanel wires store review prompt after successful agent completion', ()
   }
 });
 
+test('profile sync encrypts provider secrets and rejects wrong passwords', async () => {
+  const { encryptProfileVault, decryptProfileVault } = await import(
+    'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
+  );
+  const payload = { providers: { openai: { apiKey: 'sk-secret-test' } }, profile: { text: 'private' }, memory: { records: [] } };
+  const { envelope } = await encryptProfileVault(payload, 'correct horse battery staple');
+  assert.equal(JSON.stringify(envelope).includes('sk-secret-test'), false);
+  assert.deepEqual((await decryptProfileVault(envelope, 'correct horse battery staple')).payload, payload);
+  await assert.rejects(() => decryptProfileVault(envelope, 'wrong password'), /Incorrect sync password/);
+});
+
+test('profile sync merge keeps newer provider/profile data and memory tombstones', async () => {
+  const { mergeProfileVaults } = await import(
+    'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
+  );
+  const base = { version: 1, providers: { a: { apiKey: 'local' } }, activeProvider: 'a', profile: { text: 'local' }, memory: { records: [{ id: 'gone', text: 'old', updatedAt: 5 }, { id: 'keep', text: 'local', updatedAt: 20 }, { id: 'tie', text: 'local tie', updatedAt: 40 }] }, tombstones: {}, meta: { providersAt: 10, profileAt: 10, memoryAt: 20 } };
+  const remote = { ...base, providers: { a: { apiKey: 'remote' } }, profile: { text: 'remote' }, memory: { records: [{ id: 'gone', text: 'old', updatedAt: 5 }, { id: 'keep', text: 'remote', updatedAt: 10 }, { id: 'tie', text: 'remote tie', updatedAt: 40 }] }, tombstones: { gone: 30 }, meta: { providersAt: 30, profileAt: 30, memoryAt: 30 } };
+  const { vault, conflicts } = mergeProfileVaults(base, remote);
+  assert.equal(vault.providers.a.apiKey, 'remote');
+  assert.equal(vault.profile.text, 'remote');
+  assert.equal(vault.memory.records.some(r => r.id === 'gone'), false);
+  assert.equal(vault.memory.records.find(r => r.id === 'keep').text, 'local');
+  assert.equal(vault.memory.records.find(r => r.id === 'tie').text, 'local tie');
+  assert.equal(conflicts.some(conflict => conflict.dataset === 'memory' && conflict.remote.text === 'remote tie'), true);
+});
+
 await run();
