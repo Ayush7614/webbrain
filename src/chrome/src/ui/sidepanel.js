@@ -2504,15 +2504,17 @@ async function refreshRecommendedActions() {
   try {
     const pageInfo = await sendToBackground('get_page_info', { tabId });
     if (requestId !== recommendationsRequestId || currentTabId !== tabId || isProcessing) return;
+    const sourceUrl = typeof pageInfo?.url === 'string' ? pageInfo.url : '';
     const actions = buildRecommendedActions(pageInfo, { max: 4 });
     recommendedActionsListEl.replaceChildren();
     actions.forEach((action) => {
+      const actionForClick = sourceUrl ? { ...action, sourceUrl } : action;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'recommended-action-chip';
       btn.textContent = action.label;
       btn.dataset.prompt = action.prompt;
-      btn.addEventListener('click', () => runRecommendedAction(action));
+      btn.addEventListener('click', () => runRecommendedAction(actionForClick));
       recommendedActionsListEl.appendChild(btn);
     });
     recommendedActionsEl.classList.toggle('hidden', actions.length === 0);
@@ -2521,17 +2523,44 @@ async function refreshRecommendedActions() {
   }
 }
 
+async function recommendedActionSourceStillCurrent(action, tabId) {
+  const sourceUrl = typeof action?.sourceUrl === 'string' ? action.sourceUrl : '';
+  if (!sourceUrl) return true;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return (tab?.url || '') === sourceUrl;
+  } catch {
+    return false;
+  }
+}
+
 async function runRecommendedAction(action) {
   const prompt = typeof action === 'string' ? action : action?.prompt;
   const tabId = currentTabId;
   if (!prompt || tabId == null || isProcessing) return;
+  if (!(await recommendedActionSourceStillCurrent(action, tabId)) || currentTabId !== tabId || isProcessing) {
+    hideRecommendedActions();
+    return;
+  }
   if (action?.mode === 'act') {
     const ok = await ensureActMode();
-    if (!ok || currentTabId !== tabId || isProcessing) return;
+    if (!ok) return;
+    if (!(await recommendedActionSourceStillCurrent(action, tabId)) || currentTabId !== tabId || isProcessing) {
+      hideRecommendedActions();
+      return;
+    }
   }
   inputEl.value = prompt;
   autoResizeInput();
-  sendMessage();
+  sendMessage(recommendedActionSendParams(action));
+}
+
+function recommendedActionSendParams(action) {
+  const params = action?.runOptions ? { recommendedAction: action.runOptions } : {};
+  if (['ask', 'act', 'dev'].includes(action?.mode)) {
+    params.__mode = action.mode;
+  }
+  return params;
 }
 
 // After restoring innerHTML the copy buttons need their click handlers re-bound,
@@ -3614,8 +3643,10 @@ function updateApiBadge() {
 
 async function sendMessage(extraChatParams = {}) {
   const retryOptions = extraChatParams?.__retry || null;
+  const modeOverride = ['ask', 'act', 'dev'].includes(extraChatParams?.__mode) ? extraChatParams.__mode : null;
   const chatExtraParams = { ...(extraChatParams || {}) };
   delete chatExtraParams.__retry;
+  delete chatExtraParams.__mode;
   stopListening();
   let text = inputEl.value.trim();
   if (!text) return;
@@ -3653,7 +3684,7 @@ async function sendMessage(extraChatParams = {}) {
     }
     return enqueueQueuedComposerMessage(tabId, text);
   }
-  const modeForSend = retryOptions?.mode || modeForMessageText(text);
+  const modeForSend = retryOptions?.mode || modeOverride || modeForMessageText(text);
   const apiMutationsAllowedForSend = retryOptions
     ? !!retryOptions.apiMutationsAllowed
     : isApiMutationsAllowedForTab(tabId) || /^\/allow-api\b/i.test(text);
