@@ -2984,6 +2984,11 @@ test('firefox manifest uses the AMO extension id', () => {
   assert.equal(manifest.browser_specific_settings?.gecko?.id, 'webbrain@esokullu.com');
 });
 
+test('firefox manifest declares required data collection permissions for AMO', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/firefox/manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.browser_specific_settings?.gecko?.data_collection_permissions?.required, ['none']);
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // Context-aware recommended actions
 // ────────────────────────────────────────────────────────────────────────
