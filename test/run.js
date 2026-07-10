@@ -243,10 +243,30 @@ const { ProviderManager: ProviderManagerCh } = await import(
 const { ProviderManager: ProviderManagerFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/providers/manager.js').replace(/\\/g, '/')
 );
-const { inferContextWindow: inferContextWindowCh } = await import(
+const {
+  inferContextWindow: inferContextWindowCh,
+  normalizeDetectedContextWindow: normalizeDetectedContextWindowCh,
+  shouldApplyDetectedContextWindow: shouldApplyDetectedContextWindowCh,
+  parseLlamaCppPropsContextWindow: parseLlamaCppPropsContextWindowCh,
+  parseOllamaShowContextWindow: parseOllamaShowContextWindowCh,
+  parseOllamaPsContextWindow: parseOllamaPsContextWindowCh,
+  parseOllamaNumCtx: parseOllamaNumCtxCh,
+  parseLmStudioModelsContextWindow: parseLmStudioModelsContextWindowCh,
+  lmStudioContextWindowIsLive: lmStudioContextWindowIsLiveCh,
+} = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/providers/context-windows.js').replace(/\\/g, '/')
 );
-const { inferContextWindow: inferContextWindowFx } = await import(
+const {
+  inferContextWindow: inferContextWindowFx,
+  normalizeDetectedContextWindow: normalizeDetectedContextWindowFx,
+  shouldApplyDetectedContextWindow: shouldApplyDetectedContextWindowFx,
+  parseLlamaCppPropsContextWindow: parseLlamaCppPropsContextWindowFx,
+  parseOllamaShowContextWindow: parseOllamaShowContextWindowFx,
+  parseOllamaPsContextWindow: parseOllamaPsContextWindowFx,
+  parseOllamaNumCtx: parseOllamaNumCtxFx,
+  parseLmStudioModelsContextWindow: parseLmStudioModelsContextWindowFx,
+  lmStudioContextWindowIsLive: lmStudioContextWindowIsLiveFx,
+} = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/providers/context-windows.js').replace(/\\/g, '/')
 );
 const { normalizeOllamaLaunchHandoff: normalizeOllamaLaunchHandoffCh } = await import(
@@ -7585,8 +7605,13 @@ test('settings async test controls surface rejected background results', () => {
     );
     assert.match(
       settings,
-      /document\.querySelectorAll\('\.loaded-model-dialog'\)\.forEach\(dialog => \{[\s\S]*?dialog\.addEventListener\('click', \(event\) => \{[\s\S]*?event\.target === dialog[\s\S]*?closeLoadedModelDialog\(dialog\);[\s\S]*?event\.target\.closest\('\.loaded-model-option'\);[\s\S]*?const providerId = dialog\.dataset\.loadedModelsFor;[\s\S]*?input\.value = option\.dataset\.model \|\| '';[\s\S]*?closeLoadedModelDialog\(dialog\);[\s\S]*?\}\);[\s\S]*?\}\);/,
-      `${label}: choosing a loaded model should write it back to the provider model input`,
+      /document\.querySelectorAll\('\.loaded-model-dialog'\)\.forEach\(dialog => \{[\s\S]*?dialog\.addEventListener\('click', \(event\) => \{[\s\S]*?event\.target === dialog[\s\S]*?closeLoadedModelDialog\(dialog\);[\s\S]*?event\.target\.closest\('\.loaded-model-option'\);[\s\S]*?const providerId = dialog\.dataset\.loadedModelsFor;[\s\S]*?const selectedModel = option\.dataset\.model \|\| '';[\s\S]*?input\.value = selectedModel;[\s\S]*?saveProvider\(providerId, \{ showFlash: false \}\)[\s\S]*?detectProviderContextWindowForModel\(providerId, selectedModel\)[\s\S]*?closeLoadedModelDialog\(dialog\);[\s\S]*?\}\);[\s\S]*?\}\);/,
+      `${label}: choosing a loaded model should save it before detecting context for that model`,
+    );
+    assert.match(
+      settings,
+      /async function detectProviderContextWindowForModel\(id, model\) \{[\s\S]*?sendToBackground\('detect_provider_context_window', \{ providerId: id, model: value \}\);[\s\S]*?applyProviderContextWindow\(id, res\.contextWindow\);[\s\S]*?\}/,
+      `${label}: selected-model context detection should update the provider context field`,
     );
     assert.match(
       settings,
@@ -10473,6 +10498,137 @@ test('inferContextWindow: model-aware cloud/router defaults and local 16k fallba
   }
 });
 
+test('local context-window detection parsers: llama.cpp / Ollama / LM Studio', () => {
+  const parsers = [
+    {
+      normalize: normalizeDetectedContextWindowCh,
+      shouldApply: shouldApplyDetectedContextWindowCh,
+      llama: parseLlamaCppPropsContextWindowCh,
+      ollamaShow: parseOllamaShowContextWindowCh,
+      ollamaPs: parseOllamaPsContextWindowCh,
+      ollamaNumCtx: parseOllamaNumCtxCh,
+      lmstudio: parseLmStudioModelsContextWindowCh,
+      lmLive: lmStudioContextWindowIsLiveCh,
+    },
+    {
+      normalize: normalizeDetectedContextWindowFx,
+      shouldApply: shouldApplyDetectedContextWindowFx,
+      llama: parseLlamaCppPropsContextWindowFx,
+      ollamaShow: parseOllamaShowContextWindowFx,
+      ollamaPs: parseOllamaPsContextWindowFx,
+      ollamaNumCtx: parseOllamaNumCtxFx,
+      lmstudio: parseLmStudioModelsContextWindowFx,
+      lmLive: lmStudioContextWindowIsLiveFx,
+    },
+  ];
+
+  for (const p of parsers) {
+    assert.equal(p.normalize(8192), 8192);
+    assert.equal(p.normalize('32768'), 32768);
+    // Sub-4k servers clamp up to the 4k usable min (not left at overstated 16k).
+    assert.equal(p.normalize(100), 4096);
+    assert.equal(p.normalize(2048), 4096);
+    assert.equal(p.normalize(99999999), 1048576);
+    assert.equal(p.normalize(0), null);
+    assert.equal(p.normalize('nope'), null);
+
+    assert.equal(p.shouldApply(16384, 8192), true);
+    assert.equal(p.shouldApply(16384, 32768), true);
+    // Manual override: shrink only when trusted live detection opts in.
+    assert.equal(p.shouldApply(32768, 8192), false);
+    assert.equal(p.shouldApply(32768, 8192, { shrinkOverride: true }), true);
+    assert.equal(p.shouldApply(8192, 32768), false);
+    assert.equal(p.shouldApply(8192, 32768, { shrinkOverride: true }), false);
+    assert.equal(p.shouldApply('', 8192), true);
+    assert.equal(p.shouldApply(16384, 2048), true);
+
+    assert.equal(p.llama({ default_generation_settings: { n_ctx: 8192 } }), 8192);
+    assert.equal(p.llama({ n_ctx: 32768 }), 32768);
+    assert.equal(p.llama({ n_ctx: 2048 }), 4096);
+    assert.equal(p.llama({}), null);
+
+    // Architecture max / ambiguous top-level fields must NOT drive auto-detect.
+    assert.equal(p.ollamaShow({ model_info: { 'qwen2.context_length': 8192 } }), null);
+    assert.equal(p.ollamaShow({ model_info: { 'llama.context_length': 131072 } }), null);
+    assert.equal(p.ollamaShow({ context_length: 16384 }), null);
+    assert.equal(p.ollamaNumCtx('num_ctx                        8192\nstop                           "<|eot|>"'), 8192);
+    assert.equal(p.ollamaNumCtx({ num_ctx: 16384 }), 16384);
+    assert.equal(p.ollamaShow({ parameters: 'num_ctx 8192\nstop "<|eot|>"' }), 8192);
+    assert.equal(p.ollamaShow({
+      model_info: { 'llama.context_length': 131072 },
+      parameters: 'num_ctx 8192',
+    }), 8192);
+    assert.equal(p.ollamaShow({}), null);
+
+    assert.equal(p.ollamaPs({
+      models: [
+        { name: 'other:latest', context_length: 32768 },
+        { name: 'qwen3:8b', context_length: 8192 },
+      ],
+    }, 'qwen3:8b'), 8192);
+    assert.equal(p.ollamaPs({
+      models: [
+        { name: 'qwen3:8b', context_length: 8192 },
+      ],
+    }, 'qwen3'), null);
+    assert.equal(p.ollamaPs({
+      models: [
+        { name: 'qwen3:latest', context_length: 16384 },
+      ],
+    }, 'qwen3'), 16384);
+    // Preferred model not running: do not borrow another model's window.
+    assert.equal(p.ollamaPs({
+      models: [
+        { name: 'other:latest', context_length: 32768 },
+      ],
+    }, 'qwen3:8b'), null);
+    assert.equal(p.ollamaPs({ models: [{ name: 'only:latest', context_length: 16384 }] }), 16384);
+    assert.equal(p.ollamaPs({ models: [] }), null);
+
+    assert.equal(p.lmstudio({
+      data: [
+        { id: 'embed', type: 'embeddings', max_context_length: 512 },
+        { id: 'chat-a', type: 'llm', state: 'not-loaded', max_context_length: 32768 },
+        { id: 'chat-b', type: 'llm', state: 'loaded', loaded_context_length: 8192, max_context_length: 32768 },
+      ],
+    }), 8192);
+    assert.equal(p.lmstudio({
+      data: [
+        { id: 'chat-a', type: 'llm', state: 'not-loaded', max_context_length: 32768 },
+        { id: 'chat-b', type: 'llm', state: 'loaded', loaded_context_length: 8192, max_context_length: 32768 },
+      ],
+    }, 'chat-a'), 32768);
+    // Case-insensitive preferred id; missing preferred must not borrow others.
+    assert.equal(p.lmstudio({
+      data: [
+        { id: 'Chat-B', type: 'llm', state: 'loaded', loaded_context_length: 8192, max_context_length: 32768 },
+      ],
+    }, 'chat-b'), 8192);
+    assert.equal(p.lmstudio({
+      data: [
+        { id: 'chat-b', type: 'llm', state: 'loaded', loaded_context_length: 8192, max_context_length: 32768 },
+      ],
+    }, 'chat'), null);
+    assert.equal(p.lmstudio({
+      data: [
+        { id: 'chat-b', type: 'llm', state: 'loaded', loaded_context_length: 8192, max_context_length: 32768 },
+      ],
+    }, 'missing-model'), null);
+    assert.equal(p.lmstudio({ data: [] }), null);
+
+    const livePayload = {
+      data: [
+        { id: 'chat-b', type: 'llm', state: 'loaded', loaded_context_length: 8192, max_context_length: 32768 },
+      ],
+    };
+    assert.equal(p.lmLive(livePayload, 'chat-b'), true);
+    assert.equal(p.lmLive(livePayload, 'chat'), false);
+    assert.equal(p.lmLive({
+      data: [{ id: 'chat-a', type: 'llm', state: 'not-loaded', max_context_length: 32768 }],
+    }, 'chat-a'), false);
+  }
+});
+
 test('Ollama launch handoff normalizes safe loopback /v1 provider config', () => {
   for (const normalize of [normalizeOllamaLaunchHandoffCh, normalizeOllamaLaunchHandoffFx]) {
     const handoff = normalize({
@@ -10521,6 +10677,301 @@ test('Ollama launch handoff rejects unsafe base URLs and clamps context', () => 
     });
     assert.equal(clamped.baseUrl, 'http://127.0.0.1:11434/v1');
     assert.equal(clamped.contextWindow, 1048576);
+    // Sub-4k clamps up to the usable min (aligned with detection normalization).
+    const small = normalize({
+      model: 'qwen3:8b',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      contextWindow: '2048',
+    });
+    assert.equal(small.contextWindow, 4096);
+  }
+});
+
+test('ProviderManager persists detected local context windows with safe apply policy', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+
+  function makeRuntime(writes) {
+    return {
+      storage: {
+        local: {
+          async get() { return {}; },
+          async set(patch) { writes.push(patch); },
+        },
+      },
+      runtime: { id: 'test-runtime' },
+    };
+  }
+
+  function jsonOk(body) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  function chatOk() {
+    return jsonOk({ choices: [{ message: { content: 'ok' } }] });
+  }
+
+  try {
+    for (const [label, PM, runtimeKey] of [
+      ['chrome', ProviderManagerCh, 'chrome'],
+      ['firefox', ProviderManagerFx, 'browser'],
+    ]) {
+      // llama.cpp: refresh default 16k from /props
+      {
+        const writes = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          if (u.endsWith('/props')) return jsonOk({ default_generation_settings: { n_ctx: 8192 } });
+          if (u.includes('/chat/completions')) return chatOk();
+          return new Response('missing', { status: 404 });
+        };
+        const mgr = new PM();
+        const config = { ...mgr._defaultConfigs().llamacpp, baseUrl: 'http://localhost:8080', model: 'local' };
+        mgr.providers.set('llamacpp', mgr._createProvider('llamacpp', config));
+        const result = await mgr.testProvider('llamacpp');
+        assert.equal(result.ok, true, `${label}: llama test ok`);
+        assert.equal(result.contextWindow, 8192, `${label}: llama returns detected window`);
+        assert.equal(mgr.providers.get('llamacpp').config.contextWindow, 8192, `${label}: llama persists`);
+        assert.ok(
+          writes.some((patch) => patch.providers?.llamacpp?.contextWindow === 8192),
+          `${label}: llama persistence writes detected window to storage`
+        );
+      }
+
+      // Ollama /api/ps live: may shrink a manual override
+      {
+        const writes = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          if (u.endsWith('/api/ps')) {
+            return jsonOk({ models: [{ name: 'qwen3:8b', context_length: 8192 }] });
+          }
+          if (u.includes('/chat/completions')) return chatOk();
+          return new Response('missing', { status: 404 });
+        };
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().ollama,
+          model: 'qwen3:8b',
+          contextWindow: 65536,
+        };
+        mgr.providers.set('ollama', mgr._createProvider('ollama', config));
+        const result = await mgr.testProvider('ollama');
+        assert.equal(result.ok, true, `${label}: ollama ps test ok`);
+        assert.equal(result.contextWindow, 8192, `${label}: ollama ps shrinks override`);
+        assert.equal(mgr.providers.get('ollama').config.contextWindow, 8192);
+        assert.ok(
+          writes.some((patch) => patch.providers?.ollama?.contextWindow === 8192),
+          `${label}: ollama persistence writes detected window to storage`
+        );
+      }
+
+      // Ollama /api/show only: refresh default, but do not shrink manual override
+      {
+        globalThis[runtimeKey] = makeRuntime([]);
+        globalThis.fetch = async (url, init = {}) => {
+          const u = String(url);
+          if (u.endsWith('/api/ps')) return jsonOk({ models: [] });
+          if (u.endsWith('/api/show') && init.method === 'POST') {
+            return jsonOk({ parameters: 'num_ctx 8192' });
+          }
+          if (u.includes('/chat/completions')) return chatOk();
+          return new Response('missing', { status: 404 });
+        };
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().ollama,
+          model: 'qwen3:8b',
+          contextWindow: 65536,
+        };
+        mgr.providers.set('ollama', mgr._createProvider('ollama', config));
+        const result = await mgr.testProvider('ollama');
+        assert.equal(result.ok, true, `${label}: ollama show test ok`);
+        assert.equal(result.contextWindow, undefined, `${label}: show-only must not shrink override`);
+        assert.equal(mgr.providers.get('ollama').config.contextWindow, 65536);
+
+        const mgrDefault = new PM();
+        const defaultConfig = {
+          ...mgrDefault._defaultConfigs().ollama,
+          model: 'qwen3:8b',
+          contextWindow: 16384,
+        };
+        mgrDefault.providers.set('ollama', mgrDefault._createProvider('ollama', defaultConfig));
+        const refreshed = await mgrDefault.testProvider('ollama');
+        assert.equal(refreshed.contextWindow, 8192, `${label}: show-only refreshes default`);
+        assert.equal(mgrDefault.providers.get('ollama').config.contextWindow, 8192);
+      }
+
+      // In-flight detection must not write stale context to a changed provider config.
+      {
+        const writes = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().ollama,
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'qwen3:8b',
+          contextWindow: 65536,
+        };
+        mgr.providers.set('ollama', mgr._createProvider('ollama', config));
+
+        let releaseDetection;
+        mgr._detectLocalContextWindow = async () => {
+          await new Promise((resolve) => { releaseDetection = resolve; });
+          return { contextWindow: 8192, shrinkOverride: true };
+        };
+
+        const pending = mgr._attachDetectedContextWindow('ollama', mgr.providers.get('ollama'), { ok: true });
+        await Promise.resolve();
+        await mgr.updateProvider('ollama', { model: 'llama3:8b' });
+        releaseDetection();
+
+        const result = await pending;
+        assert.equal(result.contextWindow, undefined, `${label}: stale attach detection is not returned`);
+        assert.equal(mgr.providers.get('ollama').config.model, 'llama3:8b');
+        assert.equal(mgr.providers.get('ollama').config.contextWindow, 65536);
+        assert.equal(
+          writes.some((patch) =>
+            patch.providers?.ollama?.model === 'llama3:8b' &&
+            patch.providers?.ollama?.contextWindow === 8192
+          ),
+          false,
+          `${label}: stale attach detection is not written after model changes`
+        );
+      }
+
+      // Preferred model missing from /api/ps must not borrow another running model
+      {
+        globalThis[runtimeKey] = makeRuntime([]);
+        globalThis.fetch = async (url, init = {}) => {
+          const u = String(url);
+          if (u.endsWith('/api/ps')) {
+            return jsonOk({ models: [{ name: 'other:latest', context_length: 32768 }] });
+          }
+          if (u.endsWith('/api/show') && init.method === 'POST') {
+            return jsonOk({ parameters: 'num_ctx 8192' });
+          }
+          if (u.includes('/chat/completions')) return chatOk();
+          return new Response('missing', { status: 404 });
+        };
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().ollama,
+          model: 'qwen3:8b',
+          contextWindow: 16384,
+        };
+        mgr.providers.set('ollama', mgr._createProvider('ollama', config));
+        const result = await mgr.testProvider('ollama');
+        assert.equal(result.contextWindow, 8192, `${label}: falls back to show when ps misses preferred`);
+        assert.equal(mgr.providers.get('ollama').config.contextWindow, 8192);
+      }
+
+      // LM Studio load models path
+      {
+        const writes = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          if (u.includes('/api/v0/models')) {
+            return jsonOk({
+              data: [
+                {
+                  id: 'chat-a',
+                  type: 'llm',
+                  state: 'loaded',
+                  loaded_context_length: 4096,
+                  max_context_length: 32768,
+                },
+                {
+                  id: 'chat-b',
+                  type: 'llm',
+                  state: 'loaded',
+                  loaded_context_length: 8192,
+                  max_context_length: 32768,
+                },
+              ],
+            });
+          }
+          return new Response('missing', { status: 404 });
+        };
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().lmstudio,
+          model: 'chat-a',
+          contextWindow: 16384,
+        };
+        mgr.providers.set('lmstudio', mgr._createProvider('lmstudio', config));
+        const result = await mgr.listProviderModels('lmstudio');
+        assert.equal(result.ok, true, `${label}: lmstudio list ok`);
+        assert.equal(result.contextWindow, undefined, `${label}: lmstudio list does not persist previous-model context`);
+        assert.equal(mgr.providers.get('lmstudio').config.contextWindow, 16384);
+        const staleDetection = await mgr.detectProviderContextWindow('lmstudio', 'chat-b');
+        assert.equal(staleDetection.ok, false, `${label}: lmstudio detection requires the selected model to be saved`);
+        await mgr.updateProvider('lmstudio', { model: 'chat-b' });
+        const detected = await mgr.detectProviderContextWindow('lmstudio', 'chat-b');
+        assert.equal(detected.ok, true, `${label}: lmstudio selected-model detection ok`);
+        assert.equal(detected.contextWindow, 8192, `${label}: lmstudio detects selected loaded context`);
+        assert.equal(mgr.providers.get('lmstudio').config.contextWindow, 8192);
+        assert.ok(
+          writes.some((patch) =>
+            patch.providers?.lmstudio?.model === 'chat-b' &&
+            patch.providers?.lmstudio?.contextWindow === 8192
+          ),
+          `${label}: lmstudio selected-model persistence writes context window to storage`
+        );
+      }
+
+      // Model-pick detection must also fail closed if the base URL changes mid-flight.
+      {
+        const writes = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().lmstudio,
+          baseUrl: 'http://localhost:1234/v1',
+          model: 'chat-b',
+          contextWindow: 16384,
+        };
+        mgr.providers.set('lmstudio', mgr._createProvider('lmstudio', config));
+
+        let releaseDetection;
+        mgr._detectLocalContextWindow = async () => {
+          await new Promise((resolve) => { releaseDetection = resolve; });
+          return { contextWindow: 8192, shrinkOverride: true };
+        };
+
+        const pending = mgr.detectProviderContextWindow('lmstudio', 'chat-b');
+        await Promise.resolve();
+        await mgr.updateProvider('lmstudio', { baseUrl: 'http://localhost:5678/v1' });
+        releaseDetection();
+
+        const result = await pending;
+        assert.equal(result.ok, false, `${label}: stale selected-model detection fails closed`);
+        assert.equal(result.contextWindow, undefined, `${label}: stale selected-model detection is not returned`);
+        assert.equal(mgr.providers.get('lmstudio').config.baseUrl, 'http://localhost:5678/v1');
+        assert.equal(mgr.providers.get('lmstudio').config.contextWindow, 16384);
+        assert.equal(
+          writes.some((patch) =>
+            patch.providers?.lmstudio?.baseUrl === 'http://localhost:5678/v1' &&
+            patch.providers?.lmstudio?.contextWindow === 8192
+          ),
+          false,
+          `${label}: stale selected-model detection is not written after base URL changes`
+        );
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
   }
 });
 

@@ -1,8 +1,10 @@
+import {
+  normalizeDetectedContextWindow,
+} from './providers/context-windows.js';
+
 const OLLAMA_LAUNCH_PROVIDER_ID = 'ollama';
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434/v1';
 const DEFAULT_CONTEXT_WINDOW = 65536;
-const MIN_CONTEXT_WINDOW = 4096;
-const MAX_CONTEXT_WINDOW = 1048576;
 const LOCAL_OLLAMA_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 function normalizeModel(value) {
@@ -42,9 +44,11 @@ function normalizeBaseUrl(value) {
 }
 
 function normalizeContextWindow(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CONTEXT_WINDOW;
-  return Math.max(MIN_CONTEXT_WINDOW, Math.min(MAX_CONTEXT_WINDOW, Math.floor(n)));
+  if (value == null || value === '') return DEFAULT_CONTEXT_WINDOW;
+  // Same semantics as detection: clamp valid values into the Settings range;
+  // invalid values fall back to the launch default.
+  const normalized = normalizeDetectedContextWindow(value);
+  return normalized == null ? DEFAULT_CONTEXT_WINDOW : normalized;
 }
 
 export function normalizeOllamaLaunchHandoff(raw = {}) {
