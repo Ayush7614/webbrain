@@ -53,7 +53,7 @@ class BaseLLMProvider {
 | `groq` | `openai` | cloud | `llama-3.3-70b-versatile` | Regex nom de modèle |
 | `minimax` | `openai` | cloud | `minimax-m2.7` | Regex nom de modèle |
 | `alibaba` (Qwen) | `openai` | cloud | `qwen-max` | Regex nom de modèle |
-| `openrouter` | `openai` | routeur | `stepfun/step-3.7-flash` | Regex nom de modèle |
+| `openrouter` | `openai` | routeur | `openrouter/free` | Regex nom de modèle |
 
 ### Fournisseurs Locaux
 

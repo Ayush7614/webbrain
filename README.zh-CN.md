@@ -25,7 +25,7 @@
   - **Google Gemini**、**Mistral AI**、**DeepSeek**、**xAI Grok**、**Groq**
   - **MiniMax**、**阿里云（通义千问 Qwen）**
   - **Cloudflare Workers AI**、**Nvidia NIM**
-  - **OpenRouter**（默认模型：`stepfun/step-3.7-flash`；可访问 100+ 模型）
+  - **OpenRouter**（默认模型：`openrouter/free`；可访问 100+ 模型）
 - **引导向导** — 首次启动的演练，涵盖 Act 模式安全性与提供商配置
 - **侧边栏 UI** — 与浏览并存的简洁聊天界面
 - **按标签页对话** — 每个标签页拥有独立的聊天历史
@@ -122,7 +122,7 @@ python -m sglang.launch_server --model-path your-model --port 30000
 | Groq | `https://api.groq.com/openai/v1` | 必需 | llama-3.3-70b-versatile |
 | MiniMax | `https://api.minimax.chat/v1` | 必需 | minimax-m2.7 |
 | 阿里云（通义千问 Qwen） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 必需 | qwen-max |
-| OpenRouter | `https://openrouter.ai/api/v1` | 必需 | stepfun/step-3.7-flash |
+| OpenRouter | `https://openrouter.ai/api/v1` | 必需 | openrouter/free |
 
 ## 架构
 

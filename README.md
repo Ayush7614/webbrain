@@ -25,7 +25,7 @@ Open-source AI browser agent for Chrome and Firefox. Chat with any web page, aut
   - **Google Gemini**, **Mistral AI**, **DeepSeek**, **xAI Grok**, **Groq**
   - **MiniMax**, **Alibaba Cloud (Qwen)**
   - **Cloudflare Workers AI**, **Nvidia NIM**
-  - **OpenRouter** (default model: `stepfun/step-3.7-flash`; access 100+ models)
+  - **OpenRouter** (default model: `openrouter/free`; access 100+ models)
 - **Onboarding Wizard** — First-launch walkthrough covering Act mode safety and provider setup
 - **Side Panel UI** — Clean chat interface that lives alongside your browsing
 - **Per-Tab Conversations** — Each tab has its own chat history
@@ -156,7 +156,7 @@ Click the gear icon or go to the extension's Options page to configure:
 | Groq | `https://api.groq.com/openai/v1` | Required | llama-3.3-70b-versatile |
 | MiniMax | `https://api.minimax.chat/v1` | Required | minimax-m2.7 |
 | Alibaba Cloud (Qwen) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Required | qwen-max |
-| OpenRouter | `https://openrouter.ai/api/v1` | Required | stepfun/step-3.7-flash |
+| OpenRouter | `https://openrouter.ai/api/v1` | Required | openrouter/free |
 
 ## Architecture
 

@@ -53,7 +53,7 @@ class BaseLLMProvider {
 | `groq` | `openai` | 云端 | `llama-3.3-70b-versatile` | 模型名正则 |
 | `minimax` | `openai` | 云端 | `minimax-m2.7` | 模型名正则 |
 | `alibaba`（Qwen） | `openai` | 云端 | `qwen-max` | 模型名正则 |
-| `openrouter` | `openai` | 路由器 | `stepfun/step-3.7-flash` | 模型名正则 |
+| `openrouter` | `openai` | 路由器 | `openrouter/free` | 模型名正则 |
 
 ### 本地提供商
 

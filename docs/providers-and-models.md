@@ -55,7 +55,7 @@ class BaseLLMProvider {
 | `groq` | `openai` | cloud | `llama-3.3-70b-versatile` | Model-name regex |
 | `minimax` | `openai` | cloud | `minimax-m2.7` | Model-name regex |
 | `alibaba` (Qwen) | `openai` | cloud | `qwen-max` | Model-name regex |
-| `openrouter` | `openai` | router | `stepfun/step-3.7-flash` | Model-name regex |
+| `openrouter` | `openai` | router | `openrouter/free` | Model-name regex |
 
 ### Local Providers
 

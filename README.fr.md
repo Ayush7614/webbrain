@@ -25,7 +25,7 @@ Agent de navigation IA open source pour Chrome et Firefox. Discutez avec n'impor
   - **Google Gemini**, **Mistral AI**, **DeepSeek**, **xAI Grok**, **Groq**
   - **MiniMax**, **Alibaba Cloud (Qwen)**
   - **Cloudflare Workers AI**, **Nvidia NIM**
-  - **OpenRouter** (modèle par défaut : `stepfun/step-3.7-flash` ; accès à plus de 100 modèles)
+  - **OpenRouter** (modèle par défaut : `openrouter/free` ; accès à plus de 100 modèles)
 - **Assistant d'intégration** — Visite guidée au premier lancement couvrant la sécurité du mode Act et la configuration des fournisseurs
 - **Interface en panneau latéral** — Interface de chat épurée qui accompagne votre navigation
 - **Conversations par onglet** — Chaque onglet possède son propre historique de chat
@@ -122,7 +122,7 @@ Cliquez sur l'icône d'engrenage ou accédez à la page Options de l'extension p
 | Groq | `https://api.groq.com/openai/v1` | Requise | llama-3.3-70b-versatile |
 | MiniMax | `https://api.minimax.chat/v1` | Requise | minimax-m2.7 |
 | Alibaba Cloud (Qwen) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Requise | qwen-max |
-| OpenRouter | `https://openrouter.ai/api/v1` | Requise | stepfun/step-3.7-flash |
+| OpenRouter | `https://openrouter.ai/api/v1` | Requise | openrouter/free |
 
 ## Architecture
 
