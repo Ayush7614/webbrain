@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'ตัวสังเกตการกลายพันธุ์ของ API',
   'st.display.api_mutation_observer.desc': 'สังเกต URL และวิธีการของคำขอ XHR/fetch ในแท็บเดียวกัน เพื่อให้ WebBrain ตรวจจับการกระทำ UI ที่ซ้ำและแนะนำรูปแบบทางลัด API ปิดโดยค่าเริ่มต้น เปิดใช้งานเฉพาะเมื่อตรวจสอบพฤติกรรมทางลัดหรือความหน่วง',
   'st.display.plan_before_act.label': 'วางแผนก่อนดำเนินการ',
-  'st.display.plan_before_act.desc': 'ในโหมดดำเนินการ สร้างแผนที่มีโครงสร้างก่อนเรียกใช้เครื่องมือ ปิดโดยค่าเริ่มต้น โหมดลองดำเนินการต่อโดยไม่มีแผนที่แน่นอนหากการวางแผนล้มเหลว โหมดเข้มงวดจะยกเลิกแทน เพิ่มการเรียก LLM หนึ่งครั้งต่อรอบเมื่อเปิดใช้งาน',
-  'st.display.plan_before_act.try': 'ลองวางแผน',
+  'st.display.plan_before_act.desc': 'ในโหมดดำเนินการ สร้างแผนที่มีโครงสร้างก่อนเรียกใช้เครื่องมือได้ โหมดลองเป็นค่าเริ่มต้น: จะดำเนินการต่อโดยไม่มีแผนที่ปักไว้หากการวางแผนล้มเหลว โหมดเข้มงวดจะยกเลิกแทน เพิ่มการเรียก LLM หนึ่งครั้งต่อรอบเมื่อเปิดการวางแผน',
+  'st.display.plan_before_act.try': 'ลองวางแผน (ค่าเริ่มต้น)',
   'st.display.plan_before_act.strict': 'การวางแผนที่เข้มงวด',
-  'st.display.plan_before_act.off': 'ปิด (ค่าเริ่มต้น)',
+  'st.display.plan_before_act.off': 'ปิด',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.record.full_screen_started_html": "เริ่มบันทึกหน้าจอ/หน้าต่างแล้ว กด <code>Escape</code> สองครั้งใน WebBrain หรือหน้าเบราว์เซอร์เพื่อหยุด หรือใช้ปุ่มหยุดแชร์ของ Chrome",
   "sp.btn.attach": "แนบไฟล์",

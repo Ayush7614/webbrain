@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'Pemerhati mutasi API',
   'st.display.api_mutation_observer.desc': 'Perhatikan URL dan metode permintaan XHR/fetch tab yang sama supaya WebBrain dapat mengesan tindakan UI berulang dan mencadangkan corak pintasan API. Dimatikan secara lalai; aktifkan hanya semasa menyiasat tingkah laku pintasan atau kependaman.',
   'st.display.plan_before_act.label': 'Rancang sebelum Bertindak',
-  'st.display.plan_before_act.desc': 'Dalam mod Bertindak, hasilkan rancangan berstruktur secara pilihan sebelum alatan berjalan. Dimatikan secara lalai. Mod Cuba terus tanpa rancangan tetap jika perancangan gagal; mod Ketat membatalkan sebaliknya. Menambah satu panggilan LLM setiap giliran Bertindak apabila diaktifkan.',
-  'st.display.plan_before_act.try': 'Cuba merancang',
+  'st.display.plan_before_act.desc': 'Dalam mod Bertindak, hasilkan rancangan berstruktur secara pilihan sebelum alatan berjalan. Mod Cuba ialah lalai: ia terus tanpa rancangan tetap jika perancangan gagal; mod Ketat membatalkan sebaliknya. Menambah satu panggilan LLM setiap giliran Bertindak semasa perancangan dihidupkan.',
+  'st.display.plan_before_act.try': 'Cuba perancangan (lalai)',
   'st.display.plan_before_act.strict': 'Perancangan ketat',
-  'st.display.plan_before_act.off': 'Mati (lalai)',
+  'st.display.plan_before_act.off': 'Mati',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.btn.attach": "Lampirkan fail",
   "sp.btn.mic": "Input suara",

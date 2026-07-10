@@ -551,10 +551,10 @@ export default {
   'st.display.api_mutation_observer.label': 'Observador de mutaciones de API',
   'st.display.api_mutation_observer.desc': 'Observa las URLs y métodos de peticiones XHR/fetch en la misma pestaña para que WebBrain pueda detectar acciones repetidas de la interfaz y sugerir patrones de acceso directo por API. Desactivado por defecto; actívalo solo mientras investigas comportamientos de acceso directo o latencia.',
   'st.display.plan_before_act.label': 'Planificar antes de actuar',
-  'st.display.plan_before_act.desc': 'En modo Actuar, genera opcionalmente un plan estructurado antes de ejecutar las herramientas. Desactivado por defecto. El modo Intento continúa sin un plan fijo si la planificación falla; el modo Estricto cancela en su lugar. Añade una llamada al LLM por cada turno de Actuar cuando está activado.',
-  'st.display.plan_before_act.try': 'Intentar planificar',
+  'st.display.plan_before_act.desc': 'En modo Actuar, genera opcionalmente un plan estructurado antes de ejecutar las herramientas. El modo Intento es el predeterminado: continúa sin un plan fijo si la planificación falla; el modo Estricto cancela en su lugar. Añade una llamada al LLM por cada turno de Actuar mientras la planificación está activada.',
+  'st.display.plan_before_act.try': 'Intentar planificar (por defecto)',
   'st.display.plan_before_act.strict': 'Planificación estricta',
-  'st.display.plan_before_act.off': 'Desactivado (por defecto)',
+  'st.display.plan_before_act.off': 'Desactivado',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.btn.attach": "Adjuntar archivo",
   "sp.btn.mic": "Entrada de voz",

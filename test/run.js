@@ -18516,6 +18516,17 @@ test('plan before act: try is default while explicit off is preserved', () => {
     assert.match(html, /<select id="select-plan-review-mode">\s*<option value="confidence"/, `${file} should render confidence review as the first/default option`);
     assert.match(html, /id="range-plan-review-confidence"/, `${file} should expose the confidence threshold slider`);
   }
+  for (const file of [
+    'src/chrome/src/ui/locales/en.js',
+    'src/firefox/src/ui/locales/en.js',
+  ]) {
+    const locale = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.match(locale, /Try mode is the default/, `${file} should describe try planning as the default`);
+    assert.match(locale, /'st\.display\.plan_before_act\.try': 'Try planning \(default\)'/, `${file} should label try planning as default`);
+    assert.match(locale, /'st\.display\.plan_before_act\.off': 'Off'/, `${file} should not label off as default`);
+    assert.doesNotMatch(locale, /plan_before_act\.desc[^\n]*Off by default/, `${file} should not describe plan-before-act as off by default`);
+    assert.doesNotMatch(locale, /plan_before_act\.off': 'Off \(default\)'/, `${file} should not mark off as default`);
+  }
 });
 
 test('settings exposes custom skills tab and packaged skills resource directory', () => {

@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'API 변경 관찰자',
   'st.display.api_mutation_observer.desc': '동일한 탭의 XHR/fetch 요청 URL 및 메서드를 관찰하여 WebBrain이 반복되는 UI 작업을 감지하고 API 바로가기 패턴을 제안할 수 있도록 합니다. 기본적으로 꺼져 있습니다. 바로가기 동작이나 지연 시간을 조사할 때만 활성화하세요.',
   'st.display.plan_before_act.label': '실행 전 계획',
-  'st.display.plan_before_act.desc': 'Act 모드에서 도구 실행 전에 선택적으로 구조화된 계획을 생성합니다. 기본적으로 꺼져 있습니다. 시도 모드는 계획 수립에 실패해도 고정 계획 없이 계속 진행합니다. 엄격 모드는 대신 취소합니다. 활성화하면 Act 턴마다 LLM 호출이 한 번 추가됩니다.',
-  'st.display.plan_before_act.try': '계획 시도',
+  'st.display.plan_before_act.desc': 'Act 모드에서 도구 실행 전에 선택적으로 구조화된 계획을 생성합니다. 시도 모드가 기본값입니다. 계획 수립에 실패하면 고정 계획 없이 계속 진행하고, 엄격 모드는 대신 취소합니다. 계획이 켜져 있는 동안 Act 턴마다 LLM 호출이 한 번 추가됩니다.',
+  'st.display.plan_before_act.try': '계획 시도 (기본값)',
   'st.display.plan_before_act.strict': '엄격한 계획',
-  'st.display.plan_before_act.off': '끄기 (기본값)',
+  'st.display.plan_before_act.off': '끄기',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.btn.attach": "파일 첨부",
   "sp.btn.mic": "음성 입력",

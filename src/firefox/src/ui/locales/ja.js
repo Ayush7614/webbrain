@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'API変更オブザーバー',
   'st.display.api_mutation_observer.desc': '同じタブの XHR/fetch リクエスト URL とメソッドを監視し、WebBrain が繰り返しの UI アクションを検出して API ショートカットパターンを提案できるようにします。デフォルトではオフ。ショートカット動作やレイテンシの調査中のみ有効にしてください。',
   'st.display.plan_before_act.label': '実行前に計画',
-  'st.display.plan_before_act.desc': 'Act モードで、ツール実行前にオプションで構造化された計画を生成します。デフォルトではオフ。試行モードは計画が失敗しても計画なしで続行します。厳格モードは代わりにキャンセルします。有効にすると Act ターンごとに 1 回の LLM 呼び出しが追加されます。',
-  'st.display.plan_before_act.try': '計画を試す',
+  'st.display.plan_before_act.desc': 'Act モードで、ツール実行前にオプションで構造化された計画を生成します。試行モードがデフォルトです。計画が失敗しても固定計画なしで続行し、厳格モードは代わりにキャンセルします。計画がオンの間、Act ターンごとに 1 回の LLM 呼び出しが追加されます。',
+  'st.display.plan_before_act.try': '計画を試す（デフォルト）',
   'st.display.plan_before_act.strict': '厳格な計画',
-  'st.display.plan_before_act.off': 'オフ（デフォルト）',
+  'st.display.plan_before_act.off': 'オフ',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.btn.attach": "ファイルを添付",
   "sp.btn.mic": "音声入力",

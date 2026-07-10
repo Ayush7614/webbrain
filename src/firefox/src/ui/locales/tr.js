@@ -554,10 +554,10 @@ export default {
   'st.display.api_mutation_observer.label': 'API mutasyon gözlemcisi',
   'st.display.api_mutation_observer.desc': 'WebBrain\'in tekrarlanan UI eylemlerini tespit etmesi ve API kısayol kalıpları önermesi için aynı sekmedeki XHR/fetch istek URL\'lerini ve yöntemlerini gözlemle. Varsayılan olarak kapalı; yalnızca kısayol davranışını veya gecikmeyi araştırırken etkinleştir.',
   'st.display.plan_before_act.label': 'Eylemden önce planla',
-  'st.display.plan_before_act.desc': 'Aktif modunda, araçlar çalışmadan önce isteğe bağlı olarak yapılandırılmış bir plan oluştur. Varsayılan olarak kapalı. Dene modu planlama başarısız olursa sabit bir plan olmadan devam eder; katı mod iptal eder. Etkinleştirildiğinde her Aktif turda bir LLM çağrısı ekler.',
-  'st.display.plan_before_act.try': 'Planlamayı dene',
+  'st.display.plan_before_act.desc': 'Aktif modunda, araçlar çalışmadan önce isteğe bağlı olarak yapılandırılmış bir plan oluştur. Dene modu varsayılandır: planlama başarısız olursa sabit bir plan olmadan devam eder; katı mod iptal eder. Planlama açıkken her Aktif turda bir LLM çağrısı ekler.',
+  'st.display.plan_before_act.try': 'Planlamayı dene (varsayılan)',
   'st.display.plan_before_act.strict': 'Katı planlama',
-  'st.display.plan_before_act.off': 'Kapalı (varsayılan)',
+  'st.display.plan_before_act.off': 'Kapalı',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.btn.attach": "Dosya ekle",
   "sp.btn.mic": "Ses girişi",

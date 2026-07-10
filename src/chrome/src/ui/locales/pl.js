@@ -509,10 +509,10 @@ export default {
   'st.display.api_mutation_observer.label': 'Obserwator mutacji API',
   'st.display.api_mutation_observer.desc': 'Obserwuj URL-e i metody żądań XHR/fetch w tej samej karcie, aby WebBrain mógł wykrywać powtarzające się akcje UI i sugerować wzorce skrótów API. Wyłączone domyślnie; włącz tylko podczas badania zachowania skrótów lub opóźnień.',
   'st.display.plan_before_act.label': 'Planuj przed działaniem',
-  'st.display.plan_before_act.desc': 'W trybie Działania opcjonalnie generuj strukturalny plan przed uruchomieniem narzędzi. Wyłączone domyślnie. Tryb Próby kontynuuje bez przypiętego planu, jeśli planowanie się nie powiedzie; tryb Ścisły anuluje zamiast tego. Dodaje jedno wywołanie LLM na turę Działania, gdy włączone.',
-  'st.display.plan_before_act.try': 'Spróbuj planowania',
+  'st.display.plan_before_act.desc': 'W trybie Działania opcjonalnie generuj strukturalny plan przed uruchomieniem narzędzi. Tryb Próby jest domyślny: kontynuuje bez przypiętego planu, jeśli planowanie się nie powiedzie; tryb Ścisły anuluje zamiast tego. Dodaje jedno wywołanie LLM na turę Działania, gdy planowanie jest włączone.',
+  'st.display.plan_before_act.try': 'Spróbuj planowania (domyślnie)',
   'st.display.plan_before_act.strict': 'Ścisłe planowanie',
-  'st.display.plan_before_act.off': 'Wyłączone (domyślnie)',
+  'st.display.plan_before_act.off': 'Wyłączone',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.record.full_screen_started_html": "Rozpoczęto nagrywanie ekranu/okna. Naciśnij dwa razy <code>Escape</code> w WebBrain lub na stronie przeglądarki, aby zatrzymać, albo użyj kontrolki Chrome Zatrzymaj udostępnianie.",
   "sp.btn.attach": "Dołącz plik",

@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'Tagamasid ng mutasyon ng API',
   'st.display.api_mutation_observer.desc': 'Obserbahan ang mga URL at paraan ng XHR/fetch request sa parehong tab upang matukoy ng WebBrain ang mga paulit-ulit na aksyon sa UI at magmungkahi ng mga pattern ng shortcut sa API. Naka-off bilang default; paganahin lamang habang iniimbestigahan ang pag-uugali ng shortcut o latency.',
   'st.display.plan_before_act.label': 'Magplano bago Kumilos',
-  'st.display.plan_before_act.desc': 'Sa mode na Kumilos, opsyonal na bumuo ng nakabalangkas na plano bago tumakbo ang mga tool. Naka-off bilang default. Ang mode na Subukan ay nagpapatuloy nang walang naka-pin na plano kung nabigo ang pagpaplano; ang mahigpit na mode ay kanselahan sa halip. Nagdaragdag ng isang tawag sa LLM bawat turno ng Kumilos kapag pinagana.',
-  'st.display.plan_before_act.try': 'Subukan ang pagpaplano',
+  'st.display.plan_before_act.desc': 'Sa mode na Kumilos, opsyonal na bumuo ng nakabalangkas na plano bago tumakbo ang mga tool. Ang mode na Subukan ang default: nagpapatuloy ito nang walang naka-pin na plano kung nabigo ang pagpaplano; ang mahigpit na mode ay magkakansela sa halip. Nagdaragdag ng isang tawag sa LLM bawat turno ng Kumilos habang naka-on ang pagpaplano.',
+  'st.display.plan_before_act.try': 'Subukan ang pagpaplano (default)',
   'st.display.plan_before_act.strict': 'Mahigpit na pagpaplano',
-  'st.display.plan_before_act.off': 'Naka-off (default)',
+  'st.display.plan_before_act.off': 'Naka-off',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.record.full_screen_started_html": "Nagsimula na ang pag-record ng screen/window. Pindutin ang <code>Escape</code> nang dalawang beses sa WebBrain o sa pahina ng browser para huminto, o gamitin ang Stop sharing control ng Chrome.",
   "sp.btn.attach": "Mag-attach ng file",

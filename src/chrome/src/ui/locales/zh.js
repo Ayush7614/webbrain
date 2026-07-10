@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'API 变更观察器',
   'st.display.api_mutation_observer.desc': '观察同标签页中的 XHR/fetch 请求 URL 和方法，以便 WebBrain 可以检测重复的界面操作并建议 API 快捷模式。默认关闭；仅在调查快捷行为或延迟时启用。',
   'st.display.plan_before_act.label': '在执行前规划',
-  'st.display.plan_before_act.desc': '在操作模式下，可选择在工具运行前生成结构化计划。默认关闭。尝试模式在规划失败时继续而不固定计划；严格模式则取消。启用时每个操作轮次增加一次 LLM 调用。',
-  'st.display.plan_before_act.try': '尝试规划',
+  'st.display.plan_before_act.desc': '在操作模式下，可选择在工具运行前生成结构化计划。尝试模式为默认：如果规划失败，它会在不固定计划的情况下继续；严格模式则取消。规划开启时，每个操作轮次增加一次 LLM 调用。',
+  'st.display.plan_before_act.try': '尝试规划（默认）',
   'st.display.plan_before_act.strict': '严格规划',
-  'st.display.plan_before_act.off': '关闭（默认）',
+  'st.display.plan_before_act.off': '关闭',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.record.full_screen_started_html": "屏幕/窗口录制已开始。要停止，请在 WebBrain 或浏览器页面中按两次 <code>Escape</code>，或使用 Chrome 的停止共享控件。",
   "sp.btn.attach": "附加文件",

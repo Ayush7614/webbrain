@@ -549,10 +549,10 @@ export default {
   'st.display.api_mutation_observer.label': 'مراقب تحولات API',
   'st.display.api_mutation_observer.desc': 'مراقبة عناوين URL وطرق طلبات XHR/fetch في نفس التبويب ليتمكن WebBrain من اكتشاف إجراءات الواجهة المتكررة واقتراح أنماط اختصارات API. معطل افتراضياً؛ قم بتفعيله فقط أثناء التحقيق في سلوك الاختصار أو زمن الاستجابة.',
   'st.display.plan_before_act.label': 'التخطيط قبل التنفيذ',
-  'st.display.plan_before_act.desc': 'في وضع التنفيذ، يمكن إنشاء خطة منظمة قبل تشغيل الأدوات. معطل افتراضياً. وضع المحاولة يستمر بدون خطة إذا فشل التخطيط؛ الوضع الصارم يلغي بدلاً من ذلك. يضيف استدعاء LLM واحد لكل دورة تنفيذ عند التفعيل.',
-  'st.display.plan_before_act.try': 'محاولة التخطيط',
+  'st.display.plan_before_act.desc': 'في وضع التنفيذ، يمكن إنشاء خطة منظمة قبل تشغيل الأدوات. وضع المحاولة هو الافتراضي: يستمر بدون خطة مثبتة إذا فشل التخطيط؛ الوضع الصارم يلغي بدلاً من ذلك. يضيف استدعاء LLM واحد لكل دورة تنفيذ أثناء تشغيل التخطيط.',
+  'st.display.plan_before_act.try': 'محاولة التخطيط (افتراضياً)',
   'st.display.plan_before_act.strict': 'تخطيط صارم',
-  'st.display.plan_before_act.off': 'معطل (افتراضياً)',
+  'st.display.plan_before_act.off': 'معطل',
   // --- Recording, attachments, queue, progress, and voice input ---
   "sp.record.full_screen_started_html": "بدأ تسجيل الشاشة/النافذة. اضغط على <code>Escape</code> مرتين في WebBrain أو في صفحة المتصفح للإيقاف، أو استخدم زر إيقاف المشاركة في Chrome.",
   "sp.btn.attach": "إرفاق ملف",
