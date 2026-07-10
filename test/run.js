@@ -19986,6 +19986,16 @@ test('profile sync ignores dummy local keys while preserving credentialless loca
   assert.equal(vault.activeProvider, 'openai');
 });
 
+test('profile sync preserves remote auxiliary providers when local legacy values are null', async () => {
+  const { mergeProfileVaults } = await import(
+    'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
+  );
+  const local = { providers: {}, auxiliaryProviders: { visionModel: null, transcriptionModel: null }, profile: {}, memory: { records: [] }, tombstones: {}, meta: {} };
+  const remote = { providers: {}, auxiliaryProviders: { visionModel: { apiKey: 'vision-secret' }, transcriptionModel: { apiKey: 'speech-secret' } }, profile: {}, memory: { records: [] }, tombstones: {}, meta: {} };
+  const { vault } = mergeProfileVaults(local, remote);
+  assert.deepEqual(vault.auxiliaryProviders, remote.auxiliaryProviders);
+});
+
 test('profile sync password change uploads a vault encrypted with the new password', async () => {
   const { ProfileSyncManager, decryptProfileVault } = await import(
     'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
@@ -20049,6 +20059,22 @@ test('profile sync serializes metadata updates and re-reads local state before a
   await manager.sync();
   assert.equal(applied.providers.openai.apiKey, 'new-local');
   assert.equal((await decryptProfileVault(uploaded, password)).payload.providers.openai.apiKey, 'new-local');
+});
+
+test('profile sync runs a follow-up pass when another sync joins an upload', async () => {
+  const { ProfileSyncManager } = await import(
+    'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
+  );
+  const manager = new ProfileSyncManager({});
+  let release;
+  let runs = 0;
+  manager.runSync = async () => { runs++; if (runs === 1) await new Promise(resolve => { release = resolve; }); return { runs }; };
+  const first = manager.sync();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const joined = manager.sync();
+  release();
+  await Promise.all([first, joined]);
+  assert.equal(runs, 2);
 });
 
 await run();

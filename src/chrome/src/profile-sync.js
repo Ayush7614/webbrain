@@ -95,7 +95,10 @@ function mergeLegacyProviderState(local, remote, conflicts) {
   return {
     providers,
     activeProvider: remoteActiveHasCredentials && !localActiveHasCredentials ? remote.activeProvider : (local.activeProvider || remote.activeProvider || ''),
-    auxiliaryProviders: { ...(remote.auxiliaryProviders || {}), ...(local.auxiliaryProviders || {}) },
+    auxiliaryProviders: {
+      visionModel: local.auxiliaryProviders?.visionModel ?? remote.auxiliaryProviders?.visionModel ?? null,
+      transcriptionModel: local.auxiliaryProviders?.transcriptionModel ?? remote.auxiliaryProviders?.transcriptionModel ?? null,
+    },
   };
 }
 
@@ -131,7 +134,7 @@ export function mergeProfileVaults(local, remote) {
 }
 
 export class ProfileSyncManager {
-  constructor(storage) { this.storage = storage; this.password = null; this.key = null; this.envelope = null; this.revision = null; this.timer = null; this.applying = false; this.status = 'disabled'; this.changeQueue = Promise.resolve(); this.syncPromise = null; }
+  constructor(storage) { this.storage = storage; this.password = null; this.key = null; this.envelope = null; this.revision = null; this.timer = null; this.applying = false; this.status = 'disabled'; this.changeQueue = Promise.resolve(); this.syncPromise = null; this.syncAgain = false; }
   async state() { const s = await this.storage.get([PROFILE_SYNC_KEYS.enabled, PROFILE_SYNC_KEYS.token]); const enabled = s[PROFILE_SYNC_KEYS.enabled] === true; return { enabled, authenticated: !!s[PROFILE_SYNC_KEYS.token], unlocked: !!this.password, status: enabled && !this.password && this.status === 'disabled' ? 'locked' : this.status, revision: this.revision }; }
   async localVault() {
     const s = await this.storage.get([...PROFILE_SYNC_DATA_KEYS, PROFILE_SYNC_KEYS.metadata]); const meta = s[PROFILE_SYNC_KEYS.metadata] || {};
@@ -172,8 +175,13 @@ export class ProfileSyncManager {
   schedule() { if (this.applying || !this.password) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.sync().catch((e) => { this.status = [402, 403].includes(e.status) ? 'subscription' : e instanceof TypeError ? 'offline' : 'error'; }), 1500); }
   async apply(vault, conflicts) { this.applying = true; try { await this.storage.set({ [USER_MEMORY_STORAGE_KEY]: vault.memory, providers: vault.providers, activeProvider: vault.activeProvider, visionModel: vault.auxiliaryProviders?.visionModel || null, transcriptionModel: vault.auxiliaryProviders?.transcriptionModel || null, profileEnabled: vault.profile.enabled, profileText: vault.profile.text, [PROFILE_SYNC_KEYS.metadata]: { ...vault.meta, tombstones: vault.tombstones }, [PROFILE_SYNC_KEYS.recovery]: conflicts }); } finally { this.applying = false; } }
   sync(options = {}) {
-    if (this.syncPromise) return this.syncPromise;
-    this.syncPromise = this.runSync(options).finally(() => { this.syncPromise = null; });
+    if (this.syncPromise) { this.syncAgain = true; return this.syncPromise; }
+    this.syncAgain = false;
+    this.syncPromise = (async () => {
+      let result = await this.runSync(options);
+      while (this.syncAgain) { this.syncAgain = false; result = await this.runSync(); }
+      return result;
+    })().finally(() => { this.syncPromise = null; });
     return this.syncPromise;
   }
   async runSync({ create = false } = {}) {
