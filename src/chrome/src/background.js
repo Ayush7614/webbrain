@@ -1367,10 +1367,15 @@ async function handleMessage(msg, sender) {
       return { ok: true, ...(await profileSync.authStatus(msg.challengeId, msg.verifier)) };
     case 'profile_sync_unlock': {
       await chrome.storage.local.set({ [PROFILE_SYNC_KEYS.enabled]: true });
-      return { ok: true, ...(await profileSync.unlock(String(msg.password || ''), !!msg.create)) };
+      const state = await profileSync.unlock(String(msg.password || ''), !!msg.create);
+      await providerManager.load();
+      return { ok: true, ...state };
     }
-    case 'profile_sync_now':
-      return { ok: true, ...(await profileSync.sync()) };
+    case 'profile_sync_now': {
+      const state = await profileSync.sync();
+      await providerManager.load();
+      return { ok: true, ...state };
+    }
     case 'profile_sync_lock':
       profileSync.lock(); return { ok: true, ...(await profileSync.state()) };
     case 'profile_sync_change_password':

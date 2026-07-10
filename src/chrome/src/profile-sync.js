@@ -58,9 +58,7 @@ function newer(local, remote, localAt, remoteAt, conflicts, name) {
   // device's first unlock, prefer that established cloud value only when
   // local state is genuinely empty/default. Meaningful legacy local state
   // remains the tie winner and the remote variant is retained as a conflict.
-  const localIsEmpty = name === 'providers'
-    ? Object.keys(local || {}).length === 0 || (!hasProviderCredentials(local) && hasProviderCredentials(remote))
-    : name === 'profile'
+  const localIsEmpty = name === 'profile'
       ? !local?.enabled && !String(local?.text || '').trim()
       : local == null || local === '';
   if (localAt === 0 && remoteAt === 0 && localIsEmpty) return remote;
@@ -69,25 +67,48 @@ function newer(local, remote, localAt, remoteAt, conflicts, name) {
 }
 
 function hasProviderCredentials(providers) {
+  const dummyKeys = new Set(['ollama', 'lm-studio']);
   const visit = value => {
     if (!value || typeof value !== 'object') return false;
     return Object.entries(value).some(([key, child]) => {
       const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
       const credentialField = normalized.includes('secret') || normalized.includes('password') || normalized.includes('token')
         || (normalized.includes('key') && !normalized.endsWith('url'));
-      return credentialField && typeof child === 'string' && child.length > 0 || visit(child);
+      return credentialField && typeof child === 'string' && child.length > 0 && !dummyKeys.has(child) || visit(child);
     });
   };
   return visit(providers);
+}
+
+function mergeLegacyProviderState(local, remote, conflicts) {
+  const providers = structuredClone(remote.providers || {});
+  for (const [id, localConfig] of Object.entries(local.providers || {})) {
+    const remoteConfig = providers[id];
+    if (remoteConfig === undefined || stable(localConfig) === stable(remoteConfig)) providers[id] = localConfig;
+    else {
+      conflicts.push({ dataset: `providers.${id}`, local: localConfig, remote: remoteConfig, at: Date.now() });
+      if (hasProviderCredentials(localConfig) || !hasProviderCredentials(remoteConfig)) providers[id] = localConfig;
+    }
+  }
+  const localActiveHasCredentials = hasProviderCredentials((local.providers || {})[local.activeProvider]);
+  const remoteActiveHasCredentials = hasProviderCredentials((remote.providers || {})[remote.activeProvider]);
+  return {
+    providers,
+    activeProvider: remoteActiveHasCredentials && !localActiveHasCredentials ? remote.activeProvider : (local.activeProvider || remote.activeProvider || ''),
+    auxiliaryProviders: { ...(remote.auxiliaryProviders || {}), ...(local.auxiliaryProviders || {}) },
+  };
 }
 
 export function mergeProfileVaults(local, remote) {
   const conflicts = [];
   const out = structuredClone(local);
   const lm = local.meta || {}, rm = remote.meta || {};
-  out.providers = newer(local.providers || {}, remote.providers || {}, lm.providersAt || 0, rm.providersAt || 0, conflicts, 'providers');
-  out.activeProvider = newer(local.activeProvider || '', remote.activeProvider || '', lm.providersAt || 0, rm.providersAt || 0, conflicts, 'providers');
-  out.auxiliaryProviders = newer(local.auxiliaryProviders || {}, remote.auxiliaryProviders || {}, lm.providersAt || 0, rm.providersAt || 0, conflicts, 'providers');
+  const providerState = (lm.providersAt || 0) === 0 && (rm.providersAt || 0) === 0
+    ? mergeLegacyProviderState(local, remote, conflicts)
+    : newer({ providers: local.providers || {}, activeProvider: local.activeProvider || '', auxiliaryProviders: local.auxiliaryProviders || {} }, { providers: remote.providers || {}, activeProvider: remote.activeProvider || '', auxiliaryProviders: remote.auxiliaryProviders || {} }, lm.providersAt || 0, rm.providersAt || 0, conflicts, 'providers');
+  out.providers = providerState.providers;
+  out.activeProvider = providerState.activeProvider;
+  out.auxiliaryProviders = providerState.auxiliaryProviders;
   out.profile = newer(local.profile || {}, remote.profile || {}, lm.profileAt || 0, rm.profileAt || 0, conflicts, 'profile');
   const byId = new Map();
   for (const record of [...(remote.memory?.records || []), ...(local.memory?.records || [])]) {

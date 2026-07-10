@@ -19958,10 +19958,9 @@ test('profile sync preserves meaningful local legacy data when metadata ties at 
   const local = { providers: { openai: { apiKey: 'local-secret' } }, activeProvider: 'openai', profile: { enabled: true, text: 'local profile' }, memory: { records: [] }, tombstones: {}, meta: {} };
   const remote = { providers: { anthropic: { apiKey: 'remote-secret' } }, activeProvider: 'anthropic', profile: { enabled: true, text: 'remote profile' }, memory: { records: [] }, tombstones: {}, meta: {} };
   const { vault, conflicts } = mergeProfileVaults(local, remote);
-  assert.deepEqual(vault.providers, local.providers);
+  assert.deepEqual(vault.providers, { ...remote.providers, ...local.providers });
   assert.equal(vault.activeProvider, 'openai');
   assert.deepEqual(vault.profile, local.profile);
-  assert.equal(conflicts.some(conflict => conflict.dataset === 'providers'), true);
   assert.equal(conflicts.some(conflict => conflict.dataset === 'profile'), true);
 });
 
@@ -19973,6 +19972,18 @@ test('profile sync treats saved credential-empty provider defaults as empty on l
   const remote = { providers: { openai: { apiKey: 'remote-secret', model: 'custom' } }, activeProvider: 'openai', profile: { enabled: false, text: '' }, memory: { records: [] }, tombstones: {}, meta: {} };
   const { vault } = mergeProfileVaults(local, remote);
   assert.deepEqual(vault.providers, remote.providers);
+});
+
+test('profile sync ignores dummy local keys while preserving credentialless local endpoints', async () => {
+  const { mergeProfileVaults } = await import(
+    'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
+  );
+  const local = { providers: { ollama: { apiKey: 'ollama', baseUrl: 'http://remote-lan:11434/v1', model: 'custom-local' } }, activeProvider: 'ollama', profile: {}, memory: { records: [] }, tombstones: {}, meta: {} };
+  const remote = { providers: { openai: { apiKey: 'remote-secret' } }, activeProvider: 'openai', profile: {}, memory: { records: [] }, tombstones: {}, meta: {} };
+  const { vault } = mergeProfileVaults(local, remote);
+  assert.deepEqual(vault.providers.ollama, local.providers.ollama);
+  assert.deepEqual(vault.providers.openai, remote.providers.openai);
+  assert.equal(vault.activeProvider, 'openai');
 });
 
 test('profile sync password change uploads a vault encrypted with the new password', async () => {

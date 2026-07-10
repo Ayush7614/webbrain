@@ -124,7 +124,8 @@ The only outbound HTTP requests are:
 3. **Content fetches** via `fetch_url` / `research_url` tools (to URLs the agent is asked to fetch)
 4. **Skill tool calls** (to the HTTPS endpoint(s) declared by enabled skills — see "Bundled Skills" below for the one enabled by default)
 5. **User memory extraction calls** (only if auto-learn is enabled; sent to the configured LLM provider after a completed turn)
-6. **Slash-driven tab/screen recording** creates no outbound traffic (the .webm is saved to the Downloads folder via `chrome.downloads.download`)
+6. **Encrypted Cloud Sync calls** to `https://api.webbrain.one/v1/sync` (only after a subscriber explicitly enables sync; vault content is encrypted before upload)
+7. **Slash-driven tab/screen recording** creates no outbound traffic (the .webm is saved to the Downloads folder via `chrome.downloads.download`)
 
 The opt-in `webRequest` API shortcut observer is off by default and does not
 create outbound requests; when enabled, it observes replay metadata for requests
