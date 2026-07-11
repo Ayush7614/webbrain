@@ -27,7 +27,7 @@ import {
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '22.3.1';
+const EXT_VERSION = '22.3.3';
 
 const providersContainer = document.getElementById('providers');
 const displaySettings = document.getElementById('display-settings');
@@ -259,7 +259,10 @@ const MAX_AGENT_STEPS_DEFAULT = 130;
 const MAX_AGENT_STEPS_UNLIMITED_SENTINEL = 200;
 const PLAN_BEFORE_ACT_MODES = new Set(['try', 'strict', 'off']);
 const PLAN_REVIEW_MODES = new Set(['confidence', 'always', 'never']);
-const PLAN_REVIEW_CONFIDENCE_DEFAULT = 90;
+// Product default: auto-approve plans at 75% confidence to reduce review stops.
+// Planner prompt still tells the LLM to reserve 90%+ for straightforward plans;
+// that intentional gap keeps model scoring conservative without over-pausing.
+const PLAN_REVIEW_CONFIDENCE_DEFAULT = 75;
 
 function normalizePlanBeforeActMode(stored = {}) {
   if (PLAN_BEFORE_ACT_MODES.has(stored.planBeforeActMode)) return stored.planBeforeActMode;
