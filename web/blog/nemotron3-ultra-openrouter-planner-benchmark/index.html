@@ -38,6 +38,7 @@
   <link rel="alternate" hreflang="th" href="https://webbrain.one/th/">
   <link rel="alternate" hreflang="ms" href="https://webbrain.one/ms/">
   <link rel="alternate" hreflang="tl" href="https://webbrain.one/tl/">
+  <link rel="alternate" hreflang="he" href="https://webbrain.one/he/">
   <link rel="alternate" hreflang="x-default" href="https://webbrain.one/">
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -492,7 +493,7 @@
         <a href="/">Home</a>
         <a href="/docs/">Docs</a>
         <a href="/blog">Blog</a>
-        <select class="lang-dropdown" id="lang-dropdown" aria-label="Select language" data-current="en"><option value="en">English</option><option value="es">Espanol</option><option value="fr">Francais</option><option value="tr">Turkce</option><option value="zh">Chinese</option><option value="ru">Russian</option><option value="uk">Ukrainian</option><option value="ar">Arabic</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="id">Bahasa Indonesia</option><option value="th">Thai</option><option value="ms">Bahasa Melayu</option><option value="tl">Filipino</option></select>
+        <select class="lang-dropdown" id="lang-dropdown" aria-label="Select language" data-current="en"><option value="en">English</option><option value="es">Español</option><option value="fr">Français</option><option value="tr">Türkçe</option><option value="zh">中文</option><option value="ru">Русский</option><option value="uk">Українська</option><option value="ar">العربية</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="id">Bahasa Indonesia</option><option value="th">ไทย</option><option value="ms">Bahasa Melayu</option><option value="tl">Filipino</option><option value="he">עברית</option></select>
         <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Toggle light / dark theme" title="Toggle light / dark theme">
           <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="4"/>
@@ -601,7 +602,7 @@
   </script>
   <script>
     (function () {
-      const LOCALES = ["en","es","fr","tr","zh","ru","uk","ar","ja","ko","id","th","ms","tl"];
+      const LOCALES = ["en","es","fr","tr","zh","ru","uk","ar","ja","ko","id","th","ms","tl","he"];
       const sel = document.getElementById('lang-dropdown');
       if (!sel) return;
       sel.value = sel.dataset.current || 'en';

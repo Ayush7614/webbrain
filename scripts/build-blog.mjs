@@ -50,21 +50,24 @@ const TWITTER_IMAGE_PATH = '/twitter-image.png';
 const SOCIAL_IMAGE_WIDTH = 1200;
 const SOCIAL_IMAGE_HEIGHT = 630;
 
+// Labels use each language's own script, matching web/build/template.html's
+// dropdown — keep the two lists in sync when adding a new locale.
 const LOCALES = [
   { code: 'en', label: 'English', path: '/' },
-  { code: 'es', label: 'Espanol', path: '/es/' },
-  { code: 'fr', label: 'Francais', path: '/fr/' },
-  { code: 'tr', label: 'Turkce', path: '/tr/' },
-  { code: 'zh', label: 'Chinese', path: '/zh/' },
-  { code: 'ru', label: 'Russian', path: '/ru/' },
-  { code: 'uk', label: 'Ukrainian', path: '/uk/' },
-  { code: 'ar', label: 'Arabic', path: '/ar/' },
-  { code: 'ja', label: 'Japanese', path: '/ja/' },
-  { code: 'ko', label: 'Korean', path: '/ko/' },
+  { code: 'es', label: 'Español', path: '/es/' },
+  { code: 'fr', label: 'Français', path: '/fr/' },
+  { code: 'tr', label: 'Türkçe', path: '/tr/' },
+  { code: 'zh', label: '中文', path: '/zh/' },
+  { code: 'ru', label: 'Русский', path: '/ru/' },
+  { code: 'uk', label: 'Українська', path: '/uk/' },
+  { code: 'ar', label: 'العربية', path: '/ar/' },
+  { code: 'ja', label: '日本語', path: '/ja/' },
+  { code: 'ko', label: '한국어', path: '/ko/' },
   { code: 'id', label: 'Bahasa Indonesia', path: '/id/' },
-  { code: 'th', label: 'Thai', path: '/th/' },
+  { code: 'th', label: 'ไทย', path: '/th/' },
   { code: 'ms', label: 'Bahasa Melayu', path: '/ms/' },
   { code: 'tl', label: 'Filipino', path: '/tl/' },
+  { code: 'he', label: 'עברית', path: '/he/' },
 ];
 
 function parseArgs(argv) {
