@@ -503,6 +503,7 @@ class LoopDetectorShim {
     this.healthyCallsSinceLoop = new Map();
     this.recentCoordClicks = new Map();
     this.axReadStates = new Map();
+    this.noProgressScrolls = new Map();
   }
   _checkCoordClickLoop(tabId, x, y) {
     const bx = Math.round(x / 5) * 5;
@@ -617,6 +618,43 @@ class LoopDetectorShim {
       state.warned = true;
       return { kind: 'nudge' };
     }
+    return { kind: 'none' };
+  }
+  _noProgressScrollKey(args = {}, result = {}) {
+    const direction = String(args?.direction || '').trim().toLowerCase() || 'unspecified';
+    const refId = String(args?.ref_id || '').trim();
+    if (refId) return `${direction}|ref:${refId}`;
+    const x = Number(args?.x);
+    const y = Number(args?.y);
+    if (args?.x != null && args?.y != null && Number.isFinite(x) && Number.isFinite(y)) {
+      return `${direction}|xy:${Math.round(x)},${Math.round(y)}`;
+    }
+    const origin = result?.originElement;
+    if (origin && typeof origin === 'object') {
+      const rect = origin.rect || {};
+      const text = String(origin.text || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      return `${direction}|origin:${String(result?.origin || '')}:${String(origin.tag || '')}:${String(origin.role || '')}:${Math.round(Number(rect.x) || 0)},${Math.round(Number(rect.y) || 0)},${Math.round(Number(rect.w) || 0)},${Math.round(Number(rect.h) || 0)}:${text}`;
+    }
+    return `${direction}|auto`;
+  }
+  _checkNoProgressScroll(tabId, name, args, result) {
+    if (name !== 'scroll') {
+      if (result?.pageUrlChanged === true) this.noProgressScrolls.delete(tabId);
+      return { kind: 'none' };
+    }
+    if (result?.moved !== false) {
+      this.noProgressScrolls.delete(tabId);
+      return { kind: 'none' };
+    }
+    const key = this._noProgressScrollKey(args, result);
+    const previous = this.noProgressScrolls.get(tabId);
+    const count = previous?.key === key ? previous.count + 1 : 1;
+    this.noProgressScrolls.set(tabId, { key, count });
+    if (count >= 3) {
+      this.noProgressScrolls.delete(tabId);
+      return { kind: 'stop' };
+    }
+    if (count >= 2) return { kind: 'nudge' };
     return { kind: 'none' };
   }
   _detectApiShortcut(tabId, loop, buf) {
@@ -1218,6 +1256,13 @@ test('matches www.github.com', () => {
 test('matches gmail.com under mail.google.com', () => {
   const a = getActiveAdapter('https://mail.google.com/mail/u/0/#inbox');
   assert.equal(a?.name, 'gmail');
+  assert.match(a?.notes || '', /explicitly starts a new email or saves a new draft/i);
+  assert.match(a?.notes || '', /no compose window is open/i);
+  assert.match(a?.notes || '', /click Compose immediately/i);
+  assert.match(a?.notes || '', /Do not inspect the current thread or search the page merely to discover/i);
+  assert.match(a?.notes || '', /picker fails, returns multiple ambiguous matches/i);
+  assert.match(a?.notes || '', /does not apply to reply or forward tasks/i);
+  assert.match(a?.notes || '', /Reply\/Forward controls/i);
   assert.match(a?.notes || '', /already-open compose/i);
   assert.match(a?.notes || '', /named focusable generic\/chip/i);
   assert.match(a?.notes || '', /proceed directly to Subject and Message Body/i);
@@ -1670,6 +1715,116 @@ test('tabs are isolated from each other', () => {
   d._checkLoop(10, 'click', { selector: '#x' }, { success: true });
   const result = d._checkLoop(20, 'click', { selector: '#x' }, { success: true });
   assert.equal(result.kind, 'none');
+});
+
+test('no-progress scroll warns on the second same-target miss and stops on the third', () => {
+  const origin = {
+    origin: 'last_interaction',
+    originElement: {
+      tag: 'p',
+      role: '',
+      text: 'The last visible paragraph',
+      rect: { x: 368, y: 123, w: 594, h: 78 },
+    },
+  };
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    const tab = label === 'chrome' ? 81 : 82;
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', amount: 300 }, { moved: false, ...origin }).kind, 'none', `${label}: first miss`);
+    const warning = agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', amount: 500 }, { moved: false, ...origin });
+    assert.equal(warning.kind, 'nudge', `${label}: second miss should warn despite a changed amount`);
+    assert.match(warning.warning, /Do not repeat this scroll direction/i);
+    const stopped = agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', amount: 700 }, { moved: false, ...origin });
+    assert.equal(stopped.kind, 'stop', `${label}: third miss should stop`);
+    assert.match(stopped.message, /same scroll direction on the same target three times/i);
+  }
+});
+
+test('no-progress scroll is pane-, direction-, tab-, and run-scoped', () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    const tab = 83;
+    const dead = { moved: false };
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_pane_a' }, dead).kind, 'none');
+    assert.equal(agent._checkNoProgressScroll(tab, 'read_page', {}, { success: true }).kind, 'none');
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_pane_a' }, dead).kind, 'nudge', `${label}: an interleaved read must not evade the warning`);
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'up', ref_id: 'ref_pane_a' }, dead).kind, 'none', `${label}: opposite direction is a new recovery path`);
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_pane_b' }, dead).kind, 'none', `${label}: another pane is isolated`);
+    assert.equal(agent._checkNoProgressScroll(tab + 1, 'scroll', { direction: 'down', ref_id: 'ref_pane_b' }, dead).kind, 'none', `${label}: tabs are isolated`);
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_pane_b' }, { moved: true }).kind, 'none');
+    assert.equal(agent.noProgressScrolls.has(tab), false, `${label}: movement should reset the streak`);
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_reused' }, dead).kind, 'none');
+    assert.equal(agent._checkNoProgressScroll(tab, 'click_ax', { ref_id: 'ref_link' }, { success: true, pageUrlChanged: true }).kind, 'none');
+    assert.equal(agent.noProgressScrolls.has(tab), false, `${label}: document navigation should reset the streak`);
+    assert.equal(agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_reused' }, dead).kind, 'none', `${label}: a reused ref on the new page starts fresh`);
+    agent._checkNoProgressScroll(tab, 'scroll', { direction: 'down', ref_id: 'ref_pane_a' }, dead);
+    agent._clearLoopState(tab);
+    assert.equal(agent.noProgressScrolls.has(tab), false, `${label}: run cleanup should reset the streak`);
+  }
+});
+
+test('no-progress scroll enforcement is wired into both agent loops', () => {
+  for (const browserName of ['chrome', 'firefox']) {
+    const source = fs.readFileSync(path.join(ROOT, `src/${browserName}/src/agent/agent.js`), 'utf8');
+    assert.match(source, /const scrollCheck = this\._checkNoProgressScroll\(tabId, fnName, fnArgs, toolResult\)/, `${browserName}: evaluate each result`);
+    assert.match(source, /scrollCheck\.kind === 'stop'/, `${browserName}: stop result must win`);
+    assert.match(source, /scrollCheck\.kind === 'nudge'/, `${browserName}: warning must reach the model`);
+    assert.match(source, /this\.noProgressScrolls\.delete\(tabId\)/, `${browserName}: run cleanup must clear state`);
+  }
+});
+
+test('no-progress scroll stop synthesizes results for the rest of a tool batch', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = label === 'chrome' ? 85 : 86;
+    const messages = [];
+    const executed = [];
+    agent._ensureGateSetting = async () => {};
+    agent._skipPermissionGate = true;
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+    agent.executeTool = async (_tabId, name, args) => {
+      executed.push(args.amount);
+      return {
+        success: true,
+        moved: false,
+        origin: 'last_interaction',
+        originElement: {
+          tag: 'p', role: '', text: 'Last visible paragraph',
+          rect: { x: 100, y: 200, w: 300, h: 40 },
+        },
+      };
+    };
+    const toolCalls = [300, 400, 500, 600].map((amount, index) => ({
+      id: `scroll_${index}`,
+      function: { name: 'scroll', arguments: JSON.stringify({ direction: 'down', amount }) },
+    }));
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      toolCalls,
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['scroll']),
+      1,
+    );
+
+    assert.equal(result.action, 'return', `${label}: the third dead scroll should stop the run`);
+    assert.deepEqual(executed, [300, 400, 500], `${label}: later calls must not execute after stop`);
+    const toolMessages = messages.filter(message => message.role === 'tool');
+    assert.equal(toolMessages.length, toolCalls.length, `${label}: every tool call must receive a result`);
+    const skipped = toolMessages.find(message => message.tool_call_id === 'scroll_3');
+    assert.ok(skipped, `${label}: remaining tool call needs a synthetic result`);
+    assert.deepEqual(JSON.parse(skipped.content), {
+      success: false,
+      skipped: true,
+      error: 'skipped: run stopped by loop detector',
+    });
+  }
 });
 
 test('accessibility-tree ref enumeration nudges at three and stops at six', () => {
@@ -3875,6 +4030,14 @@ test('getToolsForMode: progress_update advertises canonical progress actions', (
     const action = progressUpdate.function.parameters.properties.items.items.properties.action;
     assert.match(action.description, /process_item/);
     assert.doesNotMatch(action.description, /\bscrape\b/);
+  }
+});
+
+test('getToolsForMode: scroll warns against repeating a no-movement path', () => {
+  for (const [label, getTools] of [['chrome', getToolsForModeCh], ['firefox', getToolsForModeFx]]) {
+    const scroll = getTools('act').find(t => t.function.name === 'scroll');
+    assert.ok(scroll, `${label}: scroll tool must be present in act mode`);
+    assert.match(scroll.function.description, /If moved is false, do not repeat the same target and direction/);
   }
 });
 
@@ -19563,6 +19726,9 @@ test('planner: prompt treats page context as untrusted data', () => {
   assert.match(PLANNER_SYSTEM_PROMPT, /ignore previous instructions/);
   assert.match(PLANNER_SYSTEM_PROMPT, /bounded batches/);
   assert.match(PLANNER_SYSTEM_PROMPT, /wait_for_stable pacing/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /Do not invent a prerequisite to discover a raw identifier/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /name-based contact\/entity picker/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /picker fails, returns multiple ambiguous matches/);
   assert.match(PLANNER_SYSTEM_PROMPT, /read: get_accessibility_tree, read_page, extract_data, fetch_url, research_url/);
   assert.match(PLANNER_SYSTEM_PROMPT, /attached JSON\/TXT\/CSV text file content/);
   assert.match(PLANNER_SYSTEM_PROMPT, /brief neutral scratchpad_notes/);

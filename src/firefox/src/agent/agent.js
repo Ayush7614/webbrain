@@ -141,6 +141,10 @@ export class Agent {
     // A model can walk ref_1, ref_2, … forever while every call looks unique
     // to the exact-argument loop detector. Track that semantic read pattern.
     this.axReadStates = new Map();
+    // Scroll calls can keep returning success even when no pane moved. Track
+    // repeated dead-end attempts separately so changing the amount or
+    // interleaving reads cannot evade the generic loop detector.
+    this.noProgressScrolls = new Map();
     // Local screenshot redaction (issue #312). When true, screenshots sent
     // to a Vision endpoint are pixelated over DOM-detected PII regions
     // (form fields + email/phone text) BEFORE leaving the extension. Off by
@@ -667,6 +671,7 @@ export class Agent {
     this.loopNudges.delete(tabId);
     this.healthyCallsSinceLoop.delete(tabId);
     this.axReadStates.delete(tabId);
+    this.noProgressScrolls.delete(tabId);
     this.recentCoordClicks.delete(tabId);
     this.bulkApiMutationClicks.delete(tabId);
     this.bulkApiMutationHints.delete(tabId);
@@ -728,6 +733,67 @@ export class Agent {
       return {
         kind: 'nudge',
         warning: '[ACCESSIBILITY READ LOOP: Stop enumerating sibling or generic ref_ids. If the result has hasMore/nextPage, request exactly that page. If the needed textbox/button is already visible, use set_field, type_ax, or click_ax now. Otherwise switch once to read_page/extract_data or finish with what you have. Do not call another arbitrary ref_id subtree.]',
+      };
+    }
+    return { kind: 'none' };
+  }
+
+  _noProgressScrollKey(args = {}, result = {}) {
+    const direction = String(args?.direction || '').trim().toLowerCase() || 'unspecified';
+    const refId = String(args?.ref_id || '').trim();
+    if (refId) return `${direction}|ref:${refId}`;
+
+    const x = Number(args?.x);
+    const y = Number(args?.y);
+    if (args?.x != null && args?.y != null && Number.isFinite(x) && Number.isFinite(y)) {
+      return `${direction}|xy:${Math.round(x)},${Math.round(y)}`;
+    }
+
+    // For implicit scrolling, distinguish panes using the element that
+    // supplied the runtime's last-interaction origin. This avoids combining
+    // no-movement results from two different panes while deliberately
+    // ignoring `amount`, which is not a meaningful recovery at a hard edge.
+    const origin = result?.originElement;
+    if (origin && typeof origin === 'object') {
+      const rect = origin.rect || {};
+      const text = String(origin.text || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      return `${direction}|origin:${String(result?.origin || '')}:${String(origin.tag || '')}:${String(origin.role || '')}:${Math.round(Number(rect.x) || 0)},${Math.round(Number(rect.y) || 0)},${Math.round(Number(rect.w) || 0)},${Math.round(Number(rect.h) || 0)}:${text}`;
+    }
+    return `${direction}|auto`;
+  }
+
+  _checkNoProgressScroll(tabId, name, args, result) {
+    // Preserve a dead-scroll streak across reads or other unrelated calls;
+    // only a successful scroll or a different scroll target/direction proves
+    // that this particular recovery path changed.
+    if (name !== 'scroll') {
+      // Accessibility refs and coordinate targets are document-scoped. A
+      // successful navigation can reuse the same ref_id/coordinates for a
+      // completely different page, so it must break the old scroll streak.
+      if (result?.pageUrlChanged === true) this.noProgressScrolls.delete(tabId);
+      return { kind: 'none' };
+    }
+    if (result?.moved !== false) {
+      this.noProgressScrolls.delete(tabId);
+      return { kind: 'none' };
+    }
+
+    const key = this._noProgressScrollKey(args, result);
+    const previous = this.noProgressScrolls.get(tabId);
+    const count = previous?.key === key ? previous.count + 1 : 1;
+    this.noProgressScrolls.set(tabId, { key, count });
+
+    if (count >= 3) {
+      this.noProgressScrolls.delete(tabId);
+      return {
+        kind: 'stop',
+        message: 'Stopped: I repeated the same scroll direction on the same target three times, but the page or pane did not move. That scroll surface is already at its limit. Re-read the current view, choose a different pane or direction, act on an element already visible, or ask for help.',
+      };
+    }
+    if (count >= 2) {
+      return {
+        kind: 'nudge',
+        warning: '[NO-PROGRESS SCROLL: The same target did not move twice. Do not repeat this scroll direction or merely change the amount. Re-read the current view, use the opposite direction or a different ref_id/x/y pane, act on an element already visible, or finish.]',
       };
     }
     return { kind: 'none' };
@@ -1914,11 +1980,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         coordCheck = this._checkCoordClickLoop(tabId, fnArgs.x, fnArgs.y);
       }
       const axReadCheck = this._checkAccessibilityReadLoop(tabId, fnName, fnArgs, toolResult);
+      const scrollCheck = this._checkNoProgressScroll(tabId, fnName, fnArgs, toolResult);
 
       let effectiveKind = 'none';
       let nudgeWarning = '';
       let stopMessage = '';
-      if (loopCheck.kind === 'stop' || coordCheck.kind === 'stop' || axReadCheck.kind === 'stop') {
+      if (loopCheck.kind === 'stop' || coordCheck.kind === 'stop' || axReadCheck.kind === 'stop' || scrollCheck.kind === 'stop') {
         effectiveKind = 'stop';
         // Show the model's actual args, not _checkCoordClickLoop's 5px
         // bucket — for fractional inputs like (0.911, 0.331) the bucket
@@ -1926,16 +1993,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // top-left corner, hiding what really happened.
         stopMessage = coordCheck.kind === 'stop'
           ? `Stopped: I clicked at (or near) coordinates (${fnArgs.x}, ${fnArgs.y}) multiple times and the page never responded. That position is hitting empty space, an overlay, or the wrong element. Please give a different instruction or check the page yourself.`
-          : axReadCheck.kind === 'stop'
-            ? axReadCheck.message
-            : loopCheck.message;
-      } else if (loopCheck.kind === 'nudge' || coordCheck.kind === 'nudge' || axReadCheck.kind === 'nudge') {
+          : scrollCheck.kind === 'stop'
+            ? scrollCheck.message
+            : axReadCheck.kind === 'stop'
+              ? axReadCheck.message
+              : loopCheck.message;
+      } else if (loopCheck.kind === 'nudge' || coordCheck.kind === 'nudge' || axReadCheck.kind === 'nudge' || scrollCheck.kind === 'nudge') {
         effectiveKind = 'nudge';
         nudgeWarning = coordCheck.kind === 'nudge'
           ? this._coordinateClickRecoveryWarning(fnArgs, allowedToolNames)
-          : axReadCheck.kind === 'nudge'
-            ? axReadCheck.warning
-            : loopCheck.warning;
+          : scrollCheck.kind === 'nudge'
+            ? scrollCheck.warning
+            : axReadCheck.kind === 'nudge'
+              ? axReadCheck.warning
+              : loopCheck.warning;
       }
 
       // Strip `_attachImage` BEFORE stringifying the tool result — otherwise
@@ -2024,6 +2095,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         });
       }
       if (effectiveKind === 'stop') {
+        // Keep the persisted assistant tool_calls turn structurally valid.
+        // Providers reject a later request when any call lacks a tool result.
+        this._appendSyntheticToolResults(
+          tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
+          () => ({ success: false, skipped: true, error: 'skipped: run stopped by loop detector' })
+        );
         messages.push({ role: 'assistant', content: stopMessage });
         onUpdate('text', { content: stopMessage });
         onUpdate('error', { message: 'Stuck in a loop. Stopped.' });

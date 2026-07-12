@@ -44,6 +44,7 @@ Rules:
   schedule: schedule_task (future/recurring work the user explicitly asked for), schedule_resume (pause CURRENT run blocked on external event)
   finish: done
 - For repeated same-kind UI mutations (for example following many users), plan visible UI first with bounded batches, verification, progress_update, and wait_for_stable pacing; do not plan one huge same-shape click/tool batch.
+- Do not invent a prerequisite to discover a raw identifier (email address, account ID, username, or similar) when the target UI provides a name-based contact/entity picker and the user already supplied a human-readable name. Plan to use the picker first. Inspect surrounding pages or messages for the raw identifier only if the picker fails, returns multiple ambiguous matches, or the user explicitly asked for the identifier itself.
 - Set confidence from 0.0 to 1.0 for how clear and safe this plan is. Use 0.90+ only when the task, page state, and next steps are straightforward; use lower scores for ambiguity, destructive changes, payments, credentials, bulk mutations, or uncertain page state.
 - scheduling.tool = schedule_task when the user wants reminders, monitors, or recurring checks later.
 - scheduling.tool = schedule_resume only when the CURRENT task must pause until an external event (deploy finishes, email arrives) — not for generic waits (use wait_for_stable).

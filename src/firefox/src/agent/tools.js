@@ -267,7 +267,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'scroll',
-      description: 'Scroll in a given direction. By default, targets the nearest scrollable pane around the last interaction/focus when available, then falls back to the window. For split panes, sticky filters, dropdowns, or virtualized lists, pass ref_id from get_accessibility_tree or CSS-pixel x/y inside the pane so the correct container scrolls. The result reports movedWindow/movedContainer plus warnings when no movement or an almost-blank viewport suggests the wrong scroll surface.',
+      description: 'Scroll in a given direction. By default, targets the nearest scrollable pane around the last interaction/focus when available, then falls back to the window. For split panes, sticky filters, dropdowns, or virtualized lists, pass ref_id from get_accessibility_tree or CSS-pixel x/y inside the pane so the correct container scrolls. The result reports movedWindow/movedContainer plus warnings when no movement or an almost-blank viewport suggests the wrong scroll surface. If moved is false, do not repeat the same target and direction; choose a different pane/direction, re-read, act, or finish.',
       parameters: {
         type: 'object',
         properties: {
