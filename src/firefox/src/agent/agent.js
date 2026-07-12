@@ -40,7 +40,7 @@ import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
-import { buildTrustedRuntimeContext } from './runtime-context.js';
+import { buildTrustedRuntimeContext, stripTrustedRuntimeContext } from './runtime-context.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -5420,7 +5420,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let prev = null;
     while (out && out !== prev) {
       prev = out;
-      out = out
+      out = stripTrustedRuntimeContext(out)
         .replace(/^\[Current page context[^\]]*]\s*/i, '')
         .replace(/^\[Recording status:[^\]]*]\s*/i, '')
         .replace(/^\[USER OVERRIDE[^\]]*]\s*/i, '')

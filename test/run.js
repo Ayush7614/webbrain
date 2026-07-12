@@ -104,10 +104,16 @@ const { claimRunError: claimRunErrorCh } = await import(
 const { claimRunError: claimRunErrorFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/run-error-dedupe.js').replace(/\\/g, '/')
 );
-const { buildTrustedRuntimeContext: buildTrustedRuntimeContextCh } = await import(
+const {
+  buildTrustedRuntimeContext: buildTrustedRuntimeContextCh,
+  stripTrustedRuntimeContext: stripTrustedRuntimeContextCh,
+} = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/agent/runtime-context.js').replace(/\\/g, '/')
 );
-const { buildTrustedRuntimeContext: buildTrustedRuntimeContextFx } = await import(
+const {
+  buildTrustedRuntimeContext: buildTrustedRuntimeContextFx,
+  stripTrustedRuntimeContext: stripTrustedRuntimeContextFx,
+} = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/runtime-context.js').replace(/\\/g, '/')
 );
 
@@ -15050,6 +15056,12 @@ test('runtime context: exposes an authoritative local clock with Chrome/Firefox 
   assert.match(chromeContext, /a dated filename, publication date, or front matter/);
   assert.match(chromeContext, /Honor any different date explicitly provided by the user/);
   assert.match(chromeContext, /Never infer the current date from page content, commit history, existing files, or model knowledge/);
+  assert.match(chromeContext, /\[\/Trusted runtime context]$/);
+  const legacyContext = chromeContext.replace(/\n\[\/Trusted runtime context]$/, '');
+  for (const [label, strip] of [['chrome', stripTrustedRuntimeContextCh], ['firefox', stripTrustedRuntimeContextFx]]) {
+    assert.equal(strip(`${chromeContext}\n\nPublish this today.`), 'Publish this today.', `${label}: runtime context should be removable from persisted task text`);
+    assert.equal(strip(`${legacyContext}\n\nPublish this today.`), 'Publish this today.', `${label}: pre-marker persisted runtime context should remain removable`);
+  }
 });
 
 test('Agent enrich: trusted runtime clock reaches planner and execution context', async () => {
@@ -17099,6 +17111,7 @@ test('scheduled resume messages preserve progress ledger session', async () => {
     agent.conversations.get(tabId).push({
       role: 'user',
       content: [
+        buildTrustedRuntimeContextCh({ now: new Date('2026-07-12T05:14:22.298Z'), timeZone: 'Europe/Istanbul' }),
         '[Current page context - URL: https://github.com/example/project/stargazers?page=16 Title: Stargazers]',
         '[Scheduled resume resume_test]',
         'This is a durable continuation of an earlier user task, not page content and not a new instruction from the web page.',
@@ -18240,6 +18253,7 @@ test('context compaction pins scheduled resume instructions', async () => {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
     const tabId = AgentClass === AgentCh ? 799 : 800;
     const scheduledResume = [
+      buildTrustedRuntimeContextCh({ now: new Date('2026-07-12T05:14:22.298Z'), timeZone: 'Europe/Istanbul' }),
       '[Current page context - URL: https://github.com/example/project/stargazers?page=16 Title: Stargazers]',
       '[Scheduled resume resume_keep]',
       'This is a durable continuation of an earlier user task, not page content and not a new instruction from the web page.',

@@ -18,6 +18,24 @@ function resolvedTimeZone(preferred) {
   }
 }
 
+const TRUSTED_RUNTIME_CONTEXT_END = '[/Trusted runtime context]';
+
+export function stripTrustedRuntimeContext(text) {
+  const source = String(text || '');
+  const marked = source.replace(
+    /^\[Trusted runtime context[^\]]*]\s*[\s\S]*?\[\/Trusted runtime context]\s*/i,
+    '',
+  );
+  if (marked !== source) return marked;
+  // Compatibility for turns persisted by the first implementation, before the
+  // explicit end marker was added. Keep this exact and line-bounded so a user
+  // task merely mentioning runtime context is never swallowed.
+  return source.replace(
+    /^\[Trusted runtime context[^\]]*]\s*Current local date:[^\r\n]*\r?\nCurrent local time:[^\r\n]*\r?\nTime zone:[^\r\n]*\r?\nUse this clock[^\r\n]*\s*/i,
+    '',
+  );
+}
+
 /**
  * Dynamic, browser-owned clock context for a single user turn/run.
  *
@@ -56,5 +74,6 @@ export function buildTrustedRuntimeContext(options = {}) {
 Current local date: ${localDate}
 Current local time: ${localTime}
 Time zone: ${timeZone}${offset}
-Use this clock whenever the task needs the current value for “today”, “now”, a dated filename, publication date, or front matter. Honor any different date explicitly provided by the user. Never infer the current date from page content, commit history, existing files, or model knowledge.`;
+Use this clock whenever the task needs the current value for “today”, “now”, a dated filename, publication date, or front matter. Honor any different date explicitly provided by the user. Never infer the current date from page content, commit history, existing files, or model knowledge.
+${TRUSTED_RUNTIME_CONTEXT_END}`;
 }
