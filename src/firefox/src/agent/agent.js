@@ -1619,6 +1619,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return `Coordinates (${args.x}, ${args.y}) look like normalized values (0-1 fractions of the viewport), not CSS pixels. The click tool expects CSS pixels (e.g. {x: 437, y: 156}). Prefer click_ax({ref_id}) after get_accessibility_tree or click({text: "..."}) over pixel clicks. If you must use pixels, ${pixelSourceHint}`;
   }
 
+  _isNavigationProneToolCall(toolName, args = {}) {
+    if (Agent.NAV_PRONE_TOOLS.has(toolName)) return true;
+    if (toolName === 'press_keys') return String(args?.key || '').toLowerCase() === 'enter';
+    if (toolName === 'set_field') return args?.submit === true;
+    return false;
+  }
+
   async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null) {
     let didStateChange = false;
     const navNotices = [];
@@ -1839,8 +1846,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
       }
 
+      // Snapshot URL before nav-prone calls. Some tools are conditional:
+      // Enter and set_field({submit:true}) can navigate, while other key
+      // presses and ordinary field edits should avoid the URL-check delay.
+      const navigationProneCall = this._isNavigationProneToolCall(fnName, fnArgs);
       let beforeUrl = '';
-      if (Agent.NAV_PRONE_TOOLS.has(fnName)) {
+      if (navigationProneCall) {
         beforeUrl = await this._currentUrl(tabId);
       }
 
@@ -1874,7 +1885,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
       }
 
-      if (Agent.NAV_PRONE_TOOLS.has(fnName) && beforeUrl && !toolResult?.error) {
+      if (navigationProneCall && beforeUrl && !toolResult?.error) {
         await new Promise(r => setTimeout(r, 200));
         const afterUrl = await this._currentUrl(tabId);
         const beforeNorm = this._normalizeUrlPath(beforeUrl);

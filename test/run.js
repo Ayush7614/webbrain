@@ -924,10 +924,15 @@ test('ref-id action tools are state changes in both browser agents', () => {
   }
 });
 
-test('click_ax is nav-prone but non-submitting set_field is not', () => {
+test('navigation-prone detection includes only submit-capable key and field calls', () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
     assert.equal(AgentClass.NAV_PRONE_TOOLS.has('click_ax'), true, `${label} missing click_ax from NAV_PRONE_TOOLS`);
     assert.equal(AgentClass.NAV_PRONE_TOOLS.has('set_field'), false, `${label} should not treat set_field as nav-prone`);
+    assert.equal(agent._isNavigationProneToolCall('press_keys', { key: 'Enter' }), true, `${label}: Enter can submit and navigate`);
+    assert.equal(agent._isNavigationProneToolCall('press_keys', { key: 'ArrowDown' }), false, `${label}: arrows should avoid URL probes`);
+    assert.equal(agent._isNavigationProneToolCall('set_field', { submit: true }), true, `${label}: submitting fields can navigate`);
+    assert.equal(agent._isNavigationProneToolCall('set_field', { submit: false }), false, `${label}: ordinary field edits should avoid URL probes`);
   }
 });
 
@@ -1824,6 +1829,54 @@ test('no-progress scroll stop synthesizes results for the rest of a tool batch',
       skipped: true,
       error: 'skipped: run stopped by loop detector',
     });
+  }
+});
+
+test('Enter navigation resets dead-scroll state before refs are reused', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = label === 'chrome' ? 87 : 88;
+    const messages = [];
+    const executed = [];
+    let currentUrl = 'https://example.com/old';
+    agent._ensureGateSetting = async () => {};
+    agent._skipPermissionGate = true;
+    agent._currentUrl = async () => currentUrl;
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      if (name === 'press_keys') {
+        currentUrl = 'https://example.com/new';
+        return { success: true };
+      }
+      return { success: true, moved: false };
+    };
+    const toolCalls = [
+      { id: 'old_scroll', function: { name: 'scroll', arguments: JSON.stringify({ direction: 'down', amount: 300, ref_id: 'ref_5' }) } },
+      { id: 'enter', function: { name: 'press_keys', arguments: JSON.stringify({ key: 'Enter' }) } },
+      { id: 'new_scroll_1', function: { name: 'scroll', arguments: JSON.stringify({ direction: 'down', amount: 400, ref_id: 'ref_5' }) } },
+      { id: 'new_scroll_2', function: { name: 'scroll', arguments: JSON.stringify({ direction: 'down', amount: 500, ref_id: 'ref_5' }) } },
+    ];
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      toolCalls,
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['scroll', 'press_keys']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${label}: reused refs on the new document must not hard-stop`);
+    assert.deepEqual(executed, ['scroll', 'press_keys', 'scroll', 'scroll'], `${label}: the full batch should execute`);
+    assert.equal(agent.noProgressScrolls.get(tabId)?.count, 2, `${label}: only new-document misses should remain`);
+    const secondNewScroll = messages.find(message => message.tool_call_id === 'new_scroll_2');
+    assert.match(secondNewScroll?.content || '', /NO-PROGRESS SCROLL/, `${label}: second miss on the new page should only nudge`);
   }
 });
 
