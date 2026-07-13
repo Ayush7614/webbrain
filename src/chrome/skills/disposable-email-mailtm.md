@@ -30,7 +30,7 @@ Workflow:
 4. Generate an address like `webbrain-<timestamp>-<random>@<domain>` and a strong random password.
 5. If `/allow-api` is enabled, create the Mail.tm account, retain the returned account id, and obtain a bearer token with POST `fetch_url` calls. If it is not enabled, ask the user to enable `/allow-api` before proceeding.
 6. Use the disposable address in the signup or form.
-7. Poll the inbox with the bearer token until the verification email arrives.
+7. Check the inbox once immediately with the bearer token. If the message is absent, do not poll in an active loop or use `wait_for_stable`; use `schedule_resume` for a later inbox check, or ask the user to re-invoke the task later if scheduling is unavailable.
 8. Read the relevant message, extract the verification link or code, then complete the verification.
 9. Before any normal success or failure exit, delete the Mail.tm account with `DELETE /accounts/{account_id}` and the bearer token. Retry once if deletion fails transiently; do not loop.
 10. Report whether deletion succeeded. If it failed, state clearly that the mailbox may remain active.
@@ -84,9 +84,9 @@ Workflow:
 }
 ```
 
-Polling guidance:
+Inbox-wait guidance:
 
-- Poll every 5-10 seconds for up to about 2 minutes unless the site says delivery may take longer.
+- Perform at most one immediate inbox check after signup or a resend. If the message is absent, use `schedule_resume` after a reasonable delivery interval instead of repeatedly calling `fetch_url`.
 - Look for codes in `subject`, `intro`, `text`, and `html` fields.
 - Prefer clicking a verification link when present; otherwise enter the code exactly as shown.
-- If no email arrives, ask the site to resend once, then poll again.
+- If no email arrives after the resumed check, ask the site to resend once, perform one immediate check, then schedule another resume or ask the user to re-invoke later.

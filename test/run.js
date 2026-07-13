@@ -21049,6 +21049,8 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.doesNotMatch(disposable, /Keep the address, password, token/i, `${label}: disposable email skill should not pin secrets`);
     assert.match(disposable, /confirm its hostname matches the signup site/i, `${label}: disposable email skill should validate verification-link destinations`);
     assert.match(disposable, /before every normal success or failure exit/i, `${label}: disposable email skill should clean up failed flows too`);
+    assert.match(disposable, /use `schedule_resume` for a later inbox check/i, `${label}: disposable email skill should schedule external inbox waits`);
+    assert.doesNotMatch(disposable, /Poll every 5-10 seconds/i, `${label}: disposable email skill should not recommend tight polling`);
     assert.match(disposable, /fetch_url/, `${label}: disposable email skill should use fetch_url in normal runs`);
     assert.match(disposable, /\/allow-api/, `${label}: disposable email skill should explain API mutation approval`);
     assert.match(disposable, new RegExp(String.raw`"url": "https:\/\/api\.mail\.tm\/accounts"`), `${label}: disposable email skill should document account creation`);
