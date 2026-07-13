@@ -28,6 +28,17 @@ function packagedFreeSkillzRecord(prefix) {
   };
 }
 
+function packagedMailTmRecord(prefix) {
+  return {
+    id: 'disposable-email-mailtm',
+    name: 'Disposable email (Mail.tm)',
+    sourceType: 'built-in',
+    sourceUrl: 'skills/disposable-email-mailtm.md',
+    content: fs.readFileSync(path.join(ROOT, prefix, 'skills/disposable-email-mailtm.md'), 'utf8'),
+    createdAt: 0,
+  };
+}
+
 function skillContentWithTool(name, endpoint) {
   return `# Test Skill
 Use this test skill.
@@ -77,6 +88,14 @@ const { getActiveAdapter: getActiveAdapterFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/adapters.js').replace(/\\/g, '/')
 );
 
+// trace-export.js is pure ESM — the /export-with-traces serializer, tested here.
+const { tracesToMarkdown } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/trace-export.js').replace(/\\/g, '/')
+);
+const { tracesToMarkdown: tracesToMarkdownFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/trace-export.js').replace(/\\/g, '/')
+);
+
 // network-tools.js references chrome.* inside a try/catch at module load, so
 // it imports cleanly under Node — the storage init silently no-ops and
 // validateFetchUrl / registrableDomain are pure functions.
@@ -98,7 +117,7 @@ const { RunUiJournal: RunUiJournalCh } = await import(
 const { RunUiJournal: RunUiJournalFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/run-ui-journal.js').replace(/\\/g, '/')
 );
-const { createCloudRunController, normalizeCloudBridgeUrl } = await import(
+const { buildCloudPersistenceRows, createCloudRunController, normalizeCloudBridgeUrl } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/cloud-runs.js').replace(/\\/g, '/')
 );
 const { handleDoneJson: handleDoneJsonCh } = await import(
@@ -446,6 +465,7 @@ const {
   DEFAULT_SKILLS_REMOVED_STORAGE_KEY: DEFAULT_SKILLS_REMOVED_STORAGE_KEY_CH,
   DEFAULT_SKILLS_SEEDED_STORAGE_KEY: DEFAULT_SKILLS_SEEDED_STORAGE_KEY_CH,
   MAX_CUSTOM_SKILL_IMPORT_BYTES: MAX_CUSTOM_SKILL_IMPORT_BYTES_CH,
+  PACKAGED_SKILL_SOURCES: PACKAGED_SKILL_SOURCES_CH,
   fetchSkillImportResponse: fetchSkillImportResponseCh,
   normalizeCustomSkills: normalizeCustomSkillsCh,
   normalizeDefaultSkillRemovalIds: normalizeDefaultSkillRemovalIdsCh,
@@ -463,6 +483,7 @@ const {
   DEFAULT_SKILLS_REMOVED_STORAGE_KEY: DEFAULT_SKILLS_REMOVED_STORAGE_KEY_FX,
   DEFAULT_SKILLS_SEEDED_STORAGE_KEY: DEFAULT_SKILLS_SEEDED_STORAGE_KEY_FX,
   MAX_CUSTOM_SKILL_IMPORT_BYTES: MAX_CUSTOM_SKILL_IMPORT_BYTES_FX,
+  PACKAGED_SKILL_SOURCES: PACKAGED_SKILL_SOURCES_FX,
   fetchSkillImportResponse: fetchSkillImportResponseFx,
   normalizeCustomSkills: normalizeCustomSkillsFx,
   normalizeDefaultSkillRemovalIds: normalizeDefaultSkillRemovalIdsFx,
@@ -1346,6 +1367,21 @@ test('matches youtube video URLs and includes transcript guidance', () => {
   assert.match(a?.notes || '', /Do NOT invent transcript URLs/i);
 });
 
+test('matches nytimes.com and scopes article-fetch guidance to that adapter', () => {
+  const articleUrl = 'https://www.nytimes.com/2026/07/12/us/politics/example.html';
+  const chromeAdapter = getActiveAdapter(articleUrl);
+  const firefoxAdapter = getActiveAdapterFx(articleUrl);
+  assert.equal(chromeAdapter?.name, 'nytimes');
+  assert.equal(firefoxAdapter?.name, 'nytimes');
+  assert.equal(firefoxAdapter?.notes, chromeAdapter?.notes);
+  assert.match(chromeAdapter?.notes || '', /fetch_nytimes_article/);
+  assert.match(chromeAdapter?.notes || '', /If the article body is readable[\s\S]*do not call/i);
+  assert.match(chromeAdapter?.notes || '', /only as a fallback[\s\S]*subscription, login, or sign-in wall/i);
+  assert.doesNotMatch(chromeAdapter?.notes || '', /call `fetch_nytimes_article` first/i);
+  assert.match(chromeAdapter?.notes || '', /untrusted article data/i);
+  assert.notEqual(getActiveAdapter('https://nytimes.com.phishing.example/article')?.name, 'nytimes');
+});
+
 test('matches apple store pages', () => {
   assert.equal(getActiveAdapter('https://www.apple.com/shop/buy-mac/macbook-air')?.name, 'apple');
   assert.equal(getActiveAdapter('https://www.apple.com/uk/shop/refurbished')?.name, 'apple');
@@ -1622,6 +1658,134 @@ test('GitHub Enterprise does not match github adapter (strict)', () => {
   // accidentally apply github.com selectors to GHES.
   const a = getActiveAdapter('https://github.example-corp.com/foo/bar');
   assert.equal(a, null);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// /export-with-traces serializer tests
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\ntrace export');
+
+// Fixture uses the REAL trace-event shape (trace/recorder.js): raw structured tool
+// results (NOT <untrusted_page_content>-wrapped), the recorder's { _truncated }
+// marker for a large result, an error event, and a screenshot event that must NOT
+// render. This is the Galaxus run whose messages-only /export (#348) looked clean.
+const TRACE_RUNS = [
+  {
+    run: { runId: 'r1', userMessage: 'Find the cheapest Sony WH-1000XM5', model: 'haiku', status: 'stopped' },
+    events: [
+      { runId: 'r1', seq: 0, kind: 'llm_response', data: { step: 0, phase: 'planner', content: '```json\n{"summary":"find cheapest Sony","steps":["search","filter"]}\n```' } },
+      { runId: 'r1', seq: 1, kind: 'llm_response', data: { step: 1, content: '', toolCalls: [{ id: 'c1', name: 'fetch_url' }] } },
+      { runId: 'r1', seq: 2, kind: 'tool', data: { step: 1, name: 'fetch_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'Blocked (403): Akamai challenge page' } } },
+      { runId: 'r1', seq: 3, kind: 'tool', data: { step: 2, name: 'research_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'challenge' } } },
+      { runId: 'r1', seq: 4, kind: 'tool', data: { step: 3, name: 'research_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'challenge' } } },
+      { runId: 'r1', seq: 5, kind: 'tool', data: { step: 4, name: 'get_accessibility_tree', args: { filter: 'visible' }, result: { _truncated: true, length: 41000, head: 'role heading '.repeat(80) } } },
+      { runId: 'r1', seq: 6, kind: 'error', data: { step: 5, phase: 'loop', message: 'stopped by user' } },
+      { runId: 'r1', seq: 7, kind: 'llm_response', data: { step: 5, content: 'Cheapest option: CHF 203.' } },
+      { runId: 'r1', seq: 8, kind: 'screenshot', data: { step: 2, caption: 'viewport' } },
+    ],
+  },
+];
+
+test('trace export: renders the full tool chain from trace events, in order', () => {
+  const { markdown, turnCount, toolCount } = tracesToMarkdown(TRACE_RUNS);
+  assert.equal(turnCount, 1);
+  assert.equal(toolCount, 4);
+  assert.match(markdown, /# WebBrain Conversation — tool chain/);
+  assert.match(markdown, /## Turn 1 — Find the cheapest Sony WH-1000XM5/);
+  assert.match(markdown, /\*\*Planner:\*\*\n```json\n\{"summary"/);   // planner labelled + fenced, model's ```json language preserved
+  assert.ok(!/```\n```/.test(markdown), 'planner content must not be double-fenced');
+  assert.match(markdown, /Screenshots, notes and vision sub-calls are recorded but not rendered here/);   // honest footer
+  // order preserved, retries kept distinct (no aggregation)
+  assert.ok(markdown.indexOf('fetch_url') < markdown.indexOf('research_url'), 'order preserved');
+  assert.equal((markdown.match(/research_url/g) || []).length, 2, 'each retry emitted, not aggregated');
+  // failure marker works on the RAW structured result (the #348 wrapping bug can't occur here)
+  assert.match(markdown, /fetch_url[^\n]*✗[^\n]*Akamai/);
+  // recorder's large-result marker rendered, not dumped
+  assert.match(markdown, /recorder-truncated, 40\.0kb total/);
+  assert.ok(!markdown.includes('role heading '.repeat(60)), 'huge result body must not be dumped');
+  assert.match(markdown, /⚠️ error \(loop\): stopped by user/);
+  assert.match(markdown, /Cheapest option: CHF 203/);
+  assert.ok(!markdown.includes('viewport'), 'screenshot events omitted');
+});
+
+test('trace export: empty input → empty transcript, zero counts', () => {
+  const r = tracesToMarkdown([]);
+  assert.equal(r.turnCount, 0);
+  assert.equal(r.toolCount, 0);
+});
+
+test('trace export: unserializable tool results do not throw', () => {
+  const circular = { ok: true };
+  circular.self = circular;
+  const { markdown, toolCount } = tracesToMarkdown([{
+    run: { runId: 'r-circ', userMessage: 'circ', model: 'test', status: 'completed' },
+    events: [
+      { runId: 'r-circ', seq: 0, kind: 'tool', data: { name: 'weird', args: circular, result: circular } },
+    ],
+  }]);
+  assert.equal(toolCount, 1);
+  assert.match(markdown, /weird/);
+  assert.match(markdown, /\[object Object\]|unserializable/);
+});
+
+test('trace export: notes appear before the footer', () => {
+  const { markdown } = tracesToMarkdown(TRACE_RUNS, { notes: ['2 of 3 turn(s) could not load their event log.'] });
+  assert.match(markdown, /_Note: 2 of 3 turn\(s\) could not load their event log\._/);
+  assert.ok(
+    markdown.indexOf('_Note:') < markdown.indexOf('Screenshots, notes and vision sub-calls'),
+    'notes should come before the screenshot footer',
+  );
+});
+
+test('trace export: chrome and firefox serializers are identical', () => {
+  assert.equal(tracesToMarkdownFx(TRACE_RUNS).markdown, tracesToMarkdown(TRACE_RUNS).markdown);
+});
+
+test('export-with-traces is wired in both side panels and backgrounds', () => {
+  for (const [label, panelRel, bgRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/src/background.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/src/background.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const bg = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    assert.match(
+      panel,
+      /\{ value: '\/export-with-traces', descriptionKey: 'sp\.slash\.export_traces' \}/,
+      `${label}: slash autocomplete should list /export-with-traces`,
+    );
+    assert.match(
+      panel,
+      /const OUT_OF_BAND_SLASH_COMMANDS = new Set\(\[[\s\S]*?'\/export-with-traces'[\s\S]*?\]\);/,
+      `${label}: /export-with-traces should be runnable while busy`,
+    );
+    const exportWithIdx = panel.indexOf('// /export-with-traces');
+    const exportIdx = panel.indexOf('// /export — export conversation as markdown');
+    assert.notEqual(exportWithIdx, -1, `${label}: /export-with-traces handler missing`);
+    assert.notEqual(exportIdx, -1, `${label}: /export handler missing`);
+    assert.ok(exportWithIdx < exportIdx, `${label}: /export-with-traces must be parsed before /export`);
+    assert.match(
+      panel,
+      /if \(\/\^\\\/export-with-traces\\b\\s\*\/i\.test\(text\)\) \{[\s\S]*?sendToBackground\('export_traces', \{ tabId \}\)/,
+      `${label}: /export-with-traces should call export_traces on the background`,
+    );
+    assert.match(
+      panel,
+      /res\.reason === 'no-conversation'[\s\S]*?sp\.export_traces\.no_conversation[\s\S]*?sp\.export_traces\.none/,
+      `${label}: empty export should distinguish no-conversation from no-traces`,
+    );
+    assert.match(
+      panel,
+      /sp\.export_traces\.done/,
+      `${label}: success path should use the traces-specific done string`,
+    );
+    assert.match(bg, /case 'export_traces':/, `${label}: background should handle export_traces`);
+    assert.match(
+      bg,
+      /case 'export_traces': \{[\s\S]*?agent\.exportTraces\(tabId\)/,
+      `${label}: export_traces should call agent.exportTraces`,
+    );
+  }
 });
 
 // ────────────────────────────────────────────────────────────────────────
@@ -4342,12 +4506,143 @@ test('cloud run controller uses the visible tab and persists terminal status', a
   assert.equal(processArgs[3], 'act');
   assert.deepEqual(processArgs[4], []);
   assert.equal(processArgs[5].cloudRun, true);
+  processArgs[2]('thinking', { step: 1, note: 'Opening the page' });
+  processArgs[2]('text_delta', { content: 'Opening ' });
+  processArgs[2]('text_delta', { content: 'the page' });
+  processArgs[2]('tool_call', {
+    name: 'fetch_url',
+    args: {
+      url: 'https://webbrain.one/',
+      authorization: 'Bearer secret-token',
+      nested: {
+        apiKey: 'sk-test',
+        sessionToken: 'session-secret',
+        accessKeyId: 'AKIAEXAMPLE',
+        secretAccessKey: 'aws-secret',
+        pin: '1234',
+        pinCode: '9999',
+        spin: 'keep-me',
+        mapPin: 'also-keep',
+        headers: { 'x-api-key': 'header-secret' },
+      },
+      screenshot: `data:image/png;base64,${'a'.repeat(600)}`,
+    },
+  });
+  processArgs[2]('tool_result', { name: 'fetch_url', result: { success: true } });
+  const running = await controller.status({ run_id: 'run_test' });
+  assert.deepEqual(running.updates.map(update => update.seq), [1, 2, 3, 4]);
+  assert.equal(running.updates[1].data.content, 'Opening the page');
+  assert.equal(running.updates[2].data.args.authorization, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.apiKey, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.sessionToken, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.accessKeyId, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.secretAccessKey, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.pin, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.pinCode, '[redacted]');
+  assert.equal(running.updates[2].data.args.nested.spin, 'keep-me');
+  assert.equal(running.updates[2].data.args.nested.mapPin, 'also-keep');
+  assert.equal(running.updates[2].data.args.nested.headers['x-api-key'], '[redacted]');
+  assert.match(running.updates[2].data.args.screenshot, /^\[image omitted:/);
   finishRun('Google');
   await new Promise(resolve => setTimeout(resolve, 0));
   const completed = await controller.status({ run_id: 'run_test' });
   assert.equal(completed.status, 'completed');
   assert.equal(completed.result, 'Google');
   assert.equal(session.webbrainCloudRunSnapshots[0].status, 'completed');
+});
+
+test('cloud run text_delta coalesce scrubs live status payloads', async () => {
+  const session = {};
+  const tab = { id: 22, url: 'https://webbrain.one/', active: true, windowId: 3 };
+  let finishRun;
+  let emitUpdate;
+  const controller = createCloudRunController({
+    chromeApi: {
+      tabs: {
+        query: async () => [tab],
+        get: async () => tab,
+        update: async () => tab,
+      },
+      windows: { update: async () => ({}) },
+      storage: {
+        local: { get: async () => ({ webbrainCloudBridgeEnabled: false }) },
+        session: {
+          get: async key => ({ [key]: session[key] || [] }),
+          set: async value => Object.assign(session, value),
+        },
+      },
+      runtime: { sendMessage: async () => ({ connected: false }) },
+    },
+    agent: {
+      isRunning: () => false,
+      abort: () => {},
+      processMessage: (_tabId, _task, onUpdate) => {
+        emitUpdate = onUpdate;
+        return new Promise(resolve => { finishRun = resolve; });
+      },
+    },
+    ensureOffscreen: async () => {},
+    makeRunId: () => 'run_delta_scrub',
+  });
+
+  await controller.startRun({ task: 'Stream a large reply' });
+  emitUpdate('text_delta', { content: 'a'.repeat(10 * 1024) });
+  emitUpdate('text_delta', { content: 'b'.repeat(10 * 1024) });
+  emitUpdate('text_delta', { content: 'c'.repeat(10 * 1024) });
+  const running = await controller.status({ runId: 'run_delta_scrub' });
+  assert.equal(running.updates.length, 1, 'consecutive text_delta events should upsert one seq');
+  assert.equal(running.updates[0].seq, 1);
+  assert.ok(
+    running.updates[0].data.content.length <= 16 * 1024 + 80,
+    'coalesced text_delta must re-apply CLOUD_STRING_LIMIT on the live status row',
+  );
+  assert.match(running.updates[0].data.content, /truncated .* chars for cloud persistence/);
+  finishRun('done');
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+
+test('cloud run controller keeps the newest 200 monotonically sequenced updates', async () => {
+  const session = {};
+  const tab = { id: 21, url: 'https://webbrain.one/', active: true, windowId: 3 };
+  let finishRun;
+  let emitUpdate;
+  const controller = createCloudRunController({
+    chromeApi: {
+      tabs: {
+        query: async () => [tab],
+        get: async () => tab,
+        update: async () => tab,
+      },
+      windows: { update: async () => ({}) },
+      storage: {
+        local: { get: async () => ({ webbrainCloudBridgeEnabled: false }) },
+        session: {
+          get: async key => ({ [key]: session[key] || [] }),
+          set: async value => Object.assign(session, value),
+        },
+      },
+      runtime: { sendMessage: async () => ({ connected: false }) },
+    },
+    agent: {
+      isRunning: () => false,
+      abort: () => {},
+      processMessage: (_tabId, _task, onUpdate) => {
+        emitUpdate = onUpdate;
+        return new Promise(resolve => { finishRun = resolve; });
+      },
+    },
+    ensureOffscreen: async () => {},
+    makeRunId: () => 'run_updates',
+  });
+
+  await controller.startRun({ task: 'Generate many updates' });
+  for (let i = 1; i <= 205; i += 1) emitUpdate('thinking', { step: i });
+  const running = await controller.status({ runId: 'run_updates' });
+  assert.equal(running.updates.length, 200);
+  assert.equal(running.updates[0].seq, 6);
+  assert.equal(running.updates.at(-1).seq, 205);
+  finishRun('Done');
+  await new Promise(resolve => setTimeout(resolve, 0));
 });
 
 test('cloud run controller fails immediately if an interactive plan review leaks through', async () => {
@@ -4393,7 +4688,17 @@ test('cloud run controller fails immediately if an interactive plan review leaks
 });
 
 test('cloud run controller fails interrupted runs after service-worker restart', async () => {
-  const row = { runId: 'run_old', status: 'running', tabId: 2, task: 'Old task', updates: [], createdAt: '2020-01-01T00:00:00.000Z' };
+  const row = {
+    runId: 'run_old',
+    status: 'running',
+    tabId: 2,
+    task: 'Old task',
+    updates: [
+      { type: 'thinking', data: { step: 1 }, ts: '2020-01-01T00:00:01.000Z' },
+      { seq: 8, type: 'tool_call', data: { name: 'navigate' }, ts: '2020-01-01T00:00:02.000Z' },
+    ],
+    createdAt: '2020-01-01T00:00:00.000Z',
+  };
   const session = { webbrainCloudRunSnapshots: [row] };
   const controller = createCloudRunController({
     chromeApi: {
@@ -4411,6 +4716,79 @@ test('cloud run controller fails interrupted runs after service-worker restart',
   const restored = await controller.status({ runId: 'run_old' });
   assert.equal(restored.status, 'failed');
   assert.match(restored.error, /service worker restarted/i);
+  assert.deepEqual(restored.updates.map(update => update.seq), [1, 8]);
+});
+
+test('cloud run persistence caps oversized strings, runs, and total snapshot bytes', () => {
+  const oversized = 'x'.repeat(32 * 1024);
+  const makeRun = (index, chunkCount = 12) => ({
+    runId: `run_${String(index).padStart(2, '0')}`,
+    status: index === 99 ? 'failed' : 'completed',
+    tabId: index,
+    task: oversized,
+    outputSchema: { result: 'string' },
+    result: { chunks: Array.from({ length: chunkCount }, () => oversized) },
+    summary: oversized,
+    content: oversized,
+    finalUrl: `https://example.com/${index}`,
+    error: index === 99 ? 'Expected failure survives compaction.' : '',
+    updates: Array.from({ length: 20 }, () => ({ type: 'tool_result', data: { text: oversized } })),
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, index === 99 ? 59 : index)).toISOString(),
+    updatedAt: '2026-01-01T01:00:00.000Z',
+    completedAt: '2026-01-01T01:00:00.000Z',
+  });
+  const runs = [makeRun(99, 40), ...Array.from({ length: 49 }, (_, index) => makeRun(index))];
+
+  const rows = buildCloudPersistenceRows(runs);
+  const bytes = new TextEncoder().encode(JSON.stringify(rows)).length;
+
+  assert.ok(bytes <= 4 * 1024 * 1024, `persisted cloud rows exceeded byte budget: ${bytes}`);
+  assert.ok(rows.length < runs.length, 'total byte budget should omit the oldest oversized snapshots');
+  assert.equal(rows[0].runId, 'run_99', 'newest run must survive storage compaction');
+  assert.equal(rows[0].status, 'failed');
+  assert.equal(rows[0].error, 'Expected failure survives compaction.');
+  assert.equal(rows[0].structured, true);
+  assert.equal(rows[0].persistenceTruncated?.omittedResult, true, 'oversized single-run payload should fall back to a minimal restart snapshot');
+  assert.ok(!JSON.stringify(rows).includes(oversized), 'raw oversized strings must not reach storage.session');
+});
+
+test('cloud run status exposes persistence truncation after service-worker restart', async () => {
+  const oversized = 'x'.repeat(32 * 1024);
+  const [row] = buildCloudPersistenceRows([{
+    runId: 'run_truncated',
+    status: 'completed',
+    tabId: 7,
+    task: 'Return a large structured result',
+    outputSchema: { chunks: 'string[]' },
+    result: { chunks: Array.from({ length: 40 }, () => oversized) },
+    summary: 'Completed with a result too large to persist.',
+    content: '',
+    finalUrl: 'https://example.com/',
+    error: '',
+    updates: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:01:00.000Z',
+    completedAt: '2026-01-01T00:01:00.000Z',
+  }]);
+  const session = { webbrainCloudRunSnapshots: [row] };
+  const controller = createCloudRunController({
+    chromeApi: {
+      tabs: {},
+      storage: {
+        local: { get: async () => ({}) },
+        session: { get: async key => ({ [key]: session[key] }), set: async value => Object.assign(session, value) },
+      },
+      runtime: { sendMessage: async () => ({}) },
+    },
+    agent: {},
+    ensureOffscreen: async () => {},
+  });
+
+  const restored = await controller.status({ runId: 'run_truncated' });
+  assert.equal(restored.status, 'completed');
+  assert.equal(restored.structured, true);
+  assert.equal(restored.result, undefined);
+  assert.equal(restored.persistenceTruncated?.omittedResult, true);
 });
 
 test('cloud bridge accepts only loopback WebSocket URLs', () => {
@@ -4420,14 +4798,16 @@ test('cloud bridge accepts only loopback WebSocket URLs', () => {
   assert.throws(() => normalizeCloudBridgeUrl('ws://192.168.1.10/extension'), /localhost/);
 });
 
-test('offscreen cloud bridge reconnects with backoff and rejects remote control URLs', () => {
+function createOffscreenCloudBridgeHarness({ sendMessage = async () => ({}), closeSynchronously = true } = {}) {
   const source = fs.readFileSync(path.join(ROOT, 'src/chrome/src/offscreen/cloud-bridge.js'), 'utf8');
   const sockets = [];
   const timers = [];
+  const runtimeCalls = [];
   let listener = null;
   class FakeWebSocket {
     static CONNECTING = 0;
     static OPEN = 1;
+    static CLOSING = 2;
     static CLOSED = 3;
     constructor(url) {
       this.url = url;
@@ -4438,22 +4818,42 @@ test('offscreen cloud bridge reconnects with backoff and rejects remote control 
     }
     addEventListener(type, callback) { this.listeners.set(type, callback); }
     send(value) { this.sent.push(JSON.parse(value)); }
-    close() { this.readyState = FakeWebSocket.CLOSED; this.listeners.get('close')?.(); }
-    emit(type, value = {}) { this.listeners.get(type)?.(value); }
+    close() {
+      this.readyState = FakeWebSocket.CLOSING;
+      if (closeSynchronously) this.emit('close');
+    }
+    emit(type, value = {}) {
+      if (type === 'open') this.readyState = FakeWebSocket.OPEN;
+      if (type === 'close') this.readyState = FakeWebSocket.CLOSED;
+      this.listeners.get(type)?.(value);
+    }
   }
   vm.runInNewContext(source, {
     URL,
     WebSocket: FakeWebSocket,
-    chrome: { runtime: { onMessage: { addListener: callback => { listener = callback; } }, sendMessage: async () => ({}) } },
+    chrome: {
+      runtime: {
+        onMessage: { addListener: callback => { listener = callback; } },
+        sendMessage: async message => {
+          runtimeCalls.push(message);
+          return await sendMessage(message);
+        },
+      },
+    },
     setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
     clearTimeout: () => {},
   });
+
+  return { listener: (...args) => listener(...args), runtimeCalls, sockets, timers };
+}
+
+test('offscreen cloud bridge reconnects with backoff and rejects remote control URLs', () => {
+  const { listener, sockets, timers } = createOffscreenCloudBridgeHarness();
 
   let started;
   listener({ type: 'cloud-bridge-start', url: 'ws://127.0.0.1:17373/extension' }, null, value => { started = value; });
   assert.equal(started.enabled, true);
   assert.equal(sockets.length, 1);
-  sockets[0].readyState = FakeWebSocket.OPEN;
   sockets[0].emit('open');
   assert.equal(sockets[0].sent[0].type, 'hello');
   sockets[0].close();
@@ -4465,6 +4865,75 @@ test('offscreen cloud bridge reconnects with backoff and rejects remote control 
   listener({ type: 'cloud-bridge-start', url: 'wss://attacker.example/extension' }, null, value => { rejected = value; });
   assert.match(rejected.error, /localhost/);
   assert.equal(sockets.length, 2);
+});
+
+test('offscreen cloud bridge preserves failed run envelopes and rejects unauthorized actions', async () => {
+  const failed = { runId: 'run_failed', status: 'failed', error: 'Agent failed.' };
+  const aborting = { runId: 'run_abort', status: 'aborting', error: 'Abort requested.' };
+  const { listener, runtimeCalls, sockets } = createOffscreenCloudBridgeHarness({
+    sendMessage: async message => {
+      if (message.action === 'cloud_status' && message.runId === 'run_failed') return failed;
+      if (message.action === 'cloud_status') return { error: 'Unknown cloud run.' };
+      if (message.action === 'cloud_abort') return aborting;
+      return {};
+    },
+  });
+  listener({ type: 'cloud-bridge-start', url: 'ws://127.0.0.1:17373/extension' }, null, () => {});
+  const socket = sockets[0];
+  socket.emit('open');
+
+  socket.emit('message', {
+    data: JSON.stringify({ id: 'status-1', action: 'cloud_status', payload: { runId: 'run_failed' } }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const statusResponse = socket.sent.find(message => message.id === 'status-1');
+  assert.equal(statusResponse.ok, true, 'failed run snapshots are domain results, not bridge failures');
+  assert.equal(statusResponse.result.status, 'failed');
+  assert.equal(statusResponse.result.error, 'Agent failed.');
+
+  socket.emit('message', {
+    data: JSON.stringify({ id: 'abort-1', action: 'cloud_abort', payload: { runId: 'run_abort' } }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const abortResponse = socket.sent.find(message => message.id === 'abort-1');
+  assert.equal(abortResponse.ok, true, 'aborting snapshots with an error explanation must remain successful protocol responses');
+  assert.equal(abortResponse.result.status, 'aborting');
+
+  socket.emit('message', {
+    data: JSON.stringify({ id: 'missing-1', action: 'cloud_status', payload: { runId: 'run_missing' } }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const missing = socket.sent.find(message => message.id === 'missing-1');
+  assert.equal(missing.ok, false, 'background exception envelopes must still reject the bridge request');
+  assert.equal(missing.error, 'Unknown cloud run.');
+
+  const callCount = runtimeCalls.length;
+  socket.emit('message', {
+    data: JSON.stringify({ id: 'forbidden-1', action: 'get_providers', payload: {} }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const forbidden = socket.sent.find(message => message.id === 'forbidden-1');
+  assert.equal(forbidden.ok, false);
+  assert.match(forbidden.error, /unsupported cloud bridge action/i);
+  assert.equal(runtimeCalls.length, callCount, 'unauthorized bridge actions must not reach the background handler');
+});
+
+test('offscreen cloud bridge ignores asynchronous close events from replaced sockets', () => {
+  const { listener, sockets, timers } = createOffscreenCloudBridgeHarness({ closeSynchronously: false });
+  listener({ type: 'cloud-bridge-start', url: 'ws://127.0.0.1:17373/extension' }, null, () => {});
+  const first = sockets[0];
+  first.emit('open');
+
+  listener({ type: 'cloud-bridge-start', url: 'ws://localhost:17374/extension' }, null, () => {});
+  const replacement = sockets[1];
+  assert.ok(replacement, 'URL change should create a replacement WebSocket');
+
+  first.emit('close');
+  replacement.emit('open');
+
+  assert.equal(sockets.length, 2, 'stale close must not create a duplicate connection');
+  assert.equal(timers.length, 0, 'stale close must not schedule reconnect for the replacement');
+  assert.equal(replacement.sent.filter(message => message.type === 'hello').length, 1, 'replacement socket should remain current and announce itself');
 });
 
 test('getToolsForMode: `done` outcome is exposed only in full and mid action modes', () => {
@@ -4643,21 +5112,19 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     assert.equal(devFull.includes('read_page_source'), true, `[${label}] dev full should expose read_page_source`);
     assert.equal(devFull.includes('inspect_element_styles'), true, `[${label}] dev full should expose inspect_element_styles`);
 
+    assert.equal(mid.includes('upload_file'), true, `[${label}] mid act should expose upload_file`);
+    assert.equal(full.includes('upload_file'), true, `[${label}] full act should expose upload_file`);
     if (label === 'chrome') {
       assert.equal(full.includes('shadow_dom_query'), true, '[chrome] full act should expose shadow_dom_query');
       assert.equal(mid.includes('shadow_dom_query'), false, '[chrome] mid act should not expose shadow_dom_query');
       assert.equal(devMid.includes('shadow_dom_query'), true, '[chrome] dev mid should add shadow_dom_query');
       assert.equal(devFull.includes('shadow_dom_query'), true, '[chrome] dev full should keep shadow_dom_query');
-      assert.equal(mid.includes('upload_file'), true, '[chrome] mid act should expose upload_file');
-      assert.equal(full.includes('upload_file'), true, '[chrome] full act should expose upload_file');
       assert.equal(devFull.includes('execute_js'), false, '[chrome] Dev must not expose execute_js');
     } else {
       assert.equal(full.includes('shadow_dom_query'), false, '[firefox] shadow_dom_query is Chrome-only');
       assert.equal(mid.includes('shadow_dom_query'), false, '[firefox] shadow_dom_query is Chrome-only');
       assert.equal(devMid.includes('shadow_dom_query'), false, '[firefox] Dev must not invent Chrome-only shadow_dom_query');
       assert.equal(devFull.includes('shadow_dom_query'), false, '[firefox] Dev must not invent Chrome-only shadow_dom_query');
-      assert.equal(mid.includes('upload_file'), false, '[firefox] upload_file is Chrome-only');
-      assert.equal(full.includes('upload_file'), false, '[firefox] upload_file is Chrome-only');
       assert.equal(full.includes('execute_js'), false, '[firefox] full act must not expose execute_js');
       assert.equal(devMid.includes('execute_js'), true, '[firefox] dev mid should expose execute_js');
       assert.equal(devFull.includes('execute_js'), true, '[firefox] dev full should expose execute_js');
@@ -4898,7 +5365,7 @@ test('getToolsForMode: skill tools are exposed only when enabled skills declare 
     ['chrome', 'src/chrome', getToolsForModeCh, normalizeCustomSkillsCh, buildSkillToolDefinitionsCh, buildSkillToolRegistryCh, RESERVED_AGENT_TOOL_NAMES_CH],
     ['firefox', 'src/firefox', getToolsForModeFx, normalizeCustomSkillsFx, buildSkillToolDefinitionsFx, buildSkillToolRegistryFx, RESERVED_AGENT_TOOL_NAMES_FX],
   ]) {
-    for (const name of ['read_youtube_transcript', 'resolve_public_media', 'download_public_media']) {
+    for (const name of ['read_youtube_transcript', 'fetch_nytimes_article', 'resolve_public_media', 'download_public_media']) {
       assert.equal(getTools('ask').some(t => t.function?.name === name), false, `${label}: ${name} should not be static`);
       assert.equal(getTools('act').some(t => t.function?.name === name), false, `${label}: ${name} should not be static in act`);
     }
@@ -4960,9 +5427,11 @@ test('getToolsForMode: skill tools are exposed only when enabled skills declare 
     const skills = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
     const registry = buildRegistry(skills);
     const transcriptTool = registry.get('read_youtube_transcript');
+    const nytimesTool = registry.get('fetch_nytimes_article');
     const resolveTool = registry.get('resolve_public_media');
     const downloadTool = registry.get('download_public_media');
     assert.ok(transcriptTool, `${label}: FreeSkillz transcript tool missing`);
+    assert.ok(nytimesTool, `${label}: FreeSkillz NYTimes tool missing`);
     assert.ok(resolveTool, `${label}: FreeSkillz media resolver tool missing`);
     assert.ok(downloadTool, `${label}: FreeSkillz media download tool missing`);
     assert.equal(transcriptTool.endpoint, 'https://freeskillz.xyz/v1/youtube/transcript', `${label}: wrong transcript endpoint`);
@@ -4974,6 +5443,10 @@ test('getToolsForMode: skill tools are exposed only when enabled skills declare 
     );
     assert.equal(transcriptTool.responseLimits.maxTextChars, 'unlimited', `${label}: transcript provider text should not be pre-capped`);
     assert.equal(transcriptTool.responseLimits.maxArrayItems.segments, 1200, `${label}: transcript segments should keep a provider response cap`);
+    assert.equal(nytimesTool.endpoint, 'https://freeskillz.xyz/nytimes/fetch', `${label}: wrong NYTimes endpoint`);
+    assert.deepEqual(nytimesTool.siteAdapters, ['nytimes'], `${label}: NYTimes tool should be adapter-scoped`);
+    assert.equal(nytimesTool.activeTabUrlArg, 'url', `${label}: NYTimes tool should default to the active article URL`);
+    assert.equal(nytimesTool.resultPolicy, 'untrusted', `${label}: NYTimes article output should be untrusted`);
     assert.equal(resolveTool.kind, 'http', `${label}: resolver should be read-only HTTP`);
     assert.equal(resolveTool.readOnly, true, `${label}: resolver should be read-only`);
     assert.equal(resolveTool.endpoint, 'https://freeskillz.xyz/v1/media/resolve', `${label}: wrong resolver endpoint`);
@@ -5002,6 +5475,7 @@ test('getToolsForMode: skill tools are exposed only when enabled skills declare 
         continue;
       }
       assert.ok(names.includes('read_youtube_transcript'), `${label} ${mode}: transcript tool missing`);
+      assert.equal(names.includes('fetch_nytimes_article'), false, `${label} ${mode}: NYTimes tool must not pollute unrelated model requests`);
       assert.ok(names.includes('resolve_public_media'), `${label} ${mode}: resolver tool missing`);
       assert.equal(names.includes('download_public_media'), mode === 'ask' ? false : true, `${label} ${mode}: download tool mode mismatch`);
 
@@ -5032,6 +5506,18 @@ test('getToolsForMode: skill tools are exposed only when enabled skills declare 
         assert.match(downloader.function.description, /does not require \/allow-api/i, `${label} ${mode}: downloader should not ask for /allow-api`);
       }
     }
+
+    const nytimesAskNames = buildDefs(skills, { mode: 'ask', siteAdapter: 'nytimes' }).map(t => t.function?.name);
+    const youtubeAskNames = buildDefs(skills, { mode: 'ask', siteAdapter: 'youtube' }).map(t => t.function?.name);
+    const nytimesActNames = buildDefs(skills, { mode: 'act', tier: 'full', siteAdapter: 'nytimes' }).map(t => t.function?.name);
+    assert.equal(nytimesAskNames.includes('fetch_nytimes_article'), true, `${label}: NYTimes adapter should expose its fetch tool in Ask`);
+    assert.equal(nytimesActNames.includes('fetch_nytimes_article'), true, `${label}: NYTimes adapter should expose its fetch tool in Act`);
+    assert.equal(youtubeAskNames.includes('fetch_nytimes_article'), false, `${label}: YouTube adapter must not expose the NYTimes tool`);
+    const nytimesDefinition = buildDefs(skills, { mode: 'ask', siteAdapter: 'nytimes' })
+      .find((tool) => tool.function?.name === 'fetch_nytimes_article');
+    assert.match(nytimesDefinition?.function?.description || '', /Use only after inspecting the active page/i, `${label}: NYTimes tool should be fallback-only`);
+    assert.match(nytimesDefinition?.function?.description || '', /signed-in browser can read the article[\s\S]*do not call/i, `${label}: readable signed-in pages should stay in-browser`);
+
   }
 });
 
@@ -5145,6 +5631,46 @@ test('executeHttpSkillTool uses skill manifest endpoint for supported YouTube UR
         { timestamps: true, text_limit: 12000, include_segments: false, url: youtubeUrl, text_offset: 0 },
         `${label}: declared numeric transcript args should be clamped before provider request`,
       );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('executeHttpSkillTool calls the public NYTimes endpoint without client credentials', async () => {
+  const articleUrl = 'https://www.nytimes.com/2026/07/12/us/politics/example.html';
+  for (const [label, prefix, executeTool, normalizeSkills, buildRegistry] of [
+    ['chrome', 'src/chrome', executeHttpSkillToolCh, normalizeCustomSkillsCh, buildSkillToolRegistryCh],
+    ['firefox', 'src/firefox', executeHttpSkillToolFx, normalizeCustomSkillsFx, buildSkillToolRegistryFx],
+  ]) {
+    const skills = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
+    const tool = buildRegistry(skills).get('fetch_nytimes_article');
+    assert.ok(tool, `${label}: NYTimes manifest tool missing`);
+
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, opts) => {
+      calls.push({ url, opts });
+      return {
+        ok: true,
+        status: 200,
+        url,
+        text: async () => JSON.stringify({ title: 'Example article', text: 'Article body' }),
+      };
+    };
+    try {
+      const rejected = await executeTool(tool, { url: 'https://example.com/not-an-article' });
+      assert.equal(rejected.success, false, `${label}: non-NYTimes URLs should be rejected`);
+      assert.equal(calls.length, 0, `${label}: rejected URLs should not reach FreeSkillz`);
+
+      const result = await executeTool(tool, { url: articleUrl });
+      assert.equal(result.success, true, `${label}: NYTimes request should succeed`);
+      assert.equal(result.data.title, 'Example article', `${label}: article response should remain nested data`);
+      assert.equal(calls.length, 1, `${label}: expected one public endpoint request`);
+      assert.equal(calls[0].url, 'https://freeskillz.xyz/nytimes/fetch', `${label}: wrong NYTimes provider endpoint`);
+      assert.equal(calls[0].opts.headers.Authorization, undefined, `${label}: public endpoint should not receive a bearer token`);
+      assert.equal(calls[0].opts.credentials, 'omit', `${label}: browser cookies must not accompany the public request`);
+      assert.deepEqual(JSON.parse(calls[0].opts.body), { url: articleUrl }, `${label}: request body should contain only declared arguments`);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -6360,6 +6886,18 @@ test('custom skills prompt is empty before storage seed and injects enabled skil
   }
 });
 
+test('packaged Mail.tm skill is opt-in before prompt injection', () => {
+  for (const [label, prefix, normalizeSkills, buildPrompt] of [
+    ['chrome', 'src/chrome', normalizeCustomSkillsCh, buildCustomSkillsPromptCh],
+    ['firefox', 'src/firefox', normalizeCustomSkillsFx, buildCustomSkillsPromptFx],
+  ]) {
+    const defaults = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
+    assert.doesNotMatch(buildPrompt(defaults), /Disposable email \(Mail\.tm\)/, `${label}: optional Mail.tm skill leaked into the default prompt`);
+    const enabled = normalizeSkills([...defaults, packagedMailTmRecord(prefix)]);
+    assert.match(buildPrompt(enabled), /Disposable email \(Mail\.tm\)/, `${label}: enabled Mail.tm skill missing from prompt`);
+  }
+});
+
 test('custom skills parse tool manifests without injecting manifest JSON into prompt', () => {
   for (const [label, prefix, normalizeSkills, buildPrompt, buildDefs] of [
     ['chrome', 'src/chrome', normalizeCustomSkillsCh, buildCustomSkillsPromptCh, buildSkillToolDefinitionsCh],
@@ -6369,7 +6907,7 @@ test('custom skills parse tool manifests without injecting manifest JSON into pr
     assert.equal(skills.length, 1, `${label}: packaged skill should normalize`);
     assert.deepEqual(
       skills[0].tools.map((tool) => tool.name),
-      ['read_youtube_transcript', 'resolve_public_media', 'download_public_media'],
+      ['read_youtube_transcript', 'fetch_nytimes_article', 'resolve_public_media', 'download_public_media'],
       `${label}: manifest tools should parse`,
     );
 
@@ -7286,7 +7824,7 @@ test('trace viewer drops stale async render completions', () => {
     const runRequestIdx = renderRunBody.indexOf('const requestId = ++traceRenderRequestId;');
     const getRunIdx = renderRunBody.indexOf('const run = await getRun(runId);');
     const firstRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) return;', getRunIdx);
-    const getEventsIdx = renderRunBody.indexOf('const events = await getRunEvents(runId);');
+    const getEventsIdx = renderRunBody.indexOf('const events = await getRunEvents(runId).catch(() => []);');
     const secondRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) return;', getEventsIdx);
     const buildRunIdx = renderRunBody.indexOf('const html = await buildRunView(run, events, false, objectUrls);');
     const thirdRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) {', buildRunIdx);
@@ -7390,7 +7928,7 @@ test('trace viewer toolbar actions use a captured run selection across awaits', 
     const exportCaptureIdx = exportBody.indexOf('const runId = selectedRunId;');
     const getRunIdx = exportBody.indexOf('const run = await getRun(runId);');
     const missingRunGuardIdx = exportBody.indexOf("if (!run) return alert(t('tr.select_first'));");
-    const eventsIdx = exportBody.indexOf('const events = await getRunEvents(runId);');
+    const eventsIdx = exportBody.indexOf('const events = await getRunEvents(runId).catch(() => []);');
     const screenshotIdx = exportBody.indexOf('const shot = await getScreenshot(runId, ev.seq);');
     assert.notEqual(exportCaptureIdx, -1, `${label}: trace export should capture selectedRunId once`);
     assert.notEqual(getRunIdx, -1, `${label}: trace export should load the captured run`);
@@ -9324,7 +9862,7 @@ test('sidepanel allows safe slash commands and queues normal messages while busy
     assert.notEqual(oobStart, -1, `${label}: out-of-band slash command set missing`);
     assert.notEqual(oobEnd, -1, `${label}: out-of-band slash command set should close`);
     const oobBlock = panel.slice(oobStart, oobEnd);
-    const allowed = ['/help', '/check-progress', '/show-scratchpad', '/show-memory', '/list-schedules', '/screenshot', '/export', '/verbose'];
+    const allowed = ['/help', '/check-progress', '/show-scratchpad', '/show-memory', '/list-schedules', '/screenshot', '/export', '/export-with-traces', '/verbose'];
     for (const command of allowed) {
       assert.match(
         oobBlock,
@@ -9355,7 +9893,7 @@ test('sidepanel allows safe slash commands and queues normal messages while busy
     );
     assert.match(
       locale,
-      /'sp\.slash\.busy_only_oob': 'Messages are queued while WebBrain is busy\. Only \/help, \/check-progress, \/show-scratchpad, \/show-memory, \/list-schedules, \/dangerously-skip-permissions, \/screenshot, \/export, and \/verbose can run immediately as slash commands\./,
+      /'sp\.slash\.busy_only_oob': 'Messages are queued while WebBrain is busy\. Only \/help, \/check-progress, \/show-scratchpad, \/show-memory, \/list-schedules, \/dangerously-skip-permissions, \/screenshot, \/export, \/export-with-traces, and \/verbose can run immediately as slash commands\./,
       `${label}: busy slash notice should explain queued messages and safe slash commands`,
     );
   }
@@ -9412,21 +9950,21 @@ test('sidepanel queued composer messages expose edit and delete controls', () =>
 
 test('sidepanel busy slash notice is updated in every locale', () => {
   const expected = {
-    en: 'Messages are queued while WebBrain is busy. Only /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, and /verbose can run immediately as slash commands.',
-    es: 'Los mensajes se ponen en cola mientras WebBrain está ocupado. Solo /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export y /verbose pueden ejecutarse de inmediato como comandos slash.',
-    fr: "Les messages sont mis en file d'attente pendant que WebBrain est occupé. Seuls /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export et /verbose peuvent s'exécuter immédiatement comme commandes slash.",
-    tr: 'WebBrain meşgulken mesajlar kuyruğa alınır. Yalnızca /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export ve /verbose slash komutları olarak hemen çalışabilir.',
-    zh: 'WebBrain 忙碌时，消息会排队。只有 /help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export 和 /verbose 可以作为斜杠命令立即运行。',
-    ru: 'Пока WebBrain занят, сообщения ставятся в очередь. Только /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export и /verbose могут запускаться сразу как slash-команды.',
-    uk: 'Поки WebBrain зайнятий, повідомлення ставляться в чергу. Лише /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export та /verbose можуть запускатися одразу як slash-команди.',
-    ar: 'تُضاف الرسائل إلى قائمة الانتظار بينما يكون WebBrain مشغولًا. يمكن فقط لـ /help و /check-progress و /show-scratchpad و /show-memory و /list-schedules و /dangerously-skip-permissions و /screenshot و /export و /verbose العمل فورًا كأوامر slash.',
-    ja: 'WebBrain がビジーの間、メッセージはキューに入ります。/help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export、/verbose だけがスラッシュコマンドとしてすぐに実行できます。',
-    ko: 'WebBrain이 사용 중일 때 메시지는 대기열에 추가됩니다. /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /verbose만 슬래시 명령으로 즉시 실행할 수 있습니다.',
-    id: 'Pesan dimasukkan ke antrean saat WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, dan /verbose yang dapat langsung berjalan sebagai perintah slash.',
-    th: 'ข้อความจะถูกเข้าคิวขณะที่ WebBrain ไม่ว่าง เฉพาะ /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export และ /verbose เท่านั้นที่เรียกใช้ได้ทันทีในฐานะคำสั่ง slash',
-    ms: 'Mesej dimasukkan ke giliran semasa WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, dan /verbose boleh berjalan serta-merta sebagai arahan slash.',
-    tl: 'Nakapila ang mga mensahe habang abala ang WebBrain. Tanging /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, at /verbose ang maaaring tumakbo agad bilang mga slash command.',
-    pl: 'Wiadomości są kolejkowane, gdy WebBrain jest zajęty. Tylko /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export i /verbose mogą uruchamiać się od razu jako polecenia slash.',
+    en: 'Messages are queued while WebBrain is busy. Only /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, and /verbose can run immediately as slash commands.',
+    es: 'Los mensajes se ponen en cola mientras WebBrain está ocupado. Solo /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces y /verbose pueden ejecutarse de inmediato como comandos slash.',
+    fr: "Les messages sont mis en file d'attente pendant que WebBrain est occupé. Seuls /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces et /verbose peuvent s'exécuter immédiatement comme commandes slash.",
+    tr: 'WebBrain meşgulken mesajlar kuyruğa alınır. Yalnızca /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces ve /verbose slash komutları olarak hemen çalışabilir.',
+    zh: 'WebBrain 忙碌时，消息会排队。只有 /help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export、/export-with-traces 和 /verbose 可以作为斜杠命令立即运行。',
+    ru: 'Пока WebBrain занят, сообщения ставятся в очередь. Только /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces и /verbose могут запускаться сразу как slash-команды.',
+    uk: 'Поки WebBrain зайнятий, повідомлення ставляться в чергу. Лише /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces та /verbose можуть запускатися одразу як slash-команди.',
+    ar: 'تُضاف الرسائل إلى قائمة الانتظار بينما يكون WebBrain مشغولًا. يمكن فقط لـ /help و /check-progress و /show-scratchpad و /show-memory و /list-schedules و /dangerously-skip-permissions و /screenshot و /export و /export-with-traces و /verbose العمل فورًا كأوامر slash.',
+    ja: 'WebBrain がビジーの間、メッセージはキューに入ります。/help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export、/export-with-traces、/verbose だけがスラッシュコマンドとしてすぐに実行できます。',
+    ko: 'WebBrain이 사용 중일 때 메시지는 대기열에 추가됩니다. /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, /verbose만 슬래시 명령으로 즉시 실행할 수 있습니다.',
+    id: 'Pesan dimasukkan ke antrean saat WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, dan /verbose yang dapat langsung berjalan sebagai perintah slash.',
+    th: 'ข้อความจะถูกเข้าคิวขณะที่ WebBrain ไม่ว่าง เฉพาะ /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces และ /verbose เท่านั้นที่เรียกใช้ได้ทันทีในฐานะคำสั่ง slash',
+    ms: 'Mesej dimasukkan ke giliran semasa WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, dan /verbose boleh berjalan serta-merta sebagai arahan slash.',
+    tl: 'Nakapila ang mga mensahe habang abala ang WebBrain. Tanging /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, at /verbose ang maaaring tumakbo agad bilang mga slash command.',
+    pl: 'Wiadomości są kolejkowane, gdy WebBrain jest zajęty. Tylko /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces i /verbose mogą uruchamiać się od razu jako polecenia slash.',
   };
 
   for (const [label, localeDir] of [
@@ -15415,9 +15953,8 @@ test('capabilityFor: no side-effecting tool slips through ungated', () => {
   assert.equal(capabilityFor('iframe_type', {}), Capability.TYPE);
   assert.equal(capabilityFor('drag_drop', {}), Capability.CLICK);
   assert.equal(capabilityFor('download_file', {}), Capability.DOWNLOAD);
-  // upload_file is Chrome-only.
   assert.equal(capabilityForCh('upload_file', {}), CapabilityCh.UPLOAD);
-  assert.equal(capabilityFor('upload_file', {}), null);
+  assert.equal(capabilityFor('upload_file', {}), Capability.UPLOAD);
 });
 
 test('set_field with submit:true requires CLICK, not the weaker TYPE', () => {
@@ -19810,6 +20347,275 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
   }
 });
 
+test('upload_file schema accepts downloadId and no longer hard-requires filePath (firefox)', () => {
+  const tools = getToolsForModeFx('act', {});
+  const up = tools.find(t => t.function?.name === 'upload_file');
+  assert.ok(up, 'upload_file not present in act tools');
+  assert.ok(up.function.parameters.properties.downloadId, 'downloadId param missing from schema');
+  assert.deepEqual(up.function.parameters.required, ['selector'], 'filePath should no longer be required');
+});
+
+test('upload_file (firefox) rejects non-complete downloads and missing picker base64', async () => {
+  const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
+  try {
+    let fetchCalled = false;
+    globalThis.browser = {
+      downloads: {
+        async search() {
+          return [{ id: 8122, state: 'in_progress', url: 'https://example.com/partial.zip', filename: '/tmp/partial.zip' }];
+        },
+      },
+      tabs: {
+        async get(tabId) {
+          return { id: tabId, url: 'https://example.com/page' };
+        },
+      },
+    };
+    globalThis.fetch = async () => {
+      fetchCalled = true;
+      throw new Error('should not fetch incomplete downloads');
+    };
+
+    const agent = new AgentFx({});
+    const incomplete = await agent.executeTool(42, 'upload_file', { selector: 'input[type=file]', downloadId: 8122 });
+    assert.equal(incomplete.success, false);
+    assert.match(incomplete.error, /not complete/i);
+    assert.equal(fetchCalled, false);
+
+    let pickerId = null;
+    const pickerPromise = agent.executeTool(42, 'upload_file', { selector: 'input[type=file]' }, (evt, data) => {
+      if (evt === 'upload_picker') pickerId = data.pickerId;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(pickerId);
+    agent.submitUploadPickerResponse(42, pickerId, { name: 'x.txt', type: 'text/plain', size: 3 });
+    const missing = await pickerPromise;
+    assert.equal(missing.success, false);
+    assert.match(missing.error, /no file data/i);
+
+    // Second response for the same pickerId must be ignored (one-shot consume).
+    assert.equal(agent.submitUploadPickerResponse(42, pickerId, { base64: 'YQ==', name: 'late.txt' }), false);
+  } finally {
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
+});
+
+test('upload_file (firefox) re-fetches downloadId with manual redirect handling and injects via DataTransfer', async () => {
+  const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
+  const executedScripts = [];
+  const fetchCalls = [];
+  try {
+    globalThis.browser = {
+      downloads: {
+        async search(query) {
+          assert.deepEqual(query, { id: 8123 });
+          return [{ id: 8123, state: 'complete', url: 'https://example.com/download', filename: '/home/user/Downloads/test.zip', mime: 'application/zip' }];
+        },
+      },
+      tabs: {
+        async get(tabId) {
+          return { id: tabId, url: 'https://example.com/page' };
+        },
+        async executeScript(tabId, details) {
+          executedScripts.push(details.code);
+          return [{ success: true, file: 'test.zip', size: 4 }];
+        },
+      },
+    };
+
+    globalThis.fetch = async (url, opts) => {
+      fetchCalls.push({ url, opts });
+      if (url === 'https://example.com/download') {
+        return {
+          ok: false,
+          status: 302,
+          headers: {
+            get(key) {
+              if (String(key).toLowerCase() === 'location') return 'https://cdn.other.com/test.zip';
+              return null;
+            },
+          },
+        };
+      }
+      if (url === 'https://cdn.other.com/test.zip') {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get(key) {
+              const k = String(key).toLowerCase();
+              if (k === 'content-length') return '4';
+              if (k === 'content-type') return 'application/zip';
+              return null;
+            },
+          },
+          async arrayBuffer() {
+            return new Uint8Array([80, 75, 3, 4]).buffer;
+          },
+        };
+      }
+      throw new Error('Unexpected fetch url: ' + url);
+    };
+
+    const agent = new AgentFx({});
+    const args = { selector: 'input[type=file]', downloadId: 8123 };
+    const result = await agent.executeTool(42, 'upload_file', args);
+
+    assert.equal(result.success, true);
+    assert.equal(result.file, 'test.zip');
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0].opts.redirect, 'manual');
+    assert.equal(fetchCalls[0].opts.credentials, 'include');
+    assert.equal(fetchCalls[1].opts.redirect, 'manual');
+    assert.equal(fetchCalls[1].opts.credentials, 'omit');
+
+    assert.equal(executedScripts.length, 1);
+    assert.ok(executedScripts[0].includes('new DataTransfer()'), 'Script should use DataTransfer');
+    assert.ok(executedScripts[0].includes('dt.items.add(file)'), 'Script should add file to DataTransfer');
+    assert.ok(executedScripts[0].includes('el.files = dt.files'), 'Script should assign DataTransfer files to input');
+    assert.ok(executedScripts[0].includes('el.type !== \'file\''), 'Script should require input[type=file]');
+  } finally {
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
+});
+
+test('upload_file (firefox) opens picker when downloadId is omitted and handles cancellation', async () => {
+  const agent = new AgentFx({});
+  let pickerEvent = null;
+  const args = { selector: 'input#upload' };
+  const toolPromise = agent.executeTool(42, 'upload_file', args, (evt, data) => {
+    if (evt === 'upload_picker') pickerEvent = data;
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(pickerEvent, 'Should emit upload_picker event');
+  assert.ok(pickerEvent.pickerId, 'Should generate pickerId');
+
+  agent.submitUploadPickerResponse(42, pickerEvent.pickerId, {
+    cancelled: true,
+    reason: 'User cancelled file selection',
+  });
+
+  const result = await toolPromise;
+  assert.equal(result.success, false);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.reason, 'User cancelled file selection');
+});
+
+test('upload_file (firefox) enforces Content-Length pre-read limit and handles read failure', async () => {
+  const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.browser = {
+      downloads: {
+        async search() {
+          return [{ id: 8124, state: 'complete', url: 'https://example.com/huge.zip', filename: '/home/user/Downloads/huge.zip' }];
+        },
+      },
+      tabs: {
+        async get(tabId) {
+          return { id: tabId, url: 'https://example.com/page' };
+        },
+      },
+    };
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get(key) {
+          if (String(key).toLowerCase() === 'content-length') return String(30 * 1024 * 1024);
+          return null;
+        },
+      },
+      async arrayBuffer() {
+        throw new Error('Should not call arrayBuffer when Content-Length exceeds 25MB');
+      },
+    });
+
+    const agent = new AgentFx({});
+    const resHuge = await agent.executeTool(42, 'upload_file', { selector: 'input[type=file]', downloadId: 8124 });
+    assert.equal(resHuge.success, false);
+    assert.match(resHuge.error, /exceeds 25MB limit/i);
+
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 404,
+      headers: { get: () => null },
+    });
+    const resFail = await agent.executeTool(42, 'upload_file', { selector: 'input[type=file]', downloadId: 8124 });
+    assert.equal(resFail.success, false);
+    assert.match(resFail.error, /Failed to re-fetch/i);
+  } finally {
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
+});
+
+test('upload_file (firefox) enforces streaming size limit when Content-Length is absent', async () => {
+  const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.browser = {
+      downloads: {
+        async search() {
+          return [{ id: 8125, state: 'complete', url: 'https://example.com/stream.zip', filename: '/home/user/Downloads/stream.zip' }];
+        },
+      },
+      tabs: {
+        async get(tabId) {
+          return { id: tabId, url: 'https://example.com/page' };
+        },
+      },
+    };
+
+    let cancelled = false;
+    const oversized = new Uint8Array(26 * 1024 * 1024);
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          let done = false;
+          return {
+            async read() {
+              if (done) return { done: true, value: undefined };
+              done = true;
+              return { done: false, value: oversized };
+            },
+            async cancel() { cancelled = true; },
+          };
+        },
+      },
+      async arrayBuffer() {
+        throw new Error('Should stream via getReader instead of arrayBuffer');
+      },
+    });
+
+    const agent = new AgentFx({});
+    const result = await agent.executeTool(42, 'upload_file', { selector: 'input', downloadId: 8125 });
+    assert.equal(result.success, false);
+    assert.match(result.error, /exceeds 25MB limit/i);
+    assert.equal(cancelled, true, 'reader should be cancelled after exceeding the cap');
+  } finally {
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
+});
+
 test('_pinDownloadHandles pins downloadIds id-only across download tools (chrome & firefox)', () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({});
@@ -20641,6 +21447,8 @@ test('settings exposes custom skills tab and packaged skills resource directory'
   assert.equal(DEFAULT_SKILLS_SEEDED_STORAGE_KEY_FX, 'defaultSkillsSeeded');
   assert.equal(DEFAULT_SKILLS_REMOVED_STORAGE_KEY_CH, 'defaultSkillsRemoved');
   assert.equal(DEFAULT_SKILLS_REMOVED_STORAGE_KEY_FX, 'defaultSkillsRemoved');
+  assert.deepEqual(PACKAGED_SKILL_SOURCES_CH.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm']);
+  assert.deepEqual(PACKAGED_SKILL_SOURCES_FX.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm']);
   assert.deepEqual(DEFAULT_SKILL_SOURCES_CH.map((skill) => skill.id), ['freeskillz-xyz']);
   assert.deepEqual(DEFAULT_SKILL_SOURCES_FX.map((skill) => skill.id), ['freeskillz-xyz']);
 
@@ -20662,17 +21470,24 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.ok(panelOrder[0] < panelOrder[1] && panelOrder[1] < panelOrder[2] && panelOrder[2] < panelOrder[3], `${label}: Memory panel should sit between Multimodal and Skills near the end`);
     assert.match(html, /id="skill-url"/, `${label}: URL skill input missing`);
     assert.match(html, /id="skill-text"/, `${label}: raw skill textarea missing`);
+    assert.match(html, /id="packaged-skills-list"/, `${label}: available packaged skills list missing`);
     assert.match(settingsJs, /CUSTOM_SKILLS_STORAGE_KEY/, `${label}: settings JS should persist custom skills`);
+    assert.match(settingsJs, /PACKAGED_SKILL_SOURCES/, `${label}: settings JS should expose the packaged skill catalog`);
+    assert.match(settingsJs, /function renderPackagedSkills\(\)/, `${label}: packaged skill renderer missing`);
+    assert.match(settingsJs, /async function addPackagedSkill\(/, `${label}: packaged skill enable flow missing`);
+    assert.match(settingsJs, /runtime\.getURL\(source\.path\)/, `${label}: packaged skill should load from the extension resource`);
     assert.match(settingsJs, /DEFAULT_SKILLS_REMOVED_STORAGE_KEY/, `${label}: settings JS should remember removed default skills`);
     assert.match(settingsJs, /removedSkill\?\.sourceType === 'built-in'/, `${label}: only built-in defaults should be marked removed`);
-    assert.match(settingsJs, /st\.skills\.source\.built_in/, `${label}: settings should label seeded default skills`);
+    assert.match(settingsJs, /installedDefault/, `${label}: reinstalling a default should clear its removal tombstone`);
+    assert.match(settingsJs, /st\.skills\.source\.built_in/, `${label}: settings should label packaged skills`);
     assert.match(settingsJs, /skill\.tools/, `${label}: settings should show exposed skill tools`);
     assert.match(background, /customSkillsReady/, `${label}: first chat should wait for custom skills hydration`);
     assert.match(background, /DEFAULT_SKILLS_SEEDED_STORAGE_KEY/, `${label}: default skill seeding marker missing`);
     assert.match(background, /DEFAULT_SKILLS_REMOVED_STORAGE_KEY/, `${label}: default skill removal marker missing`);
     assert.match(background, /!removedDefaultIds\.has\(skill\.id\)/, `${label}: missing default skill migration should respect explicit removals`);
     assert.match(background, /loadDefaultSkillRecords/, `${label}: default skill loader missing`);
-    assert.match(background, /refreshDefaultSkillRecords/, `${label}: default skill refresh migration missing`);
+    assert.match(background, /loadPackagedSkillRecords/, `${label}: packaged skill loader missing`);
+    assert.match(background, /refreshPackagedSkillRecords/, `${label}: installed packaged skill refresh migration missing`);
     assert.match(background, /sourceType:\s*'built-in'/, `${label}: default skill should be removable as a stored skill`);
     assert.match(manifest, /"skills\/\*"/, `${label}: manifest should include packaged skills resources`);
     assert.equal(fs.existsSync(path.join(ROOT, prefix, 'skills')), true, `${label}: skills directory missing`);
@@ -20689,6 +21504,26 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(freeSkillz, /"endpoint": "https:\/\/freeskillz\.xyz\/v1\/media\/jobs"/, `${label}: FreeSkillz media download endpoint missing`);
     assert.doesNotMatch(freeSkillz, /raw FreeSkillz endpoints only/i, `${label}: bundled FreeSkillz skill should prefer declared tools`);
     assert.doesNotMatch(freeSkillz, /127\.0\.0\.1|localhost|Local development/i, `${label}: FreeSkillz skill should not include local development URLs`);
+    const disposable = fs.readFileSync(path.join(ROOT, prefix, 'skills/disposable-email-mailtm.md'), 'utf8');
+    assert.match(disposable, /Mail\.tm/, `${label}: disposable email skill should use Mail.tm by default`);
+    assert.match(disposable, /disposable and should be used only for unimportant tasks/i, `${label}: disposable email skill should warn about unimportant use only`);
+    assert.match(disposable, /configured LLM provider/i, `${label}: disposable email skill should disclose provider exposure`);
+    assert.match(disposable, /browser conversation\/session until the user runs `\/reset`/i, `${label}: disposable email skill should disclose session retention`);
+    assert.match(disposable, /use `clarify` to confirm the user understands/i, `${label}: disposable email skill should require explicit user confirmation`);
+    assert.match(disposable, /Continue only after the user confirms/i, `${label}: disposable email skill should stop without confirmation`);
+    assert.match(disposable, /Never write the password or bearer token to the scratchpad/i, `${label}: disposable email skill should keep secrets out of the scratchpad`);
+    assert.doesNotMatch(disposable, /Keep the address, password, token/i, `${label}: disposable email skill should not pin secrets`);
+    assert.match(disposable, /confirm its hostname matches the signup site/i, `${label}: disposable email skill should validate verification-link destinations`);
+    assert.match(disposable, /before every normal success or failure exit/i, `${label}: disposable email skill should clean up failed flows too`);
+    assert.match(disposable, /use `schedule_resume` for a later inbox check/i, `${label}: disposable email skill should schedule external inbox waits`);
+    assert.doesNotMatch(disposable, /Poll every 5-10 seconds/i, `${label}: disposable email skill should not recommend tight polling`);
+    assert.match(disposable, /fetch_url/, `${label}: disposable email skill should use fetch_url in normal runs`);
+    assert.match(disposable, /\/allow-api/, `${label}: disposable email skill should explain API mutation approval`);
+    assert.match(disposable, new RegExp(String.raw`"url": "https:\/\/api\.mail\.tm\/accounts"`), `${label}: disposable email skill should document account creation`);
+    assert.match(disposable, /\"Authorization\": \"Bearer REPLACE_TOKEN\"/, `${label}: disposable email skill should document authenticated message reads`);
+    assert.match(disposable, /accounts\/REPLACE_ACCOUNT_ID/, `${label}: disposable email skill should document account deletion`);
+    assert.match(disposable, /"method": "DELETE"/, `${label}: disposable email skill should use DELETE for cleanup`);
+    assert.match(disposable, /Powered by \[Mail\.tm\]\(https:\/\/mail\.tm\)/, `${label}: disposable email skill should include visible attribution`);
   }
 });
 
@@ -21712,6 +22547,53 @@ test('sidepanel routes every run-error path through request-scoped deduplication
     assert.match(panel, /renderAgentErrorUpdate\(data, currentTabId, msg\.requestId\)/, `${label}: streamed errors should use message request identity`);
     assert.match(panel, /msgEl\.dataset\.tabId = active\.tabId;[\s\S]*?msgEl\.dataset\.runRequestId = active\.requestId;[\s\S]*?msgEl\.dataset\.errorMessageKey = active\.key;/, `${label}: persisted error cards should retain their dedupe identity`);
     assert.match(panel, /if \(active\.duplicate\) return;[\s\S]*?retryPayload: isTabAbortRequested\(tabId\) \? null : active\.retryPayload/, `${label}: only the first copy should retain the Retry action`);
+  }
+});
+
+test('WebBrain Cloud subscription 402 renders as one terminal assistant prompt', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const subscriptionMessage = 'webbrain-cloud error 402: Daily free WebBrain Cloud allowance used.\n'
+      + 'Subscribe for more usage: https://webbrain.one/subscribe?client_reference_id=device-guid';
+    let providerCalls = 0;
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'webbrain-cloud 1.0',
+      name: 'webbrain-cloud',
+      chat: async () => {
+        providerCalls += 1;
+        throw new Error(subscriptionMessage);
+      },
+    };
+    const agent = new AgentClass({
+      getActive: () => provider,
+      getVisionProvider: async () => null,
+    });
+    const tabId = label === 'chrome' ? 9401 : 9402;
+    agent.planBeforeAct = false;
+    agent.maxSteps = 2;
+    agent._manageContext = async () => {};
+    agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+    agent._maybeReinjectAdapter = async () => {};
+    agent._persist = () => {};
+    agent._startTraceRun = async () => null;
+    agent._endTraceRun = () => {};
+
+    const updates = [];
+    const final = await agent.processMessage(tabId, 'hello', (type, data) => {
+      updates.push({ type, data });
+    }, 'ask');
+
+    assert.equal(providerCalls, 1, `${label}: subscription 402 should not be retried`);
+    assert.equal(final, subscriptionMessage, `${label}: subscription prompt should remain the terminal assistant content`);
+    assert.equal(updates.filter(update => update.type === 'error').length, 0, `${label}: subscription 402 should not emit a generic error card`);
+    assert.equal(
+      updates.filter(update => update.type === 'warning' && update.data?.message === subscriptionMessage).length,
+      1,
+      `${label}: subscription 402 should emit one non-duplicating terminal warning`,
+    );
   }
 });
 

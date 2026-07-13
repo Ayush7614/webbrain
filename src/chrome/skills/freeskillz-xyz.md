@@ -78,6 +78,35 @@ This skill exposes `read_youtube_transcript`, `resolve_public_media`, and `downl
       }
     },
     {
+      "id": "nytimes_fetch",
+      "name": "fetch_nytimes_article",
+      "description": "Fallback fetch for the current or provided New York Times article through the public FreeSkillz service. Use only after inspecting the active page and confirming that the article body is unavailable because a subscription, login, or sign-in wall blocks it. If the signed-in browser can read the article, use the visible page and do not call this tool. Omit url to use the active tab. If the service cannot fetch the article, report that and use only the content visibly available without attempting paywall circumvention.",
+      "kind": "http",
+      "readOnly": true,
+      "method": "POST",
+      "endpoint": "https://freeskillz.xyz/nytimes/fetch",
+      "siteAdapters": ["nytimes"],
+      "activeTabUrlArg": "url",
+      "inputUrlArg": "url",
+      "inputUrlAllowlist": [
+        { "host": "nytimes.com", "paths": ["/"] }
+      ],
+      "resultPolicy": "untrusted",
+      "responseLimits": {
+        "maxTextChars": 60000
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Optional HTTPS nytimes.com article URL. Omit to use the active NYTimes tab."
+          }
+        },
+        "required": []
+      }
+    },
+    {
       "id": "public_media_resolve",
       "name": "resolve_public_media",
       "description": "Resolve an explicit public social/media URL via FreeSkillz.xyz before downloading. Returns title, extractor, media type, thumbnail, duration, and available formats when the provider can inspect the URL. This is read-only and does not require /allow-api.",

@@ -11,6 +11,7 @@ import {
   DEFAULT_SKILLS_REMOVED_STORAGE_KEY,
   MAX_CUSTOM_SKILL_IMPORT_BYTES,
   MAX_CUSTOM_SKILLS,
+  PACKAGED_SKILL_SOURCES,
   fetchSkillImportResponse,
   normalizeCustomSkills,
   normalizeDefaultSkillRemovalIds,
@@ -27,7 +28,7 @@ import {
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '23.0.2';
+const EXT_VERSION = '23.0.4';
 
 const providersContainer = document.getElementById('providers');
 const displaySettings = document.getElementById('display-settings');
@@ -76,6 +77,7 @@ const btnAddSkillText = document.getElementById('btn-add-skill-text');
 const btnClearSkillForm = document.getElementById('btn-clear-skill-form');
 const skillsResult = document.getElementById('skills-result');
 const skillsList = document.getElementById('skills-list');
+const packagedSkillsList = document.getElementById('packaged-skills-list');
 const btnTestVision = document.getElementById('btn-test-vision');
 const btnClearVision = document.getElementById('btn-clear-vision');
 const visionTestResult = document.getElementById('test-vision');
@@ -615,18 +617,45 @@ async function saveCustomSkills(nextSkills, opts = {}) {
   customSkills = normalizeCustomSkills(nextSkills);
   const update = { [CUSTOM_SKILLS_STORAGE_KEY]: customSkills };
   const removedSkill = opts.removedSkill;
-  if (removedSkill?.sourceType === 'built-in' && DEFAULT_SKILL_IDS.has(removedSkill.id)) {
+  const installedSkill = opts.installedSkill;
+  const removedDefault = removedSkill?.sourceType === 'built-in' && DEFAULT_SKILL_IDS.has(removedSkill.id);
+  const installedDefault = installedSkill?.sourceType === 'built-in' && DEFAULT_SKILL_IDS.has(installedSkill.id);
+  if (removedDefault || installedDefault) {
     const stored = await browser.storage.local.get(DEFAULT_SKILLS_REMOVED_STORAGE_KEY);
-    const removedIds = normalizeDefaultSkillRemovalIds(stored[DEFAULT_SKILLS_REMOVED_STORAGE_KEY]);
-    if (!removedIds.includes(removedSkill.id)) removedIds.push(removedSkill.id);
+    let removedIds = normalizeDefaultSkillRemovalIds(stored[DEFAULT_SKILLS_REMOVED_STORAGE_KEY]);
+    if (removedDefault && !removedIds.includes(removedSkill.id)) removedIds.push(removedSkill.id);
+    if (installedDefault) removedIds = removedIds.filter((id) => id !== installedSkill.id);
     update[DEFAULT_SKILLS_REMOVED_STORAGE_KEY] = removedIds;
   }
   await browser.storage.local.set(update);
   renderSkills();
 }
 
+function renderPackagedSkills() {
+  if (!packagedSkillsList) return;
+  const installedIds = new Set(customSkills.map((skill) => skill.id));
+  const available = PACKAGED_SKILL_SOURCES.filter((source) => !installedIds.has(source.id));
+  if (available.length === 0) {
+    packagedSkillsList.innerHTML = `<div class="setting-desc">${escapeHtml(t('st.skills.available.empty'))}</div>`;
+    return;
+  }
+  packagedSkillsList.innerHTML = available.map((source) => `
+    <div class="setting-row" style="align-items:center;">
+      <div class="setting-info">
+        <div class="setting-label">${escapeHtml(source.name)}</div>
+        <div class="setting-desc skill-source">${escapeHtml(t('st.skills.source.built_in'))}</div>
+      </div>
+      <button class="btn-secondary" data-packaged-skill-id="${escapeHtml(source.id)}">${escapeHtml(t('st.skills.enable'))}</button>
+    </div>`).join('');
+
+  packagedSkillsList.querySelectorAll('button[data-packaged-skill-id]').forEach((btn) => {
+    btn.addEventListener('click', () => addPackagedSkill(btn.dataset.packagedSkillId, btn));
+  });
+}
+
 function renderSkills() {
   if (!skillsList) return;
+  renderPackagedSkills();
   if (customSkills.length === 0) {
     skillsList.innerHTML = `<div class="setting-desc">${escapeHtml(t('st.skills.empty'))}</div>`;
     return;
@@ -662,7 +691,7 @@ function renderSkills() {
   });
 }
 
-async function addCustomSkill(record) {
+async function addCustomSkill(record, opts = {}) {
   if (customSkills.length >= MAX_CUSTOM_SKILLS) {
     throw new Error(t('st.skills.error.limit', { count: MAX_CUSTOM_SKILLS }));
   }
@@ -670,7 +699,30 @@ async function addCustomSkill(record) {
   if (next.length <= customSkills.length) {
     throw new Error(t('st.skills.error.empty_content'));
   }
-  await saveCustomSkills(next);
+  await saveCustomSkills(next, opts);
+}
+
+async function addPackagedSkill(skillId, button) {
+  const source = PACKAGED_SKILL_SOURCES.find((item) => item.id === skillId);
+  if (!source || customSkills.some((skill) => skill.id === skillId)) return;
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(browser.runtime.getURL(source.path));
+    if (!response.ok) throw new Error(t('st.skills.error.fetch', { status: response.status }));
+    const record = {
+      id: source.id,
+      name: source.name,
+      sourceType: 'built-in',
+      sourceUrl: source.path,
+      content: await response.text(),
+      createdAt: Date.now(),
+    };
+    await addCustomSkill(record, { installedSkill: record });
+    flashSkillsResult('ok', t('st.skills.added'));
+  } catch (e) {
+    if (button) button.disabled = false;
+    flashSkillsResult('fail', e.message || t('st.skills.error.add_failed'));
+  }
 }
 
 async function addSkillFromText() {

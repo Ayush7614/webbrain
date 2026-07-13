@@ -183,7 +183,7 @@ async function renderRun(runId) {
     replaceTimelineObjectUrls(new Set());
     return;
   }
-  const events = await getRunEvents(runId);
+  const events = await getRunEvents(runId).catch(() => []);
   if (!isCurrentRunRender(requestId, runId)) return;
   const objectUrls = new Set();
   const html = await buildRunView(run, events, false, objectUrls);
@@ -200,7 +200,9 @@ async function renderRun(runId) {
 async function renderCompare(aId, bId) {
   const requestId = ++traceRenderRequestId;
   const [a, b, aEv, bEv] = await Promise.all([
-    getRun(aId), getRun(bId), getRunEvents(aId), getRunEvents(bId),
+    getRun(aId), getRun(bId),
+    getRunEvents(aId).catch(() => []),
+    getRunEvents(bId).catch(() => []),
   ]);
   if (!isCurrentCompareRender(requestId, aId, bId)) return;
   if (!a || !b) {
@@ -460,7 +462,7 @@ document.getElementById('btn-export').addEventListener('click', async () => {
   const runId = selectedRunId;
   const run = await getRun(runId);
   if (!run) return alert(t('tr.select_first'));
-  const events = await getRunEvents(runId);
+  const events = await getRunEvents(runId).catch(() => []);
   // Resolve screenshot blobs to base64 for portability.
   for (const ev of events) {
     if (ev.kind === 'screenshot') {

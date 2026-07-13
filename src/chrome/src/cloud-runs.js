@@ -2,7 +2,19 @@ const DEFAULT_CLOUD_BRIDGE_URL = 'ws://127.0.0.1:17373/extension';
 const CLOUD_RUN_STORAGE_KEY = 'webbrainCloudRunSnapshots';
 const CLOUD_UPDATE_LIMIT = 200;
 const CLOUD_RUN_LIMIT = 50;
+const CLOUD_STRING_LIMIT = 16 * 1024;
+const CLOUD_RUN_PERSIST_BYTES_LIMIT = 256 * 1024;
+const CLOUD_PERSIST_BYTES_LIMIT = 4 * 1024 * 1024;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'aborted']);
+// Suffix match on normalized keys (non-alnum stripped). Avoid bare `pin` as a
+// suffix — it over-matches `spin`, `mapPin`, etc. Short exact keys live in the set.
+const SENSITIVE_CLOUD_KEY = /(?:authorization|cookie|password|passwd|passphrase|passcode|pincode|secret|credential|privatekey|apikey|token|accesskeyid|secretaccesskey)$/i;
+const SENSITIVE_CLOUD_KEY_EXACT = new Set(['pin', 'otp', 'cvv', 'cvc', 'ssn']);
+const LARGE_IMAGE_KEY = /(?:attachimage|screenshot|image|imagedata|dataurl)$/i;
+
+function normalizedCloudKey(key) {
+  return String(key || '').replace(/[^a-z0-9]/gi, '');
+}
 
 export function normalizeCloudBridgeUrl(value = DEFAULT_CLOUD_BRIDGE_URL) {
   const url = new URL(String(value || DEFAULT_CLOUD_BRIDGE_URL));
@@ -13,20 +25,92 @@ export function normalizeCloudBridgeUrl(value = DEFAULT_CLOUD_BRIDGE_URL) {
   return url.href;
 }
 
+function isSensitiveCloudKey(key) {
+  const normalizedKey = normalizedCloudKey(key);
+  if (!normalizedKey) return false;
+  return SENSITIVE_CLOUD_KEY.test(normalizedKey) || SENSITIVE_CLOUD_KEY_EXACT.has(normalizedKey);
+}
+
 function scrubCloudValue(value) {
   try {
     return JSON.parse(JSON.stringify(value, (key, item) => {
-      if (typeof item === 'string' && item.startsWith('data:image/')) {
+      const normalizedKey = normalizedCloudKey(key);
+      if (normalizedKey && isSensitiveCloudKey(key)) {
+        return '[redacted]';
+      }
+      if (typeof item === 'string' && /^data:image\//i.test(item)) {
         return `[image omitted: ${item.length} chars]`;
       }
-      if ((key === '_attachImage' || key === 'screenshot') && typeof item === 'string' && item.length > 500) {
+      if (LARGE_IMAGE_KEY.test(normalizedKey) && typeof item === 'string' && item.length > 500) {
         return `[large payload omitted: ${item.length} chars]`;
+      }
+      if (typeof item === 'string' && item.length > CLOUD_STRING_LIMIT) {
+        return `${item.slice(0, CLOUD_STRING_LIMIT)}\n[truncated ${item.length - CLOUD_STRING_LIMIT} chars for cloud persistence]`;
       }
       return item;
     }));
   } catch {
     return { unserializable: true };
   }
+}
+
+function serializedBytes(value) {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
+function compactCloudRunForPersistence(run) {
+  const row = scrubCloudValue(run);
+  row.structured = row.structured ?? !!run?.outputSchema;
+  if (serializedBytes(row) <= CLOUD_RUN_PERSIST_BYTES_LIMIT) return row;
+
+  const omittedUpdates = Array.isArray(row.updates) ? row.updates.length : 0;
+  row.updates = [];
+  row.persistenceTruncated = { omittedUpdates };
+  if (serializedBytes(row) <= CLOUD_RUN_PERSIST_BYTES_LIMIT) return row;
+
+  row.content = '';
+  row.outputSchema = null;
+  row.persistenceTruncated.omittedContent = true;
+  row.persistenceTruncated.omittedSchema = true;
+  if (serializedBytes(row) <= CLOUD_RUN_PERSIST_BYTES_LIMIT) return row;
+
+  delete row.result;
+  row.persistenceTruncated.omittedResult = true;
+  if (serializedBytes(row) <= CLOUD_RUN_PERSIST_BYTES_LIMIT) return row;
+
+  return scrubCloudValue({
+    runId: run?.runId,
+    status: run?.status,
+    tabId: run?.tabId,
+    task: run?.task,
+    structured: !!run?.outputSchema || run?.structured === true,
+    summary: run?.summary,
+    content: '',
+    finalUrl: run?.finalUrl,
+    error: run?.error,
+    createdAt: run?.createdAt,
+    updatedAt: run?.updatedAt,
+    completedAt: run?.completedAt,
+    updates: [],
+    persistenceTruncated: { omittedUpdates, omittedResult: true, omittedSchema: true },
+  });
+}
+
+export function buildCloudPersistenceRows(runs) {
+  const values = Array.isArray(runs) ? [...runs] : [...(runs?.values?.() || [])];
+  const candidates = values
+    .sort((a, b) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')))
+    .slice(0, CLOUD_RUN_LIMIT)
+    .map(compactCloudRunForPersistence);
+  const rows = [];
+  let totalBytes = 2;
+  for (const row of candidates) {
+    const rowBytes = serializedBytes(row) + (rows.length ? 1 : 0);
+    if (totalBytes + rowBytes > CLOUD_PERSIST_BYTES_LIMIT) continue;
+    rows.push(row);
+    totalBytes += rowBytes;
+  }
+  return rows;
 }
 
 function cloudSnapshot(run, { includeUpdates = true } = {}) {
@@ -36,8 +120,9 @@ function cloudSnapshot(run, { includeUpdates = true } = {}) {
     status: run.status,
     tabId: run.tabId,
     task: run.task,
-    structured: !!run.outputSchema,
+    structured: run.structured ?? !!run.outputSchema,
     result: run.result,
+    persistenceTruncated: run.persistenceTruncated,
     summary: run.summary,
     content: run.content,
     finalUrl: run.finalUrl,
@@ -79,10 +164,7 @@ export function createCloudRunController({
 
   async function persist() {
     if (!api.storage?.session?.set) return;
-    const rows = [...runs.values()]
-      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-      .slice(0, CLOUD_RUN_LIMIT)
-      .map(run => scrubCloudValue(run));
+    const rows = buildCloudPersistenceRows(runs);
     persistQueue = persistQueue
       .catch(() => {})
       .then(() => api.storage.session.set({ [CLOUD_RUN_STORAGE_KEY]: rows }));
@@ -106,7 +188,18 @@ export function createCloudRunController({
       let changed = false;
       for (const row of rows) {
         if (!row?.runId) continue;
-        const restored = { ...row, updates: Array.isArray(row.updates) ? row.updates : [] };
+        const rawUpdates = Array.isArray(row.updates) ? row.updates : [];
+        let nextUpdateSeq = 0;
+        const updates = rawUpdates.map((update) => {
+          const candidate = Number(update?.seq);
+          const seq = Number.isSafeInteger(candidate) && candidate > nextUpdateSeq
+            ? candidate
+            : nextUpdateSeq + 1;
+          if (seq !== candidate) changed = true;
+          nextUpdateSeq = seq;
+          return { ...update, seq };
+        });
+        const restored = { ...row, updates, nextUpdateSeq };
         if (!TERMINAL_STATUSES.has(restored.status)) {
           const at = isoNow();
           restored.status = restored.status === 'aborting' ? 'aborted' : 'failed';
@@ -167,7 +260,22 @@ export function createCloudRunController({
 
   function pushUpdate(run, type, data) {
     run.updatedAt = isoNow();
-    run.updates.push({ type, data: scrubCloudValue(data), ts: run.updatedAt });
+    const previous = run.updates.at(-1);
+    // Consecutive text_delta events upsert the same seq: content grows in place
+    // and ts advances. Full-array pollers are fine; append-only / seq-cursor
+    // clients must re-read that row (or take a full snapshot) rather than
+    // assuming each seq is immutable.
+    if (type === 'text_delta' && previous?.type === 'text_delta') {
+      previous.data = scrubCloudValue({
+        ...previous.data,
+        content: `${previous.data?.content || ''}${data?.content || ''}`,
+      });
+      previous.ts = run.updatedAt;
+      schedulePersist();
+      return;
+    }
+    run.nextUpdateSeq = (Number(run.nextUpdateSeq) || 0) + 1;
+    run.updates.push({ seq: run.nextUpdateSeq, type, data: scrubCloudValue(data), ts: run.updatedAt });
     if (run.updates.length > CLOUD_UPDATE_LIMIT) {
       run.updates.splice(0, run.updates.length - CLOUD_UPDATE_LIMIT);
     }
@@ -211,6 +319,7 @@ export function createCloudRunController({
       finalUrl: '',
       error: '',
       updates: [],
+      nextUpdateSeq: 0,
       createdAt,
       updatedAt: createdAt,
       completedAt: null,

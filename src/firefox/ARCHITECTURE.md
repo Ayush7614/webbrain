@@ -1,6 +1,6 @@
 # WebBrain Firefox Extension — Architecture
 
-> Version 23.0.2 · Manifest V2 · Background Page
+> Version 23.0.4 · Manifest V2 · Background Page
 
 ## How Firefox Differs from Chrome
 
@@ -288,7 +288,8 @@ Legacy tier (kept for compatibility with older prompts and for non-AX flows):
 
 Dev-only Firefox add-ons: `read_page_source`, `inspect_element_styles`, and `execute_js`. `execute_js` is intentionally absent from normal Act and is only exposed when the user selects Dev mode on a Mid/Full provider.
 
-Chrome-only (absent in Firefox): `full_page_screenshot`, `shadow_dom_query` (CDP shadow-pierce variant), `upload_file` (CDP-driven file input), and slash-driven tab/screen recording.
+Chrome-only (absent in Firefox): `full_page_screenshot`, `shadow_dom_query` (CDP shadow-pierce variant), and slash-driven tab/screen recording.
+Firefox `upload_file` supports `downloadId` re-fetch and a sidepanel user file picker; arbitrary local `filePath` uploads remain Chrome-only (CDP).
 
 ### Click — content script implementation
 

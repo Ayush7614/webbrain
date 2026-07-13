@@ -301,19 +301,24 @@ export async function endRun(runId, { status = 'done', finalContent = null } = {
 
 // ----- Reader API (used by traces.html) --------------------------------------
 
-export async function listRuns({ limit = 500 } = {}) {
+export async function listRuns({ limit = 500, conversationId = null } = {}) {
   const db = await openDB();
   const idx = tx(db, ['runs'], 'readonly').objectStore('runs').index('startedAt');
   const out = [];
-  await new Promise((resolve) => {
+  // When conversationId is set, only matching runs count toward `limit`, so a
+  // chat's tool-chain export is not starved by unrelated newer runs.
+  await new Promise((resolve, reject) => {
     const req = idx.openCursor(null, 'prev');
     req.onsuccess = () => {
       const c = req.result;
       if (!c || out.length >= limit) return resolve();
-      out.push(c.value);
+      const row = c.value;
+      if (!conversationId || row?.conversationId === conversationId) {
+        out.push(row);
+      }
       c.continue();
     };
-    req.onerror = () => resolve();
+    req.onerror = () => reject(req.error || new Error('listRuns failed'));
   });
   return out;
 }
@@ -327,7 +332,7 @@ export async function getRunEvents(runId) {
   const db = await openDB();
   const idx = tx(db, ['events'], 'readonly').objectStore('events').index('runId');
   const out = [];
-  await new Promise((resolve) => {
+  await new Promise((resolve, reject) => {
     const req = idx.openCursor(IDBKeyRange.only(runId));
     req.onsuccess = () => {
       const c = req.result;
@@ -335,7 +340,7 @@ export async function getRunEvents(runId) {
       out.push(c.value);
       c.continue();
     };
-    req.onerror = () => resolve();
+    req.onerror = () => reject(req.error || new Error('getRunEvents failed'));
   });
   out.sort((a, b) => a.seq - b.seq);
   return out;

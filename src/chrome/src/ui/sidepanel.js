@@ -373,6 +373,7 @@ const SLASH_COMMANDS = [
   { value: '/record-full-screen', descriptionKey: 'sp.slash.record_full_screen' },
   { value: '/record', descriptionKey: 'sp.slash.record' },
   { value: '/export', descriptionKey: 'sp.slash.export' },
+  { value: '/export-with-traces', descriptionKey: 'sp.slash.export_traces' },
   { value: '/profile', descriptionKey: 'sp.slash.profile' },
   { value: '/vision', descriptionKey: 'sp.slash.vision' },
   { value: '/ask', descriptionKey: 'sp.slash.ask' },
@@ -388,6 +389,7 @@ const OUT_OF_BAND_SLASH_COMMANDS = new Set([
   '/list-schedules',
   '/dangerously-skip-permissions',
   '/screenshot',
+  '/export-with-traces',
   '/export',
   '/verbose',
 ]);
@@ -3652,6 +3654,50 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     } catch (e) {
       if (currentTabId !== tabId) return '';
       addPersistentSlashMessage(systemHtml(tSystemHtml('sp.record.error', { error: e.message })));
+    }
+    return '';
+  }
+
+  // /export-with-traces — export the full tool chain from the trace store.
+  // Checked BEFORE /export because /export\b also matches /export-with-traces.
+  if (/^\/export-with-traces\b\s*/i.test(text)) {
+    let res;
+    try {
+      res = await sendToBackground('export_traces', { tabId });
+    } catch (e) {
+      addPersistentSlashMessage(`${t('sp.export_traces.error')} (${e?.message || e})`);
+      return '';
+    }
+    if (!res?.ok) {
+      addPersistentSlashMessage(`${t('sp.export_traces.error')} (${res?.error || 'unknown error'})`);
+      return '';
+    }
+    if (!res.markdown || res.turnCount === 0) {
+      addPersistentSlashMessage(
+        res.reason === 'no-conversation'
+          ? t('sp.export_traces.no_conversation')
+          : t('sp.export_traces.none'),
+      );
+      return '';
+    }
+    const blob = new Blob([res.markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `webbrain-traces-${Date.now()}.md`;
+    document.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 7000);
+    }
+    if (res.partial) {
+      addPersistentSlashMessage(t('sp.export_traces.partial'));
+    } else if (res.truncated) {
+      addPersistentSlashMessage(t('sp.export_traces.truncated'));
+    } else {
+      addPersistentSlashMessage(t('sp.export_traces.done'));
     }
     return '';
   }

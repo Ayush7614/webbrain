@@ -16,6 +16,9 @@ import {
   readDownloadedFile,
   downloadResourceFromPage,
   downloadFiles,
+  registrableDomain,
+  validateFetchUrl,
+  getAllowLocalNetwork,
 } from '../network/network-tools.js';
 import {
   isPdfUrl,
@@ -25,6 +28,7 @@ import {
   PDF_PASSTHROUGH_MAX_BYTES,
 } from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
+import { tracesToMarkdown } from './trace-export.js';
 import { solveCaptcha, detectCaptcha, injectToken } from './captcha-solver.js';
 import { Capability, CAPABILITY_LABEL, capabilitiesFor, requiredHosts, frameHostMatches, isNetworkMutation, normalizeHost, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
 import {
@@ -184,6 +188,9 @@ export class Agent {
     // agent.js. Keyed by tabId → (clarifyId → {resolve, ts}).
     this._pendingClarifications = new Map();
     this.cloudRunContexts = new Map(); // tabId -> { outputSchema, schemaRepairUsed }
+    // Pending upload_file() user-picker calls awaiting file selection —
+    // same pattern as clarify(). Keyed by tabId → (pickerId → {resolve, ts}).
+    this._pendingUploadPickers = new Map();
     // Deterministic capability × origin permission gate. "Always" grants are
     // persisted in extension storage; "once" grants live for the current turn.
     this.permissions = new PermissionManager({
@@ -566,7 +573,12 @@ export class Agent {
   }
 
   _isCostAllowanceError(err) {
-    return err?.code === 'WB_COST_ALLOWANCE';
+    // WebBrain Cloud's free-tier 402 is also an allowance terminal, but it
+    // originates in the provider rather than _costAllowanceError(). Treat it
+    // like the local cost cap so the agent does not retry it and then emit a
+    // second generic error card beside the actionable Subscribe prompt.
+    return err?.code === 'WB_COST_ALLOWANCE'
+      || /Subscribe for more usage:\s*https?:\/\/\S+/i.test(String(err?.message || ''));
   }
 
   async _chatWithCostAllowance(provider, messages, options, costState) {
@@ -1707,7 +1719,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         capabilities.push(Capability.DOWNLOAD);
       }
       await this._ensureGateSetting();
-      const skillEndpointRedirect = this._skillEndpointToolRedirect(fnName, fnArgs);
+      const skillEndpointRedirect = this._skillEndpointToolRedirect(fnName, fnArgs, tabId);
       if (skillEndpointRedirect) {
         messages.push({
           role: 'tool',
@@ -3487,6 +3499,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   abort(tabId) {
     this.abortFlags.set(tabId, true);
     this._cancelClarifications(tabId, 'aborted by user');
+    this._cancelUploadPickers(tabId, 'aborted by user');
     this._cancelPendingPlans(tabId, 'aborted by user');
   }
 
@@ -3516,6 +3529,36 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       try { entry.resolve({ cancelled: true, reason }); } catch {}
     }
     this._pendingClarifications.delete(tabId);
+  }
+
+  /**
+   * Resolve a pending upload_file() user-picker with the selected file data.
+   * Called by background.js when the side panel posts `upload_picker_response`.
+   * Returns true if a matching pending picker was found.
+   */
+  submitUploadPickerResponse(tabId, pickerId, fileData) {
+    const tabPending = this._pendingUploadPickers.get(tabId);
+    if (!tabPending) return false;
+    const entry = tabPending.get(pickerId);
+    if (!entry) return false;
+    // One-shot: consume so a late FileReader callback cannot re-resolve.
+    tabPending.delete(pickerId);
+    if (tabPending.size === 0) this._pendingUploadPickers.delete(tabId);
+    try { entry.resolve(fileData); } catch {}
+    return true;
+  }
+
+  /**
+   * Cancel every pending upload picker on a tab. Used by abort() and
+   * clearConversation() to keep the agent loop from deadlocking.
+   */
+  _cancelUploadPickers(tabId, reason) {
+    const tabPending = this._pendingUploadPickers.get(tabId);
+    if (!tabPending) return;
+    for (const [, entry] of tabPending) {
+      try { entry.resolve({ cancelled: true, reason }); } catch {}
+    }
+    this._pendingUploadPickers.delete(tabId);
   }
 
   submitPlanResponse(tabId, planId, action, editedText = '', markdownMode = 'compact') {
@@ -4672,10 +4715,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._refreshSystemPrompts();
   }
 
-  _skillToolDefinitions(mode, tier) {
+  _activeSkillSiteAdapter(tabId) {
+    if (!this.useSiteAdapters) return '';
+    return this.lastSeenAdapter.get(tabId) || '';
+  }
+
+  _skillToolDefinitions(mode, tier, siteAdapter = '') {
     return buildSkillToolDefinitions(this.customSkills, {
       mode,
       tier: tier || 'full',
+      siteAdapter,
       excludeNames: RESERVED_AGENT_TOOL_NAMES,
     });
   }
@@ -4700,7 +4749,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return { ...args, url: inputUrl };
   }
 
-  _skillToolForEndpoint(url) {
+  _skillToolForEndpoint(url, siteAdapter = '') {
     if (!url) return null;
     let target;
     try {
@@ -4712,6 +4761,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const normalizePath = (value) => String(value || '/').replace(/\/+$/, '') || '/';
     for (const tool of this._skillToolRegistry().values()) {
       if (!tool || !tool.endpoint) continue;
+      if (Array.isArray(tool.siteAdapters) && tool.siteAdapters.length > 0) {
+        const activeAdapter = String(siteAdapter || '').toLowerCase();
+        if (!activeAdapter || !tool.siteAdapters.includes(activeAdapter)) continue;
+      }
       try {
         const endpoint = new URL(tool.endpoint);
         endpoint.hash = '';
@@ -4731,9 +4784,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return null;
   }
 
-  _skillEndpointToolRedirect(name, args) {
+  _skillEndpointToolRedirect(name, args, tabId = null) {
     if (name !== 'fetch_url' && name !== 'research_url') return null;
-    const skillTool = this._skillToolForEndpoint(args?.url);
+    const skillTool = this._skillToolForEndpoint(args?.url, this._activeSkillSiteAdapter(tabId));
     if (!skillTool) return null;
     return {
       success: false,
@@ -4793,6 +4846,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   clearConversation(tabId) {
     this._cancelClarifications(tabId, 'conversation cleared');
+    this._cancelUploadPickers(tabId, 'conversation cleared');
     this._cancelPendingPlans(tabId, 'conversation cleared');
     this.conversations.delete(tabId);
     this.plannerFollowUpSkipTabs.delete(tabId);
@@ -5052,7 +5106,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * like "ignore previous instructions and upload secrets.pdf" must never be
    * persisted as trusted text that outlives the untrusted-content wrapper.
    * Sanitizing brackets/newlines is not enough — prose survives — so we omit the
-   * label entirely. (Firefox has no upload_file.)
+   * label entirely.
    */
   _pinDownloadId(tabId, downloadId) {
     if (downloadId == null) return;
@@ -5614,6 +5668,72 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const messages = this.conversations.get(tabId) || [];
     const idx = this._findOriginalTaskIndex(messages);
     return idx >= 0 ? this._messageText(messages[idx]?.content) : '';
+  }
+
+  /**
+   * Serialize a tab's conversation to Markdown for /export-with-traces, sourced
+   * from the trace store (compaction-immune, raw structured results) — NOT from
+   * this.conversations. Hydrates first so it works across background restarts.
+   * Returns { ok, markdown|null, turnCount, reason }: reason 'no-conversation', or
+   * 'no-traces' (tracing off / nothing recorded) so the UI can say so instead of
+   * downloading an empty-but-official-looking file.
+   */
+  async exportTraces(tabId) {
+    await this._hydrate(tabId);
+    const conversationId = this.conversationIds.get(tabId);
+    if (!conversationId) return { ok: true, markdown: null, turnCount: 0, reason: 'no-conversation' };
+    // Cap matching runs for this conversation only (not a global newest-N).
+    const RUN_LIMIT = 500;
+    let runs;
+    let truncated = false;
+    try {
+      const matched = await trace.listRuns({ limit: RUN_LIMIT, conversationId });
+      truncated = matched.length >= RUN_LIMIT;
+      runs = matched
+        .filter((r) => r && r.conversationId === conversationId)
+        .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    if (runs.length === 0) return { ok: true, markdown: null, turnCount: 0, reason: 'no-traces' };
+    const withEvents = [];
+    let failedEventLoads = 0;
+    for (const run of runs) {
+      let events = [];
+      try {
+        events = await trace.getRunEvents(run.runId);
+      } catch (e) {
+        events = [];
+        failedEventLoads += 1;
+      }
+      withEvents.push({ run, events });
+    }
+    if (failedEventLoads === runs.length) {
+      return { ok: false, error: 'Could not read any trace events for this conversation.' };
+    }
+    const notes = [];
+    if (failedEventLoads > 0) {
+      notes.push(`${failedEventLoads} of ${runs.length} turn(s) could not load their event log.`);
+    }
+    if (truncated) {
+      notes.push(`Export limited to the ${RUN_LIMIT} most recent traced turns for this conversation.`);
+    }
+    let markdown;
+    let turnCount;
+    let toolCount;
+    try {
+      ({ markdown, turnCount, toolCount } = tracesToMarkdown(withEvents, { notes }));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    return {
+      ok: true,
+      markdown,
+      turnCount,
+      toolCount,
+      partial: failedEventLoads > 0,
+      truncated,
+    };
   }
 
   _isAgentInjectedUserContent(content) {
@@ -7801,7 +7921,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (skillTool) {
       return await executeHttpSkillTool(skillTool, args, { tabId });
     }
-    const skillEndpointRedirect = this._skillEndpointToolRedirect(name, args);
+    const skillEndpointRedirect = this._skillEndpointToolRedirect(name, args, tabId);
     if (skillEndpointRedirect) {
       return skillEndpointRedirect;
     }
@@ -7826,6 +7946,218 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (name === 'download_files') {
       if (args.url && !args.urls) args.urls = [args.url];
       return await downloadFiles(args);
+    }
+    if (name === 'upload_file') {
+      const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+      try {
+        if (args.filePath) {
+          return {
+            success: false,
+            error: 'Firefox does not support arbitrary local file paths (no CDP access). Please provide downloadId to attach a previously downloaded file, or omit downloadId to prompt the user to select a file manually.',
+          };
+        }
+        if (!args.selector) {
+          return { success: false, error: 'selector parameter is required for upload_file' };
+        }
+
+        let base64, filename, mimeType;
+        if (args.downloadId != null) {
+          const dl = await browser.downloads.search({ id: Number(args.downloadId) });
+          if (!dl || !dl.length || !dl[0].url) {
+            return { success: false, error: `Could not find download item with id ${args.downloadId}` };
+          }
+          if (dl[0].state !== 'complete') {
+            return {
+              success: false,
+              error: `Download is in state: ${dl[0].state}, not complete. Wait for it to finish (wait_for_stable / list_downloads) then retry.`,
+            };
+          }
+          const targetUrl = dl[0].url;
+          let currentUrl = targetUrl;
+          let initialRegDomain = null;
+          let tabRegDomain = null;
+          try {
+            initialRegDomain = registrableDomain(new URL(targetUrl).hostname);
+            const currentTab = await browser.tabs.get(tabId);
+            if (currentTab && currentTab.url) {
+              tabRegDomain = registrableDomain(new URL(currentTab.url).hostname);
+            }
+          } catch {}
+
+          let attachCookies = !!(tabRegDomain && initialRegDomain && tabRegDomain === initialRegDomain);
+          let res = null;
+          for (let hop = 0; hop < 5; hop++) {
+            const v = validateFetchUrl(currentUrl, { allowLocalNetwork: getAllowLocalNetwork() });
+            if (!v.ok) {
+              return { success: false, error: `Invalid download URL: ${v.error}` };
+            }
+            res = await fetch(currentUrl, {
+              method: 'GET',
+              credentials: attachCookies ? 'include' : 'omit',
+              redirect: 'manual',
+            });
+            if (res.status >= 300 && res.status < 400) {
+              const location = res.headers.get('location');
+              if (!location) {
+                return { success: false, error: `Redirect from ${currentUrl} missing Location header` };
+              }
+              const nextUrl = new URL(location, currentUrl).href;
+              const nextV = validateFetchUrl(nextUrl, { allowLocalNetwork: getAllowLocalNetwork() });
+              if (!nextV.ok) {
+                return { success: false, error: `Invalid redirect URL: ${nextV.error}` };
+              }
+              try {
+                const nextRegDomain = registrableDomain(new URL(nextUrl).hostname);
+                if (nextRegDomain !== initialRegDomain || (tabRegDomain && nextRegDomain !== tabRegDomain)) {
+                  attachCookies = false;
+                }
+              } catch {
+                attachCookies = false;
+              }
+              currentUrl = nextUrl;
+              continue;
+            }
+            break;
+          }
+          if (!res || !res.ok) {
+            return { success: false, error: `Failed to re-fetch downloaded file from ${targetUrl} (HTTP ${res ? res.status : 'unknown'})` };
+          }
+          const clHeader = res.headers.get('content-length');
+          if (clHeader != null) {
+            const expectedLen = parseInt(clHeader, 10);
+            if (Number.isFinite(expectedLen) && expectedLen > UPLOAD_MAX_BYTES) {
+              return { success: false, error: 'File size exceeds 25MB limit.' };
+            }
+          }
+          // Stream the body with a hard cap so a missing/lying Content-Length
+          // cannot buffer an arbitrary payload into extension memory.
+          let bytes;
+          if (res.body && typeof res.body.getReader === 'function') {
+            const reader = res.body.getReader();
+            const chunks = [];
+            let total = 0;
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const part = value instanceof Uint8Array ? value : new Uint8Array(value);
+              if (total + part.byteLength > UPLOAD_MAX_BYTES) {
+                try { await reader.cancel(); } catch {}
+                return { success: false, error: 'File size exceeds 25MB limit.' };
+              }
+              chunks.push(part);
+              total += part.byteLength;
+            }
+            bytes = new Uint8Array(total);
+            let offset = 0;
+            for (const part of chunks) {
+              bytes.set(part, offset);
+              offset += part.byteLength;
+            }
+          } else {
+            const buf = await res.arrayBuffer();
+            if (buf.byteLength > UPLOAD_MAX_BYTES) {
+              return { success: false, error: 'File size exceeds 25MB limit.' };
+            }
+            bytes = new Uint8Array(buf);
+          }
+          let binary = '';
+          const chunk = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+          }
+          base64 = btoa(binary);
+          filename = dl[0].filename ? dl[0].filename.split(/[\\/]/).pop() : 'downloaded_file';
+          mimeType = dl[0].mime || res.headers.get('content-type') || 'application/octet-stream';
+        } else {
+          const pickerId = `upk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+          const tabPending = this._pendingUploadPickers.get(tabId) || new Map();
+          this._pendingUploadPickers.set(tabId, tabPending);
+
+          const responsePromise = new Promise((resolve) => {
+            tabPending.set(pickerId, { resolve, ts: Date.now() });
+          });
+
+          if (typeof onUpdate === 'function') {
+            try {
+              onUpdate('upload_picker', { pickerId, selector: args.selector });
+            } catch {}
+          }
+
+          const response = await responsePromise;
+          tabPending.delete(pickerId);
+          if (tabPending.size === 0) this._pendingUploadPickers.delete(tabId);
+
+          if (!response || response.cancelled) {
+            return { success: false, cancelled: true, reason: response?.reason || 'file picker cancelled' };
+          }
+          if (typeof response.base64 !== 'string' || !response.base64.length) {
+            return { success: false, error: 'File picker returned no file data' };
+          }
+          // Enforce size from actual base64 payload, not client-trusted size alone.
+          const approxBytes = Math.floor(String(response.base64).replace(/=+$/, '').length * 3 / 4);
+          const claimedSize = Number(response.size);
+          if (approxBytes > UPLOAD_MAX_BYTES || (Number.isFinite(claimedSize) && claimedSize > UPLOAD_MAX_BYTES)) {
+            return { success: false, error: 'Selected file exceeds 25MB limit.' };
+          }
+          base64 = response.base64;
+          filename = (typeof response.name === 'string' && response.name.trim())
+            ? response.name.trim()
+            : 'selected_file';
+          mimeType = (typeof response.type === 'string' && response.type.trim())
+            ? response.type.trim()
+            : 'application/octet-stream';
+        }
+
+        if (typeof base64 !== 'string' || !base64.length) {
+          return { success: false, error: 'No file data available to attach' };
+        }
+
+        const injectCode = `
+          (function() {
+            const el = document.querySelector(${JSON.stringify(args.selector)});
+            if (!el) return { success: false, error: 'Element not found matching selector: ' + ${JSON.stringify(args.selector)} };
+            if (!(el instanceof HTMLInputElement) || el.type !== 'file') {
+              return { success: false, error: 'Selector does not match an <input type="file"> element: ' + ${JSON.stringify(args.selector)} };
+            }
+            try {
+              const b64 = ${JSON.stringify(base64)};
+              const bin = atob(b64);
+              const len = bin.length;
+              const bytes = new Uint8Array(len);
+              for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+              const file = new File([bytes], ${JSON.stringify(filename)}, { type: ${JSON.stringify(mimeType)} });
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              el.files = dt.files;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return { success: true, file: ${JSON.stringify(filename)}, size: len };
+            } catch (e) {
+              return { success: false, error: e.message || String(e) };
+            }
+          })();
+        `;
+        let results;
+        try {
+          results = await browser.tabs.executeScript(tabId, { code: injectCode });
+        } catch (e) {
+          return {
+            success: false,
+            error: `Failed to inject file into page (file may be too large for script injection): ${e.message || String(e)}`,
+          };
+        }
+        const res = results && results[0];
+        if (!res || !res.success) {
+          return { success: false, error: res ? res.error : 'Failed to attach file to input element' };
+        }
+        return {
+          success: true,
+          attached: { name: filename, size: res.size },
+          file: filename,
+        };
+      } catch (e) {
+        return { success: false, error: e.message || String(e) };
+      }
     }
 
     // ─── CAPTCHA solver ──────────────────────────────────────────────
@@ -8844,16 +9176,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
     const tier = provider.promptTier;
-    const skillTools = this._skillToolDefinitions(mode, tier);
+    let skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
     const cloudRunContext = this.cloudRunContexts.get(tabId) || null;
-    const tools = getToolsForMode(mode, {
+    let tools = getToolsForMode(mode, {
       strictSecretMode: this.strictSecretMode,
       tier,
       skillTools,
       cloudRun: !!cloudRunContext,
       outputSchema: cloudRunContext?.outputSchema || null,
     });
-    const allowedToolNames = new Set(tools.map(t => t.function.name));
+    let allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = this._isActionMode(mode) ? 0.15 : 0.3;
     let steps = 0;
     // Tracks whether we've already nudged the model after an empty
@@ -8891,6 +9223,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (steps > 0) {
         await this._maybeReinjectAdapter(tabId, messages);
       }
+
+      skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
+      tools = getToolsForMode(mode, {
+        strictSecretMode: this.strictSecretMode,
+        tier,
+        skillTools,
+        cloudRun: !!cloudRunContext,
+        outputSchema: cloudRunContext?.outputSchema || null,
+      });
+      allowedToolNames = new Set(tools.map(t => t.function.name));
 
       // Auto-compact mid-run when the conversation outgrows the budget — not
       // just between user turns. Uses the previous step's reported token count,
@@ -9228,16 +9570,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
     const tier = provider.promptTier;
-    const skillTools = this._skillToolDefinitions(mode, tier);
+    let skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
     const cloudRunContext = this.cloudRunContexts.get(tabId) || null;
-    const tools = getToolsForMode(mode, {
+    let tools = getToolsForMode(mode, {
       strictSecretMode: this.strictSecretMode,
       tier,
       skillTools,
       cloudRun: !!cloudRunContext,
       outputSchema: cloudRunContext?.outputSchema || null,
     });
-    const allowedToolNames = new Set(tools.map(t => t.function.name));
+    let allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = this._isActionMode(mode) ? 0.15 : 0.3;
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
@@ -9263,6 +9605,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (steps > 0) {
         await this._maybeReinjectAdapter(tabId, messages);
       }
+
+      skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
+      tools = getToolsForMode(mode, {
+        strictSecretMode: this.strictSecretMode,
+        tier,
+        skillTools,
+        cloudRun: !!cloudRunContext,
+        outputSchema: cloudRunContext?.outputSchema || null,
+      });
+      allowedToolNames = new Set(tools.map(t => t.function.name));
 
       // Auto-compact mid-run when the conversation outgrows the budget. The
       // streaming path doesn't get a per-call token count, so this leans on

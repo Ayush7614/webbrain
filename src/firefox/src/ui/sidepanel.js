@@ -360,6 +360,7 @@ const SLASH_COMMANDS = [
   { value: '/reset', descriptionKey: 'sp.slash.reset' },
   { value: '/screenshot', descriptionKey: 'sp.slash.screenshot' },
   { value: '/export', descriptionKey: 'sp.slash.export' },
+  { value: '/export-with-traces', descriptionKey: 'sp.slash.export_traces' },
   { value: '/profile', descriptionKey: 'sp.slash.profile' },
   { value: '/vision', descriptionKey: 'sp.slash.vision' },
   { value: '/ask', descriptionKey: 'sp.slash.ask' },
@@ -375,6 +376,7 @@ const OUT_OF_BAND_SLASH_COMMANDS = new Set([
   '/list-schedules',
   '/dangerously-skip-permissions',
   '/screenshot',
+  '/export-with-traces',
   '/export',
   '/verbose',
 ]);
@@ -3557,6 +3559,50 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     return '';
   }
 
+  // /export-with-traces — export the full tool chain from the trace store.
+  // Checked BEFORE /export because /export\b also matches /export-with-traces.
+  if (/^\/export-with-traces\b\s*/i.test(text)) {
+    let res;
+    try {
+      res = await sendToBackground('export_traces', { tabId });
+    } catch (e) {
+      addPersistentSlashMessage(`${t('sp.export_traces.error')} (${e?.message || e})`);
+      return '';
+    }
+    if (!res?.ok) {
+      addPersistentSlashMessage(`${t('sp.export_traces.error')} (${res?.error || 'unknown error'})`);
+      return '';
+    }
+    if (!res.markdown || res.turnCount === 0) {
+      addPersistentSlashMessage(
+        res.reason === 'no-conversation'
+          ? t('sp.export_traces.no_conversation')
+          : t('sp.export_traces.none'),
+      );
+      return '';
+    }
+    const blob = new Blob([res.markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `webbrain-traces-${Date.now()}.md`;
+    document.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 7000);
+    }
+    if (res.partial) {
+      addPersistentSlashMessage(t('sp.export_traces.partial'));
+    } else if (res.truncated) {
+      addPersistentSlashMessage(t('sp.export_traces.truncated'));
+    } else {
+      addPersistentSlashMessage(t('sp.export_traces.done'));
+    }
+    return '';
+  }
+
   // /export — export conversation as markdown
   if (/^\/export\b\s*/i.test(text)) {
     const messages = messagesEl.querySelectorAll('.message');
@@ -4098,6 +4144,10 @@ function handleAgentUpdateMessage(msg) {
       renderClarifyCard(data);
       break;
 
+    case 'upload_picker':
+      renderUploadPickerCard(data, msg.tabId ?? currentTabId);
+      break;
+
     case 'plan_review':
       renderPlanReviewCard({ ...data, tabId: msg.tabId ?? currentTabId, requestId: msg.requestId, runId: msg.runId });
       break;
@@ -4310,6 +4360,143 @@ function renderClarifyCard(data) {
   content.appendChild(card);
   scrollToBottom();
   try { input.focus(); } catch {}
+}
+
+function renderUploadPickerCard(data, tabId) {
+  if (tabId == null) return;
+  const pickerId = String(data.pickerId || '');
+  if (!pickerId || !currentAssistantEl) return;
+
+  const content = currentAssistantEl.querySelector('.message-content');
+  if (!content) return;
+
+  const card = document.createElement('div');
+  card.className = 'clarify-card';
+  card.dataset.pickerId = pickerId;
+  card.dataset.tabId = String(tabId);
+
+  const qEl = document.createElement('div');
+  qEl.className = 'clarify-question';
+  qEl.textContent = t('sp.upload_picker.question', { selector: data.selector || 'the page' });
+  card.appendChild(qEl);
+
+  const btnsEl = document.createElement('div');
+  btnsEl.className = 'clarify-options';
+
+  const chooseBtn = document.createElement('button');
+  chooseBtn.className = 'clarify-option-btn';
+  chooseBtn.textContent = t('sp.upload_picker.choose_file');
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'clarify-option-btn';
+  cancelBtn.textContent = t('sp.upload_picker.cancel');
+
+  // Per-card file input so concurrent pickers do not share onchange handlers.
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.hidden = true;
+  card.appendChild(input);
+
+  let settled = false;
+  const settleStatus = (messageKey, params) => {
+    if (settled) return false;
+    settled = true;
+    card.classList.add('clarify-answered');
+    chooseBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try { input.value = ''; } catch {}
+    card.textContent = '';
+    const statusEl = document.createElement('div');
+    statusEl.className = 'clarify-question';
+    statusEl.textContent = t(messageKey, params);
+    card.appendChild(statusEl);
+    return true;
+  };
+
+  chooseBtn.addEventListener('click', () => {
+    if (settled || card.classList.contains('clarify-answered')) return;
+    input.value = '';
+    input.onchange = () => {
+      if (settled) return;
+      const file = input.files && input.files[0];
+      if (!file) return;
+      if (file.size > 25 * 1024 * 1024) {
+        if (!settleStatus('sp.upload_picker.too_large')) return;
+        sendToBackground('upload_picker_response', {
+          tabId,
+          pickerId,
+          cancelled: true,
+          reason: 'Selected file exceeds 25MB limit',
+        });
+        return;
+      }
+      // Lock UI before async read so Cancel cannot race with onload.
+      chooseBtn.disabled = true;
+      cancelBtn.disabled = true;
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (settled) return;
+        const base64Str = String(reader.result || '');
+        const commaIdx = base64Str.indexOf(',');
+        const base64 = commaIdx >= 0 ? base64Str.slice(commaIdx + 1) : base64Str;
+        if (!base64) {
+          if (!settleStatus('sp.upload_picker.read_failed')) return;
+          sendToBackground('upload_picker_response', {
+            tabId,
+            pickerId,
+            cancelled: true,
+            reason: 'Failed to read selected file',
+          });
+          return;
+        }
+        if (!settleStatus('sp.upload_picker.selected', { name: file.name, size: file.size })) return;
+        sendToBackground('upload_picker_response', {
+          tabId,
+          pickerId,
+          base64,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+        });
+      };
+      reader.onerror = () => {
+        if (!settleStatus('sp.upload_picker.read_failed')) return;
+        sendToBackground('upload_picker_response', {
+          tabId,
+          pickerId,
+          cancelled: true,
+          reason: 'Failed to read selected file',
+        });
+      };
+      reader.onabort = () => {
+        if (!settleStatus('sp.upload_picker.read_failed')) return;
+        sendToBackground('upload_picker_response', {
+          tabId,
+          pickerId,
+          cancelled: true,
+          reason: 'File read cancelled',
+        });
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  });
+
+  cancelBtn.addEventListener('click', () => {
+    if (!settleStatus('sp.upload_picker.cancelled')) return;
+    sendToBackground('upload_picker_response', {
+      tabId,
+      pickerId,
+      cancelled: true,
+      reason: 'User cancelled file selection',
+    });
+  });
+
+  btnsEl.appendChild(chooseBtn);
+  btnsEl.appendChild(cancelBtn);
+  card.appendChild(btnsEl);
+  content.appendChild(card);
+  scrollToBottom();
 }
 
 function renderPlanReviewCard(data) {

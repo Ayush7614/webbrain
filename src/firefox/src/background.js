@@ -6,6 +6,7 @@ import {
   DEFAULT_SKILLS_REMOVED_STORAGE_KEY,
   DEFAULT_SKILLS_SEEDED_STORAGE_KEY,
   MAX_CUSTOM_SKILLS,
+  PACKAGED_SKILL_SOURCES,
   normalizeCustomSkills,
   normalizeDefaultSkillRemovalIds,
   refreshBuiltInSkillRecord,
@@ -531,12 +532,12 @@ async function drainUserMemoryExtractionQueue() {
   return userMemoryExtractionDrainPromise;
 }
 
-async function loadDefaultSkillRecords() {
+async function loadPackagedSkillRecords(sources = PACKAGED_SKILL_SOURCES) {
   const records = [];
-  for (const source of DEFAULT_SKILL_SOURCES) {
+  for (const source of sources) {
     const response = await fetch(browser.runtime.getURL(source.path));
     if (!response.ok) {
-      throw new Error(`Default skill ${source.id} failed to load: HTTP ${response.status}`);
+      throw new Error(`Packaged skill ${source.id} failed to load: HTTP ${response.status}`);
     }
     records.push({
       id: source.id,
@@ -550,14 +551,18 @@ async function loadDefaultSkillRecords() {
   return records;
 }
 
-async function refreshDefaultSkillRecords(skills) {
+async function loadDefaultSkillRecords() {
+  return loadPackagedSkillRecords(DEFAULT_SKILL_SOURCES);
+}
+
+async function refreshPackagedSkillRecords(skills) {
   const existingBuiltIns = skills.filter((skill) => skill.sourceType === 'built-in');
   if (existingBuiltIns.length === 0) return { skills, changed: false };
 
-  const defaults = new Map((await loadDefaultSkillRecords()).map((skill) => [skill.id, skill]));
+  const packaged = new Map((await loadPackagedSkillRecords()).map((skill) => [skill.id, skill]));
   let changed = false;
   const refreshed = skills.map((skill) => {
-    const current = defaults.get(skill.id);
+    const current = packaged.get(skill.id);
     if (!current || skill.sourceType !== 'built-in') return skill;
     const result = refreshBuiltInSkillRecord(skill, current);
     if (result.changed) changed = true;
@@ -596,13 +601,13 @@ async function loadCustomSkills() {
     console.warn('[WebBrain] Default skills could not be loaded', e);
   }
   try {
-    const refreshed = await refreshDefaultSkillRecords(skills);
+    const refreshed = await refreshPackagedSkillRecords(skills);
     if (refreshed.changed) {
       skills = refreshed.skills;
       await browser.storage.local.set({ [CUSTOM_SKILLS_STORAGE_KEY]: skills });
     }
   } catch (e) {
-    console.warn('[WebBrain] Default skills could not be refreshed', e);
+    console.warn('[WebBrain] Packaged skills could not be refreshed', e);
   }
   agent.setCustomSkills(skills);
 }
@@ -1629,6 +1634,12 @@ async function handleMessage(msg, sender) {
       return { ok: true, ...(await agent.getScratchpad(tabId)) };
     }
 
+    case 'export_traces': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (!tabId) return { ok: false, error: 'No tab ID' };
+      return { ok: true, ...(await agent.exportTraces(tabId)) };
+    }
+
     case 'get_progress': {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) return { ok: false, error: 'No tab ID' };
@@ -1712,6 +1723,15 @@ async function handleMessage(msg, sender) {
       } else if (matched && msg.memorySource === 'form_confirmation') {
         recordFormCompletionMemoryCandidate(tabId, answer);
       }
+      return { ok: matched, matched };
+    }
+
+    case 'upload_picker_response': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (!tabId) return { ok: false, error: 'No tab ID' };
+      const pickerId = String(msg.pickerId || '');
+      if (!pickerId) return { ok: false, error: 'pickerId required' };
+      const matched = agent.submitUploadPickerResponse(tabId, pickerId, msg);
       return { ok: matched, matched };
     }
 

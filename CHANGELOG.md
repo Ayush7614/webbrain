@@ -4,9 +4,18 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [23.0.4] - 2026-07-13
+
+### Added
+- Added an opt-in packaged Mail.tm disposable email skill for Chrome and Firefox, available from Settings with explicit confirmation, honest session-retention guidance, automatic account cleanup, and visible provider attribution.
+
+### Tests
+- Added packaged-skill catalog, opt-in Settings, and Mail.tm safety/API cleanup coverage.
+
 ## [23.0.2] - 2026-07-13
 
 ### Added
+- Added `upload_file` tool support for Firefox WebBrain extension, including sidepanel-based user file picker flow and `downloadId` re-fetch flow with 25MB file size limit.
 - Added a selection shortcut for Chrome and Firefox with Summarize, Explain, Quiz me, Proofread, Translate, and custom WebBrain prompts.
 - Expanded the native selection context menu with matching preset actions, translation languages, and direct side-panel access.
 - Added a persistent setting to hide or restore the floating selection shortcut.
