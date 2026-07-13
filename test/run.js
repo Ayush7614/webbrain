@@ -2665,6 +2665,55 @@ test('image budget helpers: auto-screenshot counter + failed capture does not bu
   }
 });
 
+test('image budget helpers: coord-aligned budget ignores token cap (side cap only)', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const full = agent._budgetForCapture();
+    const coord = agent._budgetForCoordAlignedCapture();
+    assert.equal(coord.maxTargetPx, full.maxTargetPx, `${AgentClass.name}: side cap matches`);
+    assert.ok(coord.maxTargetTokens > full.maxTargetTokens, `${AgentClass.name}: token cap disabled for coord`);
+
+    // 1440×900: both sides under 1568, but tokens (~1653) exceed full budget.
+    const w = 1440, h = 900;
+    const tokens = AgentClass._estimateImageTokens(w, h, full.pxPerToken);
+    assert.ok(tokens > full.maxTargetTokens, 'fixture must exceed full token budget');
+    assert.ok(w <= coord.maxTargetPx && h <= coord.maxTargetPx, 'fixture must fit side cap');
+    const fullFit = AgentClass._fitImageDimensions(w, h, full);
+    const coordFit = AgentClass._fitImageDimensions(w, h, coord);
+    assert.ok(fullFit[0] < w || fullFit[1] < h, `${AgentClass.name}: full budget should shrink 1440×900`);
+    assert.deepEqual(coordFit, [w, h], `${AgentClass.name}: coord budget keeps 1440×900 1:1`);
+
+    // 1920×1080: width exceeds 1568 — still downscales under side cap.
+    const big = AgentClass._fitImageDimensions(1920, 1080, coord);
+    assert.ok(big[0] <= coord.maxTargetPx && big[1] <= coord.maxTargetPx);
+    assert.ok(big[0] < 1920, `${AgentClass.name}: 1080p still side-capped when width > maxImageDimension`);
+  }
+});
+
+test('image budget helpers: budget skip notifies warning + trusted message', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 7;
+    agent.maxScreenshotsPerTurn = 1;
+    agent.autoScreenshotCount.set(tabId, 1);
+
+    const warnings = [];
+    const messages = [];
+    const onUpdate = (type, payload) => {
+      if (type === 'warning') warnings.push(payload);
+    };
+    agent._captureAutoScreenshot = async () => ({ dataUrl: 'x', width: 1, height: 1 });
+    const shot = await agent._captureBudgetedAutoScreenshot(tabId, { onUpdate, messages });
+    assert.equal(shot, null);
+    assert.equal(warnings.length, 1, `${AgentClass.name}: warning emitted`);
+    assert.match(warnings[0].message, /maxScreenshotsPerTurn reached/);
+    assert.equal(messages.length, 1, `${AgentClass.name}: trusted note pushed`);
+    assert.match(messages[0].content, /maxScreenshotsPerTurn reached/);
+    // Capture must not have been attempted when budget was already spent.
+    assert.equal(agent.autoScreenshotCount.get(tabId), 1);
+  }
+});
+
 test('existing dims under caps stay within the monotonic bound', () => {
   // Fuzz a range of common viewport sizes; invariant: output ≤ input on
   // every dimension, and output token count ≤ maxTargetTokens.

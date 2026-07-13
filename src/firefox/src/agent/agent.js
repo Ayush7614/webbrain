@@ -2197,7 +2197,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const lastTs = this.lastAutoScreenshotTs.get(tabId) || 0;
       if (Date.now() - lastTs >= 500) {
         await new Promise(r => setTimeout(r, 250));
-        const shot = await this._captureBudgetedAutoScreenshot(tabId);
+        // Pass onUpdate + messages so a maxScreenshotsPerTurn skip is not silent.
+        const shot = await this._captureBudgetedAutoScreenshot(tabId, { onUpdate, messages });
         if (shot) {
           this.lastAutoScreenshotTs.set(tabId, Date.now());
           const visible = await this._getVisibleInteractiveElements(tabId);
@@ -2429,6 +2430,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       ...base,
       maxTargetPx: cap,
       maxTargetTokens: tokensForCap,
+    };
+  }
+
+  /**
+   * Budget for CSS-pixel-aligned captures (Firefox always captures at scale:1).
+   * Only the per-side `maxImageDimension` cap applies — the vision token budget
+   * does NOT force a downscale. So 1920×1080 stays 1:1 under the default 1568px
+   * cap (issue #311 review option a).
+   */
+  _budgetForCoordAlignedCapture() {
+    const base = this._budgetForCapture();
+    return {
+      ...base,
+      maxTargetTokens: Number.MAX_SAFE_INTEGER,
     };
   }
 
@@ -2908,12 +2923,39 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
+   * Surface a maxScreenshotsPerTurn skip so the agent/user are not silently
+   * "blind" mid-turn (issue #311 review). Trusted note only — not page content.
+   */
+  _notifyAutoScreenshotBudgetSkipped(tabId, { onUpdate = null, messages = null } = {}) {
+    const message = 'auto-screenshot skipped: maxScreenshotsPerTurn reached';
+    try {
+      if (typeof onUpdate === 'function') onUpdate('warning', { message });
+    } catch { /* ignore UI delivery failures */ }
+    try {
+      if (Array.isArray(messages)) {
+        messages.push({ role: 'user', content: `[${message}]` });
+      }
+    } catch { /* ignore */ }
+    try {
+      const runId = this.currentRunId.get(tabId);
+      if (runId) {
+        trace.recordNote(runId, null, 'auto_screenshot_budget_skipped', { message });
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
    * Capture an automatic screenshot only when the per-turn budget allows it.
    * Check-then-capture-then-increment so a failed capture does not burn a slot,
    * and both the initial viewport shot and post-action shots share one counter.
+   * When the budget blocks a capture, emits a warning/trace/trusted note so the
+   * skip is not silent (opts.onUpdate / opts.messages).
    */
   async _captureBudgetedAutoScreenshot(tabId, opts = {}) {
-    if (!this._canTakeAutoScreenshot(tabId)) return null;
+    if (!this._canTakeAutoScreenshot(tabId)) {
+      this._notifyAutoScreenshotBudgetSkipped(tabId, opts);
+      return null;
+    }
     const shot = await this._captureAutoScreenshot(tabId, opts);
     if (shot) this._recordAutoScreenshot(tabId);
     return shot;
@@ -2940,7 +2982,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const probe = await this._captureViewportProbe(tabId);
       const w = Math.max(1, Math.round(probe?.innerWidth || 1024));
       const h = Math.max(1, Math.round(probe?.innerHeight || 768));
-      const budget = this._budgetForCapture();
+      // CSS-pixel aligned (scale:1): side cap only so 1080p stays 1:1 under the
+      // default 1568px maxImageDimension (issue #311 review option a).
+      const budget = this._budgetForCoordAlignedCapture();
       const captureOnce = async () => {
         // scale: 1 forces 1 image pixel per CSS pixel (Firefox-specific option,
         // ignored by Chrome but Chrome path uses CDP anyway).
@@ -2955,8 +2999,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         // Firefox's captureVisibleTab doesn't take a clip/scale in a way that
         // lets us downsize during capture (scale:1 is viewport-lock, not a
-        // factor). So we capture at CSS size and shrink via DOM canvas to
-        // the token budget. On small viewports this is a no-op fast-exit.
+        // factor). Capture at CSS size; shrink only when a side exceeds
+        // maxImageDimension (coord-aligned budget).
         const shrunk = await this._shrinkImageForBudget(rawDataUrl, w, h, budget);
         let dataUrl = shrunk.dataUrl;
         if (this.screenshotRedaction) {

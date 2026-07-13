@@ -672,7 +672,7 @@ export default {
   "st.imageBudget.detail.low": "Low (cheaper, less detail)",
   "st.imageBudget.detail.auto": "Auto (provider default)",
   "st.imageBudget.maxPerTurn.label": "Max screenshots per turn",
-  "st.imageBudget.maxPerTurn.desc": "How many auto-screenshots the agent may capture for vision within a single turn (0 = unlimited). Lower values reduce cost; the agent still captures at least when state changes.",
+  "st.imageBudget.maxPerTurn.desc": "How many auto-screenshots the agent may capture for vision within a single turn (0 = unlimited). Lower values reduce cost; once the budget is spent further auto-screenshots are skipped for that turn.",
   "st.imageBudget.maxPerTurn.unlimited": "Unlimited",
   "st.imageBudget.maxDimension.label": "Max image dimension",
   "st.imageBudget.maxDimension.desc": "Largest side (width or height) in pixels for any screenshot sent to vision. Smaller caps shrink images before they are sent, cutting tokens and cost. Larger caps keep fidelity.",
