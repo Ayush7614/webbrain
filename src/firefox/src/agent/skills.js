@@ -7,7 +7,7 @@ export const MAX_CUSTOM_SKILL_IMPORT_BYTES = 500000;
 export const MAX_CUSTOM_SKILLS_PROMPT_CHARS = 50000;
 export const MAX_CUSTOM_SKILL_TOOLS = 8;
 export const MAX_CUSTOM_SKILL_TOOL_NAME_CHARS = 64;
-export const DEFAULT_SKILL_SOURCES = Object.freeze([
+export const PACKAGED_SKILL_SOURCES = Object.freeze([
   Object.freeze({
     id: 'freeskillz-xyz',
     name: 'FreeSkillz.xyz',
@@ -19,6 +19,9 @@ export const DEFAULT_SKILL_SOURCES = Object.freeze([
     path: 'skills/disposable-email-mailtm.md',
   }),
 ]);
+export const DEFAULT_SKILL_SOURCES = Object.freeze(
+  PACKAGED_SKILL_SOURCES.filter((source) => source.id === 'freeskillz-xyz')
+);
 
 function cleanText(value) {
   return String(value == null ? '' : value)

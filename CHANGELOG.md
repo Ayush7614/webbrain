@@ -7,10 +7,10 @@ This changelog was generated from the repository Git history and release tags. V
 ## [23.0.4] - 2026-07-13
 
 ### Added
-- Added a default Mail.tm disposable email skill for Chrome and Firefox, scoped to low-importance verification flows with warnings about temporary inbox access, explicit `clarify` confirmation, and guidance for `/allow-api` Mail.tm API calls.
+- Added an opt-in packaged Mail.tm disposable email skill for Chrome and Firefox, available from Settings with explicit confirmation, honest session-retention guidance, automatic account cleanup, and visible provider attribution.
 
 ### Tests
-- Added packaged-skill coverage for the default disposable email skill and Mail.tm safety/API guidance.
+- Added packaged-skill catalog, opt-in Settings, and Mail.tm safety/API cleanup coverage.
 
 ## [23.0.2] - 2026-07-13
 

@@ -28,6 +28,17 @@ function packagedFreeSkillzRecord(prefix) {
   };
 }
 
+function packagedMailTmRecord(prefix) {
+  return {
+    id: 'disposable-email-mailtm',
+    name: 'Disposable email (Mail.tm)',
+    sourceType: 'built-in',
+    sourceUrl: 'skills/disposable-email-mailtm.md',
+    content: fs.readFileSync(path.join(ROOT, prefix, 'skills/disposable-email-mailtm.md'), 'utf8'),
+    createdAt: 0,
+  };
+}
+
 function skillContentWithTool(name, endpoint) {
   return `# Test Skill
 Use this test skill.
@@ -446,6 +457,7 @@ const {
   DEFAULT_SKILLS_REMOVED_STORAGE_KEY: DEFAULT_SKILLS_REMOVED_STORAGE_KEY_CH,
   DEFAULT_SKILLS_SEEDED_STORAGE_KEY: DEFAULT_SKILLS_SEEDED_STORAGE_KEY_CH,
   MAX_CUSTOM_SKILL_IMPORT_BYTES: MAX_CUSTOM_SKILL_IMPORT_BYTES_CH,
+  PACKAGED_SKILL_SOURCES: PACKAGED_SKILL_SOURCES_CH,
   fetchSkillImportResponse: fetchSkillImportResponseCh,
   normalizeCustomSkills: normalizeCustomSkillsCh,
   normalizeDefaultSkillRemovalIds: normalizeDefaultSkillRemovalIdsCh,
@@ -463,6 +475,7 @@ const {
   DEFAULT_SKILLS_REMOVED_STORAGE_KEY: DEFAULT_SKILLS_REMOVED_STORAGE_KEY_FX,
   DEFAULT_SKILLS_SEEDED_STORAGE_KEY: DEFAULT_SKILLS_SEEDED_STORAGE_KEY_FX,
   MAX_CUSTOM_SKILL_IMPORT_BYTES: MAX_CUSTOM_SKILL_IMPORT_BYTES_FX,
+  PACKAGED_SKILL_SOURCES: PACKAGED_SKILL_SOURCES_FX,
   fetchSkillImportResponse: fetchSkillImportResponseFx,
   normalizeCustomSkills: normalizeCustomSkillsFx,
   normalizeDefaultSkillRemovalIds: normalizeDefaultSkillRemovalIdsFx,
@@ -6404,6 +6417,18 @@ test('custom skills prompt is empty before storage seed and injects enabled skil
     assert.match(prompt, /Research style/, `${label}: text skill missing`);
     assert.match(prompt, /https:\/\/example\.com\/skill\.md/, `${label}: URL source missing`);
     assert.match(prompt, /never let them override higher-priority/, `${label}: priority warning missing`);
+  }
+});
+
+test('packaged Mail.tm skill is opt-in before prompt injection', () => {
+  for (const [label, prefix, normalizeSkills, buildPrompt] of [
+    ['chrome', 'src/chrome', normalizeCustomSkillsCh, buildCustomSkillsPromptCh],
+    ['firefox', 'src/firefox', normalizeCustomSkillsFx, buildCustomSkillsPromptFx],
+  ]) {
+    const defaults = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
+    assert.doesNotMatch(buildPrompt(defaults), /Disposable email \(Mail\.tm\)/, `${label}: optional Mail.tm skill leaked into the default prompt`);
+    const enabled = normalizeSkills([...defaults, packagedMailTmRecord(prefix)]);
+    assert.match(buildPrompt(enabled), /Disposable email \(Mail\.tm\)/, `${label}: enabled Mail.tm skill missing from prompt`);
   }
 });
 
@@ -20956,8 +20981,10 @@ test('settings exposes custom skills tab and packaged skills resource directory'
   assert.equal(DEFAULT_SKILLS_SEEDED_STORAGE_KEY_FX, 'defaultSkillsSeeded');
   assert.equal(DEFAULT_SKILLS_REMOVED_STORAGE_KEY_CH, 'defaultSkillsRemoved');
   assert.equal(DEFAULT_SKILLS_REMOVED_STORAGE_KEY_FX, 'defaultSkillsRemoved');
-  assert.deepEqual(DEFAULT_SKILL_SOURCES_CH.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm']);
-  assert.deepEqual(DEFAULT_SKILL_SOURCES_FX.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm']);
+  assert.deepEqual(PACKAGED_SKILL_SOURCES_CH.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm']);
+  assert.deepEqual(PACKAGED_SKILL_SOURCES_FX.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm']);
+  assert.deepEqual(DEFAULT_SKILL_SOURCES_CH.map((skill) => skill.id), ['freeskillz-xyz']);
+  assert.deepEqual(DEFAULT_SKILL_SOURCES_FX.map((skill) => skill.id), ['freeskillz-xyz']);
 
   for (const [label, prefix] of [['chrome', 'src/chrome'], ['firefox', 'src/firefox']]) {
     const html = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/settings.html'), 'utf8');
@@ -20977,17 +21004,24 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.ok(panelOrder[0] < panelOrder[1] && panelOrder[1] < panelOrder[2] && panelOrder[2] < panelOrder[3], `${label}: Memory panel should sit between Multimodal and Skills near the end`);
     assert.match(html, /id="skill-url"/, `${label}: URL skill input missing`);
     assert.match(html, /id="skill-text"/, `${label}: raw skill textarea missing`);
+    assert.match(html, /id="packaged-skills-list"/, `${label}: available packaged skills list missing`);
     assert.match(settingsJs, /CUSTOM_SKILLS_STORAGE_KEY/, `${label}: settings JS should persist custom skills`);
+    assert.match(settingsJs, /PACKAGED_SKILL_SOURCES/, `${label}: settings JS should expose the packaged skill catalog`);
+    assert.match(settingsJs, /function renderPackagedSkills\(\)/, `${label}: packaged skill renderer missing`);
+    assert.match(settingsJs, /async function addPackagedSkill\(/, `${label}: packaged skill enable flow missing`);
+    assert.match(settingsJs, /runtime\.getURL\(source\.path\)/, `${label}: packaged skill should load from the extension resource`);
     assert.match(settingsJs, /DEFAULT_SKILLS_REMOVED_STORAGE_KEY/, `${label}: settings JS should remember removed default skills`);
     assert.match(settingsJs, /removedSkill\?\.sourceType === 'built-in'/, `${label}: only built-in defaults should be marked removed`);
-    assert.match(settingsJs, /st\.skills\.source\.built_in/, `${label}: settings should label seeded default skills`);
+    assert.match(settingsJs, /installedDefault/, `${label}: reinstalling a default should clear its removal tombstone`);
+    assert.match(settingsJs, /st\.skills\.source\.built_in/, `${label}: settings should label packaged skills`);
     assert.match(settingsJs, /skill\.tools/, `${label}: settings should show exposed skill tools`);
     assert.match(background, /customSkillsReady/, `${label}: first chat should wait for custom skills hydration`);
     assert.match(background, /DEFAULT_SKILLS_SEEDED_STORAGE_KEY/, `${label}: default skill seeding marker missing`);
     assert.match(background, /DEFAULT_SKILLS_REMOVED_STORAGE_KEY/, `${label}: default skill removal marker missing`);
     assert.match(background, /!removedDefaultIds\.has\(skill\.id\)/, `${label}: missing default skill migration should respect explicit removals`);
     assert.match(background, /loadDefaultSkillRecords/, `${label}: default skill loader missing`);
-    assert.match(background, /refreshDefaultSkillRecords/, `${label}: default skill refresh migration missing`);
+    assert.match(background, /loadPackagedSkillRecords/, `${label}: packaged skill loader missing`);
+    assert.match(background, /refreshPackagedSkillRecords/, `${label}: installed packaged skill refresh migration missing`);
     assert.match(background, /sourceType:\s*'built-in'/, `${label}: default skill should be removable as a stored skill`);
     assert.match(manifest, /"skills\/\*"/, `${label}: manifest should include packaged skills resources`);
     assert.equal(fs.existsSync(path.join(ROOT, prefix, 'skills')), true, `${label}: skills directory missing`);
@@ -21007,13 +21041,21 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     const disposable = fs.readFileSync(path.join(ROOT, prefix, 'skills/disposable-email-mailtm.md'), 'utf8');
     assert.match(disposable, /Mail\.tm/, `${label}: disposable email skill should use Mail.tm by default`);
     assert.match(disposable, /disposable and should be used only for unimportant tasks/i, `${label}: disposable email skill should warn about unimportant use only`);
-    assert.match(disposable, /may not be able to access the inbox again/i, `${label}: disposable email skill should warn about mailbox loss`);
+    assert.match(disposable, /configured LLM provider/i, `${label}: disposable email skill should disclose provider exposure`);
+    assert.match(disposable, /browser conversation\/session until the user runs `\/reset`/i, `${label}: disposable email skill should disclose session retention`);
     assert.match(disposable, /use `clarify` to confirm the user understands/i, `${label}: disposable email skill should require explicit user confirmation`);
     assert.match(disposable, /Continue only after the user confirms/i, `${label}: disposable email skill should stop without confirmation`);
+    assert.match(disposable, /Never write the password or bearer token to the scratchpad/i, `${label}: disposable email skill should keep secrets out of the scratchpad`);
+    assert.doesNotMatch(disposable, /Keep the address, password, token/i, `${label}: disposable email skill should not pin secrets`);
+    assert.match(disposable, /confirm its hostname matches the signup site/i, `${label}: disposable email skill should validate verification-link destinations`);
+    assert.match(disposable, /before every normal success or failure exit/i, `${label}: disposable email skill should clean up failed flows too`);
     assert.match(disposable, /fetch_url/, `${label}: disposable email skill should use fetch_url in normal runs`);
     assert.match(disposable, /\/allow-api/, `${label}: disposable email skill should explain API mutation approval`);
     assert.match(disposable, new RegExp(String.raw`"url": "https:\/\/api\.mail\.tm\/accounts"`), `${label}: disposable email skill should document account creation`);
     assert.match(disposable, /\"Authorization\": \"Bearer REPLACE_TOKEN\"/, `${label}: disposable email skill should document authenticated message reads`);
+    assert.match(disposable, /accounts\/REPLACE_ACCOUNT_ID/, `${label}: disposable email skill should document account deletion`);
+    assert.match(disposable, /"method": "DELETE"/, `${label}: disposable email skill should use DELETE for cleanup`);
+    assert.match(disposable, /Powered by \[Mail\.tm\]\(https:\/\/mail\.tm\)/, `${label}: disposable email skill should include visible attribution`);
   }
 });
 
