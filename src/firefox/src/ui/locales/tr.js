@@ -56,6 +56,8 @@ export default {
   'st.skills.item.chars': '{count} karakter',
   'st.skills.item.tools': 'Tool\'lar: {tools}',
   'st.skills.remove': 'Kaldır',
+  'st.skills.preview.rendered': 'Önizleme',
+  'st.skills.preview.raw': 'Ham',
   'st.skills.security_html': '<strong>Dikkat:</strong> özel skill\'ler tarayıcı yerel depolamasında düz metin olarak saklanır ve sistem isteminin parçası olarak yapılandırdığın LLM sağlayıcısına gönderilir. İçe aktarılan skill tool\'ları çağrı başına tekrar onay istemeden beyan edilen girdileri beyan edilen HTTPS endpoint\'lerine gönderebilir; download tool\'ları dosya kaydetmeden önce normal Downloads izin akışını kullanır. Yalnızca güvendiğin tool\'ları içe aktar; uzak içerik içe aktarma sırasında depoya kopyalanır.',
   'st.skills.error.url': 'Geçerli bir http(s) URL gir.',
   'st.skills.error.empty_text': 'Önce skill metni yapıştır.',

@@ -4,6 +4,7 @@
 
 import { t, getLocale, setLocale, LANGUAGES } from './i18n.js';
 import { THEME_MODES, applyMode, loadMode, watch } from './theme.js';
+import { renderSkillMarkdown } from './skill-markdown.js';
 import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
 import {
   CUSTOM_SKILLS_STORAGE_KEY,
@@ -75,6 +76,12 @@ const btnClearSkillForm = document.getElementById('btn-clear-skill-form');
 const skillsResult = document.getElementById('skills-result');
 const skillsList = document.getElementById('skills-list');
 const packagedSkillsList = document.getElementById('packaged-skills-list');
+const skillPreviewDialog = document.getElementById('skill-preview-dialog');
+const skillPreviewTitle = document.getElementById('skill-preview-title');
+const skillPreviewSource = document.getElementById('skill-preview-source');
+const skillPreviewRendered = document.getElementById('skill-preview-rendered');
+const skillPreviewRaw = document.getElementById('skill-preview-raw');
+const skillPreviewViewButtons = document.querySelectorAll('[data-skill-preview-view]');
 
 // Transcription service (Whisper-compatible) — same shape as the vision
 // override but routes to /v1/audio/transcriptions instead of /v1/chat/completions.
@@ -346,6 +353,7 @@ let providerFilter = 'all';     // 'all' | 'local' | 'cloud' | 'router'
 let providerSearchQuery = '';
 const expandedProviders = new Set(); // ids the user explicitly expanded this session
 let customSkills = [];
+let skillPreviewRequestId = 0;
 const DEFAULT_SKILL_IDS = new Set(DEFAULT_SKILL_SOURCES.map((source) => source.id));
 
 // --- Init ---
@@ -616,6 +624,79 @@ function extractSkillText(raw, contentType = '') {
   return text.trim();
 }
 
+function setSkillPreviewView(view) {
+  const showRaw = view === 'raw';
+  if (skillPreviewRendered) skillPreviewRendered.hidden = showRaw;
+  if (skillPreviewRaw) skillPreviewRaw.hidden = !showRaw;
+  skillPreviewViewButtons.forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.skillPreviewView === view));
+  });
+}
+
+function setSkillPreviewContent(content) {
+  const text = String(content || '');
+  if (skillPreviewRendered) skillPreviewRendered.innerHTML = renderSkillMarkdown(text);
+  if (skillPreviewRaw) skillPreviewRaw.textContent = text;
+}
+
+function openSkillPreview(name, source, content) {
+  if (!skillPreviewDialog || !skillPreviewTitle || !skillPreviewSource || !skillPreviewRendered || !skillPreviewRaw) return;
+  skillPreviewTitle.textContent = name;
+  skillPreviewSource.textContent = source;
+  setSkillPreviewContent(content);
+  setSkillPreviewView('rendered');
+  if (skillPreviewDialog.open) return;
+  if (typeof skillPreviewDialog.showModal === 'function') skillPreviewDialog.showModal();
+  else skillPreviewDialog.setAttribute('open', '');
+}
+
+function closeSkillPreview() {
+  skillPreviewRequestId += 1;
+  if (!skillPreviewDialog) return;
+  if (typeof skillPreviewDialog.close === 'function') skillPreviewDialog.close();
+  else skillPreviewDialog.removeAttribute('open');
+}
+
+async function loadPackagedSkillContent(source) {
+  const response = await fetch(chrome.runtime.getURL(source.path));
+  if (!response.ok) throw new Error(t('st.skills.error.fetch', { status: response.status }));
+  return response.text();
+}
+
+async function previewPackagedSkill(skillId) {
+  const source = PACKAGED_SKILL_SOURCES.find((item) => item.id === skillId);
+  if (!source) return;
+  const requestId = ++skillPreviewRequestId;
+  openSkillPreview(source.name, t('st.skills.source.built_in'), t('st.providers.loading'));
+  try {
+    const content = await loadPackagedSkillContent(source);
+    if (requestId === skillPreviewRequestId) setSkillPreviewContent(content);
+  } catch (error) {
+    if (requestId === skillPreviewRequestId) {
+      setSkillPreviewContent(error?.message || t('st.skills.error.fetch', { status: '—' }));
+    }
+  }
+}
+
+function previewEnabledSkill(skillId) {
+  const skill = customSkills.find((item) => item.id === skillId);
+  if (!skill) return;
+  skillPreviewRequestId += 1;
+  const source = skill.sourceType === 'built-in'
+    ? t('st.skills.source.built_in')
+    : skill.sourceType === 'url' && skill.sourceUrl ? skill.sourceUrl : t('st.skills.source.raw');
+  openSkillPreview(skill.name, source, skill.content);
+}
+
+skillPreviewDialog?.addEventListener('click', (event) => {
+  if (event.target === skillPreviewDialog || event.target.closest('.skill-preview-dialog-close')) {
+    closeSkillPreview();
+  }
+});
+skillPreviewViewButtons.forEach((button) => {
+  button.addEventListener('click', () => setSkillPreviewView(button.dataset.skillPreviewView));
+});
+
 async function loadCustomSkills() {
   if (!skillsList) return;
   const stored = await chrome.storage.local.get(CUSTOM_SKILLS_STORAGE_KEY);
@@ -652,12 +733,16 @@ function renderPackagedSkills() {
   packagedSkillsList.innerHTML = available.map((source) => `
     <div class="setting-row" style="align-items:center;">
       <div class="setting-info">
-        <div class="setting-label">${escapeHtml(source.name)}</div>
+        <button type="button" class="setting-label skill-name-button"
+                data-packaged-skill-preview-id="${escapeHtml(source.id)}">${escapeHtml(source.name)}</button>
         <div class="setting-desc skill-source">${escapeHtml(t('st.skills.source.built_in'))}</div>
       </div>
       <button class="btn-secondary" data-packaged-skill-id="${escapeHtml(source.id)}">${escapeHtml(t('st.skills.enable'))}</button>
     </div>`).join('');
 
+  packagedSkillsList.querySelectorAll('button[data-packaged-skill-preview-id]').forEach((btn) => {
+    btn.addEventListener('click', () => previewPackagedSkill(btn.dataset.packagedSkillPreviewId));
+  });
   packagedSkillsList.querySelectorAll('button[data-packaged-skill-id]').forEach((btn) => {
     btn.addEventListener('click', () => addPackagedSkill(btn.dataset.packagedSkillId, btn));
   });
@@ -682,13 +767,17 @@ function renderSkills() {
     return `
       <div class="setting-row" style="align-items:center;">
         <div class="setting-info">
-          <div class="setting-label">${escapeHtml(skill.name)}</div>
+          <button type="button" class="setting-label skill-name-button"
+                  data-skill-preview-id="${escapeHtml(skill.id)}">${escapeHtml(skill.name)}</button>
           <div class="setting-desc skill-source">${escapeHtml(source)} · ${escapeHtml(t('st.skills.item.chars', { count: skill.content.length }))}${escapeHtml(toolSummary)}</div>
         </div>
         <button class="btn-secondary" data-skill-id="${escapeHtml(skill.id)}">${escapeHtml(t('st.skills.remove'))}</button>
       </div>`;
   }).join('');
 
+  skillsList.querySelectorAll('button[data-skill-preview-id]').forEach((btn) => {
+    btn.addEventListener('click', () => previewEnabledSkill(btn.dataset.skillPreviewId));
+  });
   skillsList.querySelectorAll('button[data-skill-id]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const removedSkill = customSkills.find((skill) => skill.id === btn.dataset.skillId);
@@ -717,14 +806,12 @@ async function addPackagedSkill(skillId, button) {
   if (!source || customSkills.some((skill) => skill.id === skillId)) return;
   if (button) button.disabled = true;
   try {
-    const response = await fetch(chrome.runtime.getURL(source.path));
-    if (!response.ok) throw new Error(t('st.skills.error.fetch', { status: response.status }));
     const record = {
       id: source.id,
       name: source.name,
       sourceType: 'built-in',
       sourceUrl: source.path,
-      content: await response.text(),
+      content: await loadPackagedSkillContent(source),
       createdAt: Date.now(),
     };
     await addCustomSkill(record, { installedSkill: record });

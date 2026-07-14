@@ -547,6 +547,8 @@ export default {
   'st.skills.item.chars': '{count} aksara',
   'st.skills.item.tools': 'Alatan: {tools}',
   'st.skills.remove': 'Alih keluar',
+  'st.skills.preview.rendered': 'Pratonton',
+  'st.skills.preview.raw': 'Mentah',
   'st.skills.security_html': '<strong>Awas:</strong> kemahiran tersuai disimpan dalam teks biasa dalam storan tempatan pelayar dan dihantar kepada pembekal LLM yang anda konfigurasikan sebagai sebahagian daripada prompt sistem. Alatan kemahiran yang diimport boleh menghantar input yang diisytiharkan ke titik akhir HTTPS yang diisytiharkan tanpa pengesahan setiap panggilan; alatan muat turun masih meminta melalui gerbang kebenaran Muat Turun biasa sebelum menyimpan fail. Hanya import alatan yang anda percayai; kandungan jauh disalin ke storan semasa import.',
   'st.skills.error.url': 'Masukkan URL http(s) yang sah.',
   'st.skills.error.empty_text': 'Tampalkan teks kemahiran terlebih dahulu.',

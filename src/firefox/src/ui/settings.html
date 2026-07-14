@@ -546,6 +546,164 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .skill-name-button {
+      display: inline;
+      padding: 0;
+      color: var(--text);
+      background: transparent;
+      border-radius: 3px;
+      font: inherit;
+      text-align: start;
+      text-decoration: underline;
+      text-decoration-color: var(--accent);
+      text-decoration-style: dotted;
+      text-underline-offset: 3px;
+    }
+    .skill-name-button:hover {
+      color: var(--accent);
+      text-decoration-style: solid;
+    }
+    .skill-name-button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+    .skill-name-button:active { transform: none; }
+    .skill-preview-dialog {
+      position: fixed;
+      inset: 0;
+      margin: auto;
+      width: min(720px, calc(100vw - 32px));
+      max-height: calc(100vh - 48px);
+      padding: 0;
+      color: var(--text);
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.42);
+    }
+    .skill-preview-dialog::backdrop { background: rgba(0,0,0,0.58); }
+    .skill-preview-dialog-panel { padding: 16px; }
+    .skill-preview-dialog-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .skill-preview-dialog-header h3 {
+      margin: 2px 0 0;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .skill-preview-source {
+      color: var(--text2);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+    .skill-preview-dialog-close {
+      width: 30px;
+      height: 30px;
+      flex-shrink: 0;
+      padding: 0;
+      color: var(--text);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      font-size: 18px;
+      line-height: 1;
+    }
+    .skill-preview-view-switch {
+      display: inline-flex;
+      margin-bottom: 10px;
+      padding: 2px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .skill-preview-view-button {
+      padding: 5px 10px;
+      color: var(--text2);
+      background: transparent;
+      border: 0;
+      font-size: 11px;
+    }
+    .skill-preview-view-button[aria-pressed="true"] {
+      color: #fff;
+      background: var(--accent);
+    }
+    .skill-preview-body {
+      max-height: min(560px, calc(100vh - 150px));
+      margin: 0;
+      padding: 14px 16px;
+      overflow: auto;
+      color: var(--text);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+      user-select: text;
+    }
+    .skill-preview-rendered h1,
+    .skill-preview-rendered h2,
+    .skill-preview-rendered h3,
+    .skill-preview-rendered h4,
+    .skill-preview-rendered h5,
+    .skill-preview-rendered h6 {
+      margin: 16px 0 8px;
+      color: var(--text);
+      font-weight: 700;
+      line-height: 1.3;
+      letter-spacing: normal;
+      text-transform: none;
+    }
+    .skill-preview-rendered h1:first-child,
+    .skill-preview-rendered h2:first-child,
+    .skill-preview-rendered h3:first-child { margin-top: 0; }
+    .skill-preview-rendered h1 { font-size: 20px; }
+    .skill-preview-rendered h2 { font-size: 17px; }
+    .skill-preview-rendered h3 { font-size: 14px; }
+    .skill-preview-rendered h4,
+    .skill-preview-rendered h5,
+    .skill-preview-rendered h6 { font-size: 12px; }
+    .skill-preview-rendered a { color: var(--accent); }
+    .skill-preview-rendered ul,
+    .skill-preview-rendered ol {
+      margin: 8px 0;
+      padding-inline-start: 22px;
+    }
+    .skill-preview-rendered li { margin: 3px 0; }
+    .skill-preview-rendered code {
+      padding: 1px 4px;
+      background: var(--bg);
+      border-radius: 3px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+    }
+    .skill-preview-rendered pre {
+      margin: 10px 0;
+      padding: 12px;
+      overflow: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      white-space: pre;
+    }
+    .skill-preview-rendered pre code {
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+    }
+    .skill-preview-raw {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      tab-size: 2;
+      white-space: pre-wrap;
+    }
 
     .toggle {
       position: relative;
@@ -1214,6 +1372,27 @@
     </div>
 
     <div class="info-box" data-i18n-html="st.skills.security_html"></div>
+
+    <dialog class="skill-preview-dialog" id="skill-preview-dialog" aria-labelledby="skill-preview-title">
+      <div class="skill-preview-dialog-panel">
+        <div class="skill-preview-dialog-header">
+          <div>
+            <div class="skill-preview-source" id="skill-preview-source"></div>
+            <h3 id="skill-preview-title"></h3>
+          </div>
+          <button type="button" class="skill-preview-dialog-close"
+                  data-i18n-aria-label="sp.schedule_form.cancel">&times;</button>
+        </div>
+        <div class="skill-preview-view-switch">
+          <button type="button" class="skill-preview-view-button" data-skill-preview-view="rendered"
+                  aria-pressed="true" data-i18n="st.skills.preview.rendered"></button>
+          <button type="button" class="skill-preview-view-button" data-skill-preview-view="raw"
+                  aria-pressed="false" data-i18n="st.skills.preview.raw"></button>
+        </div>
+        <div class="skill-preview-body skill-preview-rendered" id="skill-preview-rendered" tabindex="0"></div>
+        <pre class="skill-preview-body skill-preview-raw" id="skill-preview-raw" tabindex="0" hidden></pre>
+      </div>
+    </dialog>
   </section>
 
   <section class="tab-panel" data-panel="permissions" role="tabpanel">

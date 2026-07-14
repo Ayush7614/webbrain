@@ -547,6 +547,8 @@ export default {
   'st.skills.item.chars': '{count} 文字',
   'st.skills.item.tools': 'ツール: {tools}',
   'st.skills.remove': '削除',
+  'st.skills.preview.rendered': 'プレビュー',
+  'st.skills.preview.raw': 'ソース',
   'st.skills.security_html': '<strong>注意:</strong> カスタムスキルはブラウザのローカルストレージに平文で保存され、システムプロンプトの一部として設定済みのLLMプロバイダーに送信されます。インポートされたスキルツールは、宣言された入力を宣言されたHTTPSエンドポイントに呼び出しごとの確認なしで送信できます。ダウンロードツールはファイル保存前に通常のダウンロード許可ゲートを通じて確認します。信頼するツールのみをインポートしてください。リモートコンテンツはインポート時にストレージにコピーされます。',
   'st.skills.error.url': '有効な http(s) URL を入力してください。',
   'st.skills.error.empty_text': 'まずスキルテキストを貼り付けてください。',

@@ -497,6 +497,8 @@ export default {
   'st.skills.item.chars': '{count} chars',
   'st.skills.item.tools': 'Tools: {tools}',
   'st.skills.remove': 'Remove',
+  'st.skills.preview.rendered': 'Preview',
+  'st.skills.preview.raw': 'Raw',
   'st.skills.security_html': '<strong>Heads-up:</strong> custom skills are stored in plaintext in browser local storage and sent to your configured LLM provider as part of the system prompt. Imported skill tools can send their declared inputs to their declared HTTPS endpoints without per-call confirmation; download tools still ask through the normal Downloads permission gate before saving files. Only import tools you trust; remote content is copied into storage at import time.',
   'st.skills.error.url': 'Enter a valid http(s) URL.',
   'st.skills.error.empty_text': 'Paste skill text first.',
