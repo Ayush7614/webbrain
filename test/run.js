@@ -6969,6 +6969,15 @@ test('packaged Open-Meteo and Open Library skills are opt-in with read-only HTTP
       weather.tools[1].parameters?.properties?.wind_speed_unit,
       `${label}: Open-Meteo forecast should expose wind_speed_unit`,
     );
+    assert.ok(
+      weather.tools[1].parameters?.properties?.precipitation_unit,
+      `${label}: Open-Meteo forecast should expose precipitation_unit`,
+    );
+    assert.match(
+      weather.content,
+      /temperature_unit=fahrenheit[\s\S]*wind_speed_unit=mph[\s\S]*precipitation_unit=inch/i,
+      `${label}: Open-Meteo imperial guidance should set temperature, wind, and precipitation units together`,
+    );
 
     const defs = buildDefs(enabled, { mode: 'ask' });
     const names = defs.map((tool) => tool.function.name);

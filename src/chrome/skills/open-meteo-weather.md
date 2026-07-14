@@ -9,7 +9,7 @@ Workflow:
 1. Call `search_weather_location` with the place name to get latitude, longitude, country, and timezone.
 2. If multiple plausible matches differ by country or admin region, use `clarify` (or pick using a user-provided country/region) before forecasting. Do not silently pick the first hit when the place name is ambiguous.
 3. Call `get_weather_forecast` with the chosen coordinates for current conditions and up to 7 daily highs/lows.
-4. Summarize temperature, weather code, and timezone for the user. Always report units from the response `*_units` fields (Open-Meteo defaults to °C and km/h unless overridden). Explain WMO weather codes in plain language.
+4. Summarize temperature, precipitation, weather code, and timezone for the user. Always report units from the response `*_units` fields (Open-Meteo defaults to °C, km/h, and millimeters unless overridden). For an imperial forecast, pass `temperature_unit=fahrenheit`, `wind_speed_unit=mph`, and `precipitation_unit=inch` together so the response does not mix imperial and metric values. Explain WMO weather codes in plain language.
 
 Safety:
 
@@ -63,7 +63,7 @@ Finish with visible attribution: Powered by [Open-Meteo](https://open-meteo.com)
     {
       "id": "weather_forecast",
       "name": "get_weather_forecast",
-      "description": "Fetch current weather and daily forecast from Open-Meteo for latitude/longitude. Returns current temperature and weather code plus daily max/min for the requested number of days. Defaults to °C and km/h; pass temperature_unit/wind_speed_unit when the user asks for imperial units.",
+      "description": "Fetch current weather and daily forecast from Open-Meteo for latitude/longitude. Returns current temperature and weather code plus daily max/min and precipitation sum for the requested number of days. Defaults to °C, km/h, and millimeters; pass temperature_unit, wind_speed_unit, and precipitation_unit together when the user asks for imperial units.",
       "kind": "http",
       "readOnly": true,
       "method": "GET",
@@ -106,6 +106,10 @@ Finish with visible attribution: Powered by [Open-Meteo](https://open-meteo.com)
           "wind_speed_unit": {
             "type": "string",
             "description": "Wind speed unit: kmh (default), ms, mph, or kn."
+          },
+          "precipitation_unit": {
+            "type": "string",
+            "description": "Precipitation unit: mm (default) or inch. Use inch with fahrenheit and mph for an imperial forecast."
           }
         },
         "required": ["latitude", "longitude"]
