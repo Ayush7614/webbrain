@@ -170,7 +170,7 @@
       "name": "WebBrain は安全ですか? Web ページを変更しますか?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "WebBrain には 2 つのモードがあります。質問モード (デフォルト) は読み取り専用で、ページ上の何も変更できません。実行モードはフルブラウザエージェント機能 (クリック、入力、ナビゲーション) を有効にしますが、起動前に明示的なユーザー確認が必要で、目に見える警告バナーが表示されます。エージェントは「停止」ボタンでいつでも止められます。拡張のソースコードは GitHub で完全公開されており、監査可能です。"
+        "text": "WebBrain には 3 つのモードがあります。質問モード (デフォルト) は読み取り専用で、ページ上の何も変更できません。実行モードではクリック、入力、ナビゲーションなどのブラウザ操作ができ、Dev モードではページのデバッグツールが追加されます。影響を伴う操作はデフォルトで承認が必要です。この権限ゲートを無効にすると、WebBrain は目に見える警告バナーを表示します。エージェントは「停止」ボタンでいつでも止められます。拡張のソースコードは GitHub で完全公開されており、監査可能です。"
       }
     },
     {
@@ -1872,32 +1872,6 @@
     }
     .footer-links { display: flex; flex-wrap: wrap; gap: 12px 20px; }
 
-    .safety-note {
-      max-width: var(--max-w);
-      margin: 0 auto 24px;
-      background: rgba(251,191,36,0.1);
-      border: 1px solid rgba(251,191,36,0.35);
-      border-radius: var(--radius-sm);
-      padding: 18px 20px;
-      color: var(--text);
-      text-align: start;
-      line-height: 1.55;
-      font-size: 13px;
-    }
-    .safety-note h4 {
-      font-size: 14px;
-      margin-bottom: 8px;
-      letter-spacing: 0.4px;
-      text-transform: uppercase;
-      color: var(--warning);
-    }
-    .safety-note ul {
-      margin: 0;
-      padding-inline-start: 18px;
-    }
-    .safety-note li { margin-bottom: 6px; }
-    .safety-note li:last-child { margin-bottom: 0; }
-
     /* ================================================================
        COMPARISON TABLE
        ================================================================ */
@@ -2852,8 +2826,13 @@
     </details>
 
     <details class="faq-item">
+      <summary>Vivaldi の Web Panel で WebBrain を使う場合に制限はありますか?</summary>
+      <p>はい。Vivaldi の Web Panel では、<code>confirm()</code>、<code>alert()</code>、<code>prompt()</code> などのネイティブ JavaScript ダイアログが抑止されます。WebBrain の Ask、Act、Dev モード切り替えはこれらのダイアログに依存しなくなりましたが、一部の補助操作はまだ依存しています。</p><p><strong>新しい会話:</strong> Web Panel では確認ダイアログが抑止されるため、ボタンが何もしていないように見えることがあります。WebBrain のパネルアイコンを右クリックし、<strong>「別の場所で開く → 新しいタブ」</strong>を選び、その通常タブから<strong>「新しい会話」</strong>を使ってください。</p><p><strong>録画:</strong> 当面は Vivaldi で <code>/record</code> を使用しないでください。録画に失敗しても Vivaldi がエラー警告を隠し、説明が表示されない場合があります。</p><p><strong>設定、履歴、トレース、Ollama ハンドオフ:</strong> これらのページにもネイティブダイアログがありますが、通常 WebBrain は正常に動作する通常タブで開きます。手動で Web Panel に追加した場合は、ダイアログに依存する操作を使う前に通常タブで開いてください。</p>
+    </details>
+
+    <details class="faq-item">
       <summary>WebBrain は安全ですか? Web ページを変更しますか?</summary>
-      <p>WebBrain には 2 つのモードがあります。質問モード (デフォルト) は読み取り専用で、ページ上の何も変更できません。実行モードはフルブラウザエージェント機能 (クリック、入力、ナビゲーション) を有効にしますが、起動前に明示的なユーザー確認が必要で、目に見える警告バナーが表示されます。エージェントは「停止」ボタンでいつでも止められます。拡張のソースコードは GitHub で完全公開されており、監査可能です。</p>
+      <p>WebBrain には 3 つのモードがあります。質問モード (デフォルト) は読み取り専用で、ページ上の何も変更できません。実行モードではクリック、入力、ナビゲーションなどのブラウザ操作ができ、Dev モードではページのデバッグツールが追加されます。影響を伴う操作はデフォルトで承認が必要です。この権限ゲートを無効にすると、WebBrain は目に見える警告バナーを表示します。エージェントは「停止」ボタンでいつでも止められます。拡張のソースコードは GitHub で完全公開されており、監査可能です。</p>
     </details>
 
     <details class="faq-item">
@@ -2947,14 +2926,6 @@
 
 <!-- FOOTER -->
 <footer>
-  <div class="safety-note" id="safety">
-    <h4>重要な安全に関する注意</h4>
-    <ul>
-      <li>WebBrain の実行モードはあなたの代わりに実際の操作を行えます。続行する前に、プロンプト、遷移先、結果を確認する責任はあなたにあります。</li>
-      <li>WebBrain は計画のためにスクリーンショットを撮ることがあります。機微なページ (例: 健康、金融、出会い、個人アカウントのポータルなど) でエージェントモードを使うことは、リスクを受け入れる場合を除き避けてください。</li>
-      <li>Web のコンテンツには、AI の挙動を誘導するための悪意ある prompt injection が含まれていることがあります。提案された操作は常に確認し、見覚えのない動作の実行は停止してください。</li>
-    </ul>
-  </div>
   <div class="footer-inner">
     <span>© 2026 WebBrain。Built by <a href="https://emresokullu.com" target="_blank">Emre Sokullu</a>.</span>
     <div class="footer-links">

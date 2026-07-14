@@ -5807,16 +5807,6 @@ function setMode(mode) {
 
 async function ensureActMode() {
   if (agentMode === 'act') return true;
-  // Recommended action chips share the same first-run warning as the Act
-  // toggle so they cannot silently bypass the Act-mode confirmation.
-  try {
-    const stored = await browser.storage.local.get('actConfirmed');
-    if (!stored.actConfirmed) {
-      const ok = confirm(t('sp.mode.act.confirm'));
-      if (!ok) return false;
-      await browser.storage.local.set({ actConfirmed: true }).catch(() => {});
-    }
-  } catch (e) { /* ignore */ }
   setMode('act');
   return true;
 }
@@ -5835,16 +5825,6 @@ async function ensureDevMode() {
     // The agent also enforces this; keep the UI usable if the background
     // restarted between lookup and send.
   }
-  const actOk = await ensureActMode();
-  if (!actOk) return false;
-  try {
-    const stored = await browser.storage.local.get('devConfirmed');
-    if (!stored.devConfirmed) {
-      const ok = confirm(t('sp.mode.dev.confirm'));
-      if (!ok) return false;
-      await browser.storage.local.set({ devConfirmed: true }).catch(() => {});
-    }
-  } catch (e) { /* ignore */ }
   setMode('dev');
   return true;
 }

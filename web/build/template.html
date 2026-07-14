@@ -1634,32 +1634,6 @@
     }
     .footer-links { display: flex; flex-wrap: wrap; gap: 12px 20px; }
 
-    .safety-note {
-      max-width: var(--max-w);
-      margin: 0 auto 24px;
-      background: rgba(251,191,36,0.1);
-      border: 1px solid rgba(251,191,36,0.35);
-      border-radius: var(--radius-sm);
-      padding: 18px 20px;
-      color: var(--text);
-      text-align: start;
-      line-height: 1.55;
-      font-size: 13px;
-    }
-    .safety-note h4 {
-      font-size: 14px;
-      margin-bottom: 8px;
-      letter-spacing: 0.4px;
-      text-transform: uppercase;
-      color: var(--warning);
-    }
-    .safety-note ul {
-      margin: 0;
-      padding-inline-start: 18px;
-    }
-    .safety-note li { margin-bottom: 6px; }
-    .safety-note li:last-child { margin-bottom: 0; }
-
     /* ================================================================
        COMPARISON TABLE
        ================================================================ */
@@ -2607,6 +2581,11 @@
     </details>
 
     <details class="faq-item">
+      <summary>{{t:faq.vivaldi_dialogs.q}}</summary>
+      {{t-html:faq.vivaldi_dialogs.a_html}}
+    </details>
+
+    <details class="faq-item">
       <summary>{{t:faq.safe.q}}</summary>
       <p>{{t-html:faq.safe.a_html}}</p>
     </details>
@@ -2702,14 +2681,6 @@
 
 <!-- FOOTER -->
 <footer>
-  <div class="safety-note" id="safety">
-    <h4>{{t:safety.heading}}</h4>
-    <ul>
-      <li>{{t:safety.item_1}}</li>
-      <li>{{t:safety.item_2}}</li>
-      <li>{{t:safety.item_3}}</li>
-    </ul>
-  </div>
   <div class="footer-inner">
     <span>{{t-html:footer.copyright_html}}</span>
     <div class="footer-links">

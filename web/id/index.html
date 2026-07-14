@@ -170,7 +170,7 @@
       "name": "Apakah WebBrain aman digunakan? Bisakah ia memodifikasi halaman web?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "WebBrain memiliki dua mode: mode Tanya (bawaan) hanya-baca dan tidak dapat memodifikasi apa pun pada halaman. Mode Aksi mengaktifkan kapabilitas agen peramban penuh (klik, ketik, navigasi) tetapi membutuhkan konfirmasi pengguna secara eksplisit sebelum aktif, dan disertai spanduk peringatan yang terlihat. Anda dapat menghentikan agen kapan saja dengan tombol Berhenti. Kode sumber ekstensi sepenuhnya terbuka untuk audit di GitHub."
+        "text": "WebBrain memiliki tiga mode. Mode Tanya (bawaan) hanya-baca dan tidak dapat mengubah apa pun pada halaman. Mode Aksi memungkinkan tindakan peramban seperti mengeklik, mengetik, dan menavigasi, sedangkan mode Dev menambahkan alat debug halaman. Tindakan yang berdampak memerlukan persetujuan secara bawaan; jika gerbang izin tersebut dimatikan, WebBrain menampilkan spanduk peringatan yang terlihat. Anda dapat menghentikan agen kapan saja dengan tombol Berhenti. Kode sumber ekstensi sepenuhnya terbuka untuk audit di GitHub."
       }
     },
     {
@@ -1872,32 +1872,6 @@
     }
     .footer-links { display: flex; flex-wrap: wrap; gap: 12px 20px; }
 
-    .safety-note {
-      max-width: var(--max-w);
-      margin: 0 auto 24px;
-      background: rgba(251,191,36,0.1);
-      border: 1px solid rgba(251,191,36,0.35);
-      border-radius: var(--radius-sm);
-      padding: 18px 20px;
-      color: var(--text);
-      text-align: start;
-      line-height: 1.55;
-      font-size: 13px;
-    }
-    .safety-note h4 {
-      font-size: 14px;
-      margin-bottom: 8px;
-      letter-spacing: 0.4px;
-      text-transform: uppercase;
-      color: var(--warning);
-    }
-    .safety-note ul {
-      margin: 0;
-      padding-inline-start: 18px;
-    }
-    .safety-note li { margin-bottom: 6px; }
-    .safety-note li:last-child { margin-bottom: 0; }
-
     /* ================================================================
        COMPARISON TABLE
        ================================================================ */
@@ -2852,8 +2826,13 @@
     </details>
 
     <details class="faq-item">
+      <summary>Apakah ada batasan saat menggunakan WebBrain di Web Panel Vivaldi?</summary>
+      <p>Ya. Web Panel Vivaldi memblokir dialog JavaScript bawaan seperti <code>confirm()</code>, <code>alert()</code>, dan <code>prompt()</code>. Peralihan mode Tanya, Aksi, dan Dev di WebBrain tidak lagi bergantung pada dialog tersebut, tetapi beberapa tindakan sekunder masih bergantung padanya.</p><p><strong>Percakapan baru:</strong> Di Web Panel, tombol dapat terlihat tidak melakukan apa pun karena dialog konfirmasinya diblokir. Klik kanan ikon panel WebBrain, pilih <strong>Open in → New Tab</strong>, lalu gunakan <strong>New conversation</strong> dari tab biasa tersebut.</p><p><strong>Perekaman:</strong> Untuk saat ini, jangan gunakan <code>/record</code> di Vivaldi. Jika perekaman gagal, Vivaldi dapat menyembunyikan peringatan galat sehingga tidak ada penjelasan yang terlihat.</p><p><strong>Pengaturan, Riwayat, Jejak, dan serah-terima Ollama:</strong> Halaman-halaman ini juga memiliki dialog bawaan, tetapi WebBrain biasanya membukanya sebagai tab biasa sehingga berfungsi. Jika Anda memasukkan salah satunya secara manual ke Web Panel, buka di tab biasa sebelum menggunakan tindakan yang bergantung pada dialog.</p>
+    </details>
+
+    <details class="faq-item">
       <summary>Apakah WebBrain aman digunakan? Bisakah ia memodifikasi halaman web?</summary>
-      <p>WebBrain memiliki dua mode: mode Tanya (bawaan) hanya-baca dan tidak dapat memodifikasi apa pun pada halaman. Mode Aksi mengaktifkan kapabilitas agen peramban penuh (klik, ketik, navigasi) tetapi membutuhkan konfirmasi pengguna secara eksplisit sebelum aktif, dan disertai spanduk peringatan yang terlihat. Anda dapat menghentikan agen kapan saja dengan tombol Berhenti. Kode sumber ekstensi sepenuhnya terbuka untuk audit di GitHub.</p>
+      <p>WebBrain memiliki tiga mode. Mode Tanya (bawaan) hanya-baca dan tidak dapat mengubah apa pun pada halaman. Mode Aksi memungkinkan tindakan peramban seperti mengeklik, mengetik, dan menavigasi, sedangkan mode Dev menambahkan alat debug halaman. Tindakan yang berdampak memerlukan persetujuan secara bawaan; jika gerbang izin tersebut dimatikan, WebBrain menampilkan spanduk peringatan yang terlihat. Anda dapat menghentikan agen kapan saja dengan tombol Berhenti. Kode sumber ekstensi sepenuhnya terbuka untuk audit di GitHub.</p>
     </details>
 
     <details class="faq-item">
@@ -2947,14 +2926,6 @@
 
 <!-- FOOTER -->
 <footer>
-  <div class="safety-note" id="safety">
-    <h4>Pemberitahuan Keamanan Penting</h4>
-    <ul>
-      <li>Mode Aksi WebBrain dapat melakukan tindakan nyata atas nama Anda. Anda bertanggung jawab meninjau prompt, tujuan, dan hasilnya sebelum melanjutkan.</li>
-      <li>WebBrain mungkin menangkap tangkapan layar untuk perencanaan. Hindari menggunakan mode agen pada halaman sensitif (misalnya kesehatan, keuangan, kencan, atau portal akun pribadi) kecuali Anda menerima risikonya.</li>
-      <li>Konten web dapat berisi prompt injection berbahaya yang dirancang memanipulasi perilaku AI. Selalu tinjau tindakan yang disarankan dan hentikan eksekusi yang terlihat tidak terduga.</li>
-    </ul>
-  </div>
   <div class="footer-inner">
     <span>© 2026 WebBrain. Dibangun oleh <a href="https://emresokullu.com" target="_blank">Emre Sokullu</a>.</span>
     <div class="footer-links">

@@ -9221,7 +9221,7 @@ test('sidepanel drops stale recommended-action refreshes after tab changes or ru
   }
 });
 
-test('sidepanel drops stale recommended-action clicks after async act confirmation', () => {
+test('sidepanel drops stale recommended-action clicks after async act-mode switching', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
@@ -9250,9 +9250,9 @@ test('sidepanel drops stale recommended-action clicks after async act confirmati
     assert.notEqual(captureIdx, -1, `${label}: recommended-action click should capture the initiating tab`);
     assert.notEqual(initialGuardIdx, -1, `${label}: recommended-action click should reject missing tabs before sending`);
     assert.notEqual(firstSourceGuardIdx, -1, `${label}: recommended-action click should re-check the source URL before sending`);
-    assert.notEqual(ensureIdx, -1, `${label}: act recommended-action click should await act confirmation`);
-    assert.notEqual(staleGuardIdx, -1, `${label}: stale recommended-action clicks should be dropped after act confirmation`);
-    assert.notEqual(secondSourceGuardIdx, -1, `${label}: act recommended-action click should re-check the source URL after confirmation`);
+    assert.notEqual(ensureIdx, -1, `${label}: act recommended-action click should await the mode switch`);
+    assert.notEqual(staleGuardIdx, -1, `${label}: stale recommended-action clicks should be dropped after switching modes`);
+    assert.notEqual(secondSourceGuardIdx, -1, `${label}: act recommended-action click should re-check the source URL after switching modes`);
     assert.notEqual(inputIdx, -1, `${label}: recommended-action click composer write missing`);
     assert.notEqual(sendIdx, -1, `${label}: recommended-action click should pass trusted run options to chat`);
     assert.match(sourceHelperBody, /const sourceUrl = typeof action\?\.sourceUrl === 'string' \? action\.sourceUrl : '';/, `${label}: source URL helper should read bound action source`);
@@ -9264,7 +9264,7 @@ test('sidepanel drops stale recommended-action clicks after async act confirmati
   }
 });
 
-test('sidepanel awaits act confirmation persistence before switching modes', () => {
+test('sidepanel switches Act and Dev without native confirmation dialogs', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
@@ -9273,21 +9273,19 @@ test('sidepanel awaits act confirmation persistence before switching modes', () 
     const ensureStart = panel.indexOf('async function ensureActMode() {');
     assert.notEqual(ensureStart, -1, `${label}: ensureActMode missing`);
     const ensureBody = panel.slice(ensureStart, panel.indexOf('\n}\n\nmodeAskBtn.addEventListener', ensureStart) + 2);
-    assert.match(
-      ensureBody,
-      /const stored = await (chrome|browser)\.storage\.local\.get\('actConfirmed'\);[\s\S]*?if \(!stored\.actConfirmed\) \{[\s\S]*?const ok = confirm\(t\('sp\.mode\.act\.confirm'\)\);[\s\S]*?if \(!ok\) return false;[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ actConfirmed: true \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}[\s\S]*?setMode\('act'\);/,
-      `${label}: act confirmation should persist before mode switches to Act`,
-    );
+    assert.match(ensureBody, /async function ensureActMode\(\) \{[\s\S]*?setMode\('act'\);[\s\S]*?return true;/, `${label}: Act should switch directly`);
+    assert.match(ensureBody, /async function ensureDevMode\(\) \{[\s\S]*?get_active_prompt_tier[\s\S]*?setMode\('dev'\);[\s\S]*?return true;/, `${label}: Dev should retain its tier guard and switch directly`);
+    assert.doesNotMatch(ensureBody, /actConfirmed|devConfirmed|\bconfirm\s*\(/, `${label}: mode switching should not depend on native confirmation dialogs`);
     assert.match(
       panel,
       /modeActBtn\.addEventListener\('click', async \(\) => \{[\s\S]*?await ensureActMode\(\);[\s\S]*?\}\);/,
-      `${label}: Act button should await confirmation persistence`,
+      `${label}: Act button should await the mode switch`,
     );
     if (label === 'chrome') {
       assert.match(
         panel,
         /async function handleGlobalKeydown\(e\) \{[\s\S]*?await ensureActMode\(\);[\s\S]*?\}/,
-        `${label}: Ctrl+Shift+X should await act confirmation persistence`,
+        `${label}: Ctrl+Shift+X should await the mode switch`,
       );
     }
   }

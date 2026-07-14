@@ -170,7 +170,7 @@
       "name": "WebBrain est-il sûr ? Peut-il modifier les pages web ?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "WebBrain a deux modes : le mode Demander (par défaut) est en lecture seule et ne peut rien modifier sur la page. Le mode Agir active les capacités complètes de l'agent (clic, saisie, navigation) mais demande une confirmation explicite de l'utilisateur avant activation et affiche un avertissement visible. Vous pouvez arrêter l'agent à tout moment avec le bouton Arrêter. Le code source de l'extension est entièrement ouvert à l'audit sur GitHub."
+        "text": "WebBrain comporte trois modes. Le mode Demander (par défaut) est en lecture seule et ne peut rien modifier sur la page. Le mode Agir permet de cliquer, saisir et naviguer, tandis que le mode Dev ajoute des outils de débogage de page. Les actions ayant des conséquences demandent une approbation par défaut ; si cette barrière d'autorisation est désactivée, WebBrain affiche un avertissement visible. Vous pouvez arrêter l'agent à tout moment avec le bouton Arrêter. Le code source de l'extension est entièrement ouvert à l'audit sur GitHub."
       }
     },
     {
@@ -1872,32 +1872,6 @@
     }
     .footer-links { display: flex; flex-wrap: wrap; gap: 12px 20px; }
 
-    .safety-note {
-      max-width: var(--max-w);
-      margin: 0 auto 24px;
-      background: rgba(251,191,36,0.1);
-      border: 1px solid rgba(251,191,36,0.35);
-      border-radius: var(--radius-sm);
-      padding: 18px 20px;
-      color: var(--text);
-      text-align: start;
-      line-height: 1.55;
-      font-size: 13px;
-    }
-    .safety-note h4 {
-      font-size: 14px;
-      margin-bottom: 8px;
-      letter-spacing: 0.4px;
-      text-transform: uppercase;
-      color: var(--warning);
-    }
-    .safety-note ul {
-      margin: 0;
-      padding-inline-start: 18px;
-    }
-    .safety-note li { margin-bottom: 6px; }
-    .safety-note li:last-child { margin-bottom: 0; }
-
     /* ================================================================
        COMPARISON TABLE
        ================================================================ */
@@ -2852,8 +2826,13 @@
     </details>
 
     <details class="faq-item">
+      <summary>Y a-t-il des limitations lorsque WebBrain est utilisé dans le panneau Web de Vivaldi ?</summary>
+      <p>Oui. Les panneaux Web de Vivaldi bloquent les boîtes de dialogue JavaScript natives telles que <code>confirm()</code>, <code>alert()</code> et <code>prompt()</code>. Le sélecteur des modes Ask, Act et Dev de WebBrain ne dépend plus de ces boîtes de dialogue, mais quelques actions secondaires les utilisent encore.</p><p><strong>Nouvelle conversation :</strong> Dans le panneau Web, le bouton peut sembler ne rien faire, car sa boîte de confirmation est bloquée. Faites un clic droit sur l'icône du panneau WebBrain, choisissez <strong>Ouvrir dans → Nouvel onglet</strong>, puis utilisez <strong>Nouvelle conversation</strong> depuis cet onglet normal.</p><p><strong>Enregistrement :</strong> N'utilisez pas encore <code>/record</code> dans Vivaldi. Si l'enregistrement échoue, Vivaldi peut masquer l'alerte d'erreur et ne fournir aucune explication visible.</p><p><strong>Paramètres, Historique, Traces et transfert vers Ollama :</strong> Ces pages contiennent aussi des boîtes de dialogue natives, mais WebBrain les ouvre normalement dans des onglets ordinaires, où elles fonctionnent. Si vous en placez une manuellement dans un panneau Web, ouvrez-la dans un onglet normal avant d'utiliser une action dépendant d'une boîte de dialogue.</p>
+    </details>
+
+    <details class="faq-item">
       <summary>WebBrain est-il sûr ? Peut-il modifier les pages web ?</summary>
-      <p>WebBrain a deux modes : le mode Demander (par défaut) est en lecture seule et ne peut rien modifier sur la page. Le mode Agir active les capacités complètes de l'agent (clic, saisie, navigation) mais demande une confirmation explicite de l'utilisateur avant activation et affiche un avertissement visible. Vous pouvez arrêter l'agent à tout moment avec le bouton Arrêter. Le code source de l'extension est entièrement ouvert à l'audit sur GitHub.</p>
+      <p>WebBrain comporte trois modes. Le mode Demander (par défaut) est en lecture seule et ne peut rien modifier sur la page. Le mode Agir permet de cliquer, saisir et naviguer, tandis que le mode Dev ajoute des outils de débogage de page. Les actions ayant des conséquences demandent une approbation par défaut ; si cette barrière d'autorisation est désactivée, WebBrain affiche un avertissement visible. Vous pouvez arrêter l'agent à tout moment avec le bouton Arrêter. Le code source de l'extension est entièrement ouvert à l'audit sur GitHub.</p>
     </details>
 
     <details class="faq-item">
@@ -2947,14 +2926,6 @@
 
 <!-- FOOTER -->
 <footer>
-  <div class="safety-note" id="safety">
-    <h4>Avertissement important</h4>
-    <ul>
-      <li>Le mode Agir de WebBrain peut effectuer de véritables actions en votre nom. Vous êtes responsable de la vérification des prompts, des destinations et des résultats avant de continuer.</li>
-      <li>WebBrain peut capturer des captures d&#39;écran pour planifier. Évitez d&#39;utiliser le mode agent sur des pages sensibles (santé, finance, rencontres ou portails de comptes privés) sauf si vous acceptez le risque.</li>
-      <li>Le contenu web peut contenir des injections de prompts malveillantes destinées à manipuler le comportement de l&#39;IA. Vérifiez toujours les actions proposées et stoppez les exécutions qui semblent inattendues.</li>
-    </ul>
-  </div>
   <div class="footer-inner">
     <span>© 2026 WebBrain. Créé par <a href="https://emresokullu.com" target="_blank">Emre Sokullu</a>.</span>
     <div class="footer-links">

@@ -6143,18 +6143,6 @@ function setMode(mode) {
 
 async function ensureActMode() {
   if (agentMode === 'act') return true;
-  // Show a confirmation dialog the very first time the user enables Act
-  // mode on this install — tracked via chrome.storage.local so it only
-  // happens once, not on every click. Recommended action chips share this
-  // path so they cannot silently bypass the Act-mode warning.
-  try {
-    const stored = await chrome.storage.local.get('actConfirmed');
-    if (!stored.actConfirmed) {
-      const ok = confirm(t('sp.mode.act.confirm'));
-      if (!ok) return false;
-      await chrome.storage.local.set({ actConfirmed: true }).catch(() => {});
-    }
-  } catch (e) { /* storage unavailable, fall through */ }
   setMode('act');
   return true;
 }
@@ -6173,16 +6161,6 @@ async function ensureDevMode() {
     // The agent also enforces this server-side; don't block Dev on a stale
     // sidepanel/background lookup failure.
   }
-  const actOk = await ensureActMode();
-  if (!actOk) return false;
-  try {
-    const stored = await chrome.storage.local.get('devConfirmed');
-    if (!stored.devConfirmed) {
-      const ok = confirm(t('sp.mode.dev.confirm'));
-      if (!ok) return false;
-      await chrome.storage.local.set({ devConfirmed: true }).catch(() => {});
-    }
-  } catch (e) { /* storage unavailable, fall through */ }
   setMode('dev');
   return true;
 }
