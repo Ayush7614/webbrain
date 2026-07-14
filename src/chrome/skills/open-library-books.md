@@ -29,8 +29,9 @@ Finish with visible attribution: Powered by [Open Library](https://openlibrary.o
       "method": "GET",
       "endpoint": "https://openlibrary.org/search.json",
       "defaultArgs": {
-        "limit": 5
-      },
+        "limit": 5,
+        "fields": "key,title,author_name,first_publish_year,isbn"
+      }
       "resultPolicy": "untrusted",
       "responseLimits": {
         "maxTextChars": 40000,
