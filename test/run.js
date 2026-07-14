@@ -13100,7 +13100,7 @@ test('categoryFor: cloud family (openai / anthropic / gemini / mistral / deepsee
 
 test('categoryFor: hosted model gateways are router providers', () => {
   for (const PM of [ProviderManagerCh, ProviderManagerFx]) {
-    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq']) {
+    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks']) {
       assert.equal(PM.categoryFor(id, { type: 'openai' }), 'router');
     }
   }
@@ -14304,7 +14304,7 @@ test('ProviderManager load ignores unsupported stored provider configs', async (
       assert.equal(mgr.providers.get('openai')?.config.model, `${label}-kept-model`, `${label}: built-in model should survive`);
       assert.equal(mgr.providers.get('openai')?.config.configured, true, `${label}: customized legacy provider should migrate to configured`);
       assert.equal(mgr.providers.get('anthropic')?.config.configured, false, `${label}: untouched provider should remain unconfigured`);
-      for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq']) {
+      for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks']) {
         assert.equal(mgr.providers.get(id)?.config.category, 'router', `${label}: stored ${id} category should migrate to router`);
       }
       assert.equal(mgr.providers.get('cloudflare')?.config.accountId, '0123456789abcdef0123456789abcdef', `${label}: Cloudflare account ID should survive migration`);
@@ -14482,7 +14482,7 @@ test('_defaultConfigs: router providers present and disabled by default', () => 
   for (const PM of [ProviderManagerCh, ProviderManagerFx]) {
     const mgr = new PM();
     const defaults = mgr._defaultConfigs();
-    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq']) {
+    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks']) {
       assert.ok(defaults[id], `${PM.name}: missing default config for ${id}`);
       assert.equal(defaults[id].type, 'openai', `${PM.name}: ${id} should use OpenAI-compatible provider`);
       assert.equal(defaults[id].category, 'router', `${PM.name}: ${id} should be router`);
@@ -14495,6 +14495,9 @@ test('_defaultConfigs: router providers present and disabled by default', () => 
     assert.equal(defaults.cloudflare.contextWindow, 262144);
     assert.equal(defaults.cloudflare.supportsStreamUsageOptions, false);
     assert.equal(defaults.cloudflare.accountId, '');
+    assert.equal(defaults.fireworks.baseUrl, 'https://api.fireworks.ai/inference/v1');
+    assert.equal(defaults.fireworks.model, 'accounts/fireworks/models/llama-v3p3-70b-instruct');
+    assert.equal(defaults.fireworks.supportsStreamUsageOptions, true);
   }
 });
 
