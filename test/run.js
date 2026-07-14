@@ -13105,14 +13105,13 @@ test('categoryFor: cloud family (openai / anthropic / gemini / mistral / deepsee
     assert.equal(PM.categoryFor('mistral', { type: 'openai' }), 'cloud');
     assert.equal(PM.categoryFor('deepseek', { type: 'openai' }), 'cloud');
     assert.equal(PM.categoryFor('xai', { type: 'openai' }), 'cloud');
-    assert.equal(PM.categoryFor('together', { type: 'openai' }), 'cloud');
     assert.equal(PM.categoryFor('claude_subscription', { type: 'anthropic_oauth' }), 'cloud');
   }
 });
 
 test('categoryFor: hosted model gateways are router providers', () => {
   for (const PM of [ProviderManagerCh, ProviderManagerFx]) {
-    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks']) {
+    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks', 'together']) {
       assert.equal(PM.categoryFor(id, { type: 'openai' }), 'router');
     }
   }
@@ -14316,7 +14315,7 @@ test('ProviderManager load ignores unsupported stored provider configs', async (
       assert.equal(mgr.providers.get('openai')?.config.model, `${label}-kept-model`, `${label}: built-in model should survive`);
       assert.equal(mgr.providers.get('openai')?.config.configured, true, `${label}: customized legacy provider should migrate to configured`);
       assert.equal(mgr.providers.get('anthropic')?.config.configured, false, `${label}: untouched provider should remain unconfigured`);
-      for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks']) {
+      for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks', 'together']) {
         assert.equal(mgr.providers.get(id)?.config.category, 'router', `${label}: stored ${id} category should migrate to router`);
       }
       assert.equal(mgr.providers.get('cloudflare')?.config.accountId, '0123456789abcdef0123456789abcdef', `${label}: Cloudflare account ID should survive migration`);
@@ -14472,17 +14471,13 @@ test('_defaultConfigs: new cloud providers present and disabled by default', () 
   for (const PM of [ProviderManagerCh, ProviderManagerFx]) {
     const mgr = new PM();
     const defaults = mgr._defaultConfigs();
-    for (const id of ['gemini', 'mistral', 'deepseek', 'xai', 'together']) {
+    for (const id of ['gemini', 'mistral', 'deepseek', 'xai']) {
       assert.ok(defaults[id], `${PM.name}: missing default config for ${id}`);
       assert.equal(defaults[id].category, 'cloud', `${PM.name}: ${id} should be cloud`);
       assert.equal(defaults[id].enabled, false, `${PM.name}: ${id} should default to disabled`);
       assert.ok(defaults[id].baseUrl, `${PM.name}: ${id} missing baseUrl`);
       assert.ok(defaults[id].model, `${PM.name}: ${id} missing default model`);
     }
-    assert.equal(defaults.together.type, 'openai', `${PM.name}: together should use OpenAI-compatible provider`);
-    assert.equal(defaults.together.baseUrl, 'https://api.together.xyz/v1');
-    assert.equal(defaults.together.model, 'meta-llama/Llama-3.3-70B-Instruct-Turbo');
-    assert.equal(defaults.together.supportsStreamUsageOptions, true);
   }
 });
 
@@ -14498,7 +14493,7 @@ test('_defaultConfigs: router providers present and disabled by default', () => 
   for (const PM of [ProviderManagerCh, ProviderManagerFx]) {
     const mgr = new PM();
     const defaults = mgr._defaultConfigs();
-    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks']) {
+    for (const id of ['openrouter', 'cloudflare', 'nvidia', 'groq', 'fireworks', 'together']) {
       assert.ok(defaults[id], `${PM.name}: missing default config for ${id}`);
       assert.equal(defaults[id].type, 'openai', `${PM.name}: ${id} should use OpenAI-compatible provider`);
       assert.equal(defaults[id].category, 'router', `${PM.name}: ${id} should be router`);
@@ -14514,6 +14509,9 @@ test('_defaultConfigs: router providers present and disabled by default', () => 
     assert.equal(defaults.fireworks.baseUrl, 'https://api.fireworks.ai/inference/v1');
     assert.equal(defaults.fireworks.model, 'accounts/fireworks/models/llama-v3p3-70b-instruct');
     assert.equal(defaults.fireworks.supportsStreamUsageOptions, true);
+    assert.equal(defaults.together.baseUrl, 'https://api.together.xyz/v1');
+    assert.equal(defaults.together.model, 'meta-llama/Llama-3.3-70B-Instruct-Turbo');
+    assert.equal(defaults.together.supportsStreamUsageOptions, true);
   }
 });
 
