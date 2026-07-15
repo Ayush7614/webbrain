@@ -1152,9 +1152,8 @@ export class Agent {
     };
   }
 
-  _normalizeToolResult(fnName, result) {
+  _normalizeToolResult(fnName, result, outcomeUnknown = Agent.STATE_CHANGE_TOOLS.has(fnName)) {
     if (result != null) return result;
-    const outcomeUnknown = Agent.STATE_CHANGE_TOOLS.has(fnName);
     return {
       success: false,
       errorCode: 'missing_tool_response',
@@ -1162,7 +1161,7 @@ export class Agent {
       outcomeUnknown,
       error: `${fnName || 'Tool'} returned no result${outcomeUnknown ? '; the action may still have completed' : ''}.`,
       hint: outcomeUnknown
-        ? 'Observe the current URL and page state before deciding what to do next. Do not repeat the action blindly.'
+        ? 'The operation may have completed even though its response was lost. Verify the current state with a safe read before retrying; do not repeat the action blindly.'
         : 'The page may have navigated or reloaded while the result was being returned. Wait for it to settle, then retry the observation once.',
     };
   }
@@ -2167,6 +2166,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (skillCallTool?.requiresDownloadPermission && !capabilities.includes(Capability.DOWNLOAD)) {
         capabilities.push(Capability.DOWNLOAD);
       }
+      // Preserve the pre-execution classification even if the confirmation
+      // path later removes a capability whose prompt was already satisfied.
+      // A missing response after any consequential call is an unknown outcome:
+      // the side effect may have completed before its reply was lost.
+      const missingResponseOutcomeUnknown = capabilities.length > 0 || Agent.STATE_CHANGE_TOOLS.has(fnName);
       await this._ensureGateSetting();
       const skillEndpointRedirect = this._skillEndpointToolRedirect(fnName, fnArgs, tabId);
       if (skillEndpointRedirect) {
@@ -2333,7 +2337,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       onUpdate('tool_call', { name: fnName, args: fnArgs });
       const _toolStart = Date.now();
       const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
-      const toolResult = this._normalizeToolResult(fnName, rawToolResult);
+      const toolResult = this._normalizeToolResult(fnName, rawToolResult, missingResponseOutcomeUnknown);
       const _toolLatency = Date.now() - _toolStart;
 
       // Pin any durable download handle this tool produced, so a later

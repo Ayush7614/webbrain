@@ -19245,17 +19245,21 @@ test('accepted done emits successful result update after progress gate', async (
   }
 });
 
-test('nullish page-tool responses become structured failures without interrupting the batch', async () => {
+test('nullish tool responses classify consequential outcomes without interrupting the batch', async () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
-    for (const [toolName, expectedOutcomeUnknown] of [
-      ['get_accessibility_tree', false],
-      ['click_ax', true],
+    for (const [toolName, args, expectedOutcomeUnknown] of [
+      ['get_accessibility_tree', { filter: 'interactive' }, false],
+      ['click_ax', { ref_id: 'ref_13' }, true],
+      ['fetch_url', { url: 'https://api.example.com/items', method: 'POST', body: '{}' }, true],
+      ['iframe_click', { selector: '#submit', urlFilter: 'payments.example.com' }, true],
+      ['download_file', { url: 'https://example.com/report.pdf' }, true],
+      ['schedule_task', { title: 'Check later', prompt: 'Check status later', schedule: { after_seconds: 60 } }, true],
     ]) {
       const agent = new AgentClass({
         getActive: () => ({ contextWindow: 128000, supportsVision: false }),
         getVisionProvider: async () => null,
       });
-      const tabId = toolName === 'click_ax' ? 811 : 810;
+      const tabId = 810;
       const messages = [];
       const updates = [];
       agent._ensureGateSetting = async () => false;
@@ -19266,8 +19270,8 @@ test('nullish page-tool responses become structured failures without interruptin
       agent._autoRecordProgressAction = () => null;
       agent._persist = () => {};
       agent.executeTool = async () => undefined;
+      if (toolName === 'fetch_url') agent.apiAllowedTabs.add(tabId);
 
-      const args = toolName === 'click_ax' ? { ref_id: 'ref_13' } : { filter: 'interactive' };
       const result = await agent._executeToolBatch(
         tabId,
         [{ id: `${toolName}_missing`, function: { name: toolName, arguments: JSON.stringify(args) } }],
@@ -19287,7 +19291,7 @@ test('nullish page-tool responses become structured failures without interruptin
       const toolMessage = messages.find(message => message.tool_call_id === `${toolName}_missing`);
       assert.match(toolMessage?.content || '', /missingToolResponse/, `${label}/${toolName}: model did not receive the normalized result`);
       if (expectedOutcomeUnknown) {
-        assert.match(toolMessage?.content || '', /Do not repeat the action blindly/, `${label}/${toolName}: unsafe retry guidance missing`);
+        assert.match(toolMessage?.content || '', /do not repeat the action blindly/i, `${label}/${toolName}: unsafe retry guidance missing`);
       }
     }
   }
