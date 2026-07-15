@@ -4,6 +4,20 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [23.3.1] - 2026-07-15
+
+### Changed
+- Added bounded canonical semantic intents to the shared on-demand skill catalog so the planner and `load_skill` can route multilingual requests without literal keyword matching or an extra embedding call.
+- Let approved Act plans activate validated skill IDs before execution, with Dev inheriting Act-compatible skills, Ask limited to explicitly compatible skills, and Compact remaining skill-free.
+- Added recording and exporting WebBrain versions to new traces, conversation Markdown, trace Markdown, and Traces-page JSON while labeling legacy recording versions unavailable.
+
+### Fixed
+- Redirected single-media browser download attempts to an eligible inactive FreeSkillz skill, including exact-permalink discovery on feeds and profiles, while preserving browser fallback only after a real server failure or unavailable skill.
+- Prevented the agent path from saving split or unverifiably muxed MSE audio/video buffers or presenting ffmpeg and login advice as a successful result.
+
+### Tests
+- Added Chrome and Firefox coverage for intent normalization and catalog isolation, planner activation and rejection, multilingual routing metadata, inactive-skill redirects, strict MSE refusal, and versioned current and legacy exports.
+
 ## [23.3.0] - 2026-07-15
 
 ### Changed

@@ -652,6 +652,7 @@ export default {
   "sp.retry.attachments_unavailable": "Вложения из неудачной попытки больше недоступны; будет повторно отправлен только текст.",
   "sp.plan.change": "Изменить",
   "sp.plan.confidence": "Уверенность {confidence}",
+  "sp.plan.skills": "Навыки для активации",
   "sp.plan.auto_approved": "План одобрен автоматически (уверенность {confidence}) — выполняется…",
   "sp.memory.title_html": "<strong>Память пользователя</strong>",
   "sp.memory.empty": "Сохранённой памяти пользователя пока нет.",

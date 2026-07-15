@@ -49,7 +49,7 @@
 - **Smart Context** — Token-aware auto-compaction (summarizes older turns once the conversation nears the model's context window, with a visible "Context automatically compacted" notice), tool result limits, and emergency overflow recovery
 - **Browser History Control** — Act mode can use native `go_back` / `go_forward` history tools instead of CSP-sensitive page JavaScript
 - **API Shortcut Hints** — Repeated clicks that fire the same XHR/fetch request can surface a matching `fetch_url` suggestion while preserving the UI-first and `/allow-api` mutation policy
-- **On-demand Skills and Skill Tools** — Settings → Skills can import trusted skill text or URLs. Mid/Full runs receive a small eligible name/summary catalog and load full instructions plus compatible `webbrain-tools` only when relevant; Compact disables skills. FreeSkillz.xyz and the browser-only email verification-code helper are enabled by default, and either can be removed.
+- **On-demand Skills and Skill Tools** — Settings → Skills can import trusted skill text or URLs. Mid/Full runs receive a small eligible ID/name/summary/semantic-intent catalog and load full instructions plus compatible `webbrain-tools` only when relevant; Compact disables skills. FreeSkillz.xyz and the browser-only email verification-code helper are enabled by default, and either can be removed.
 - **Copy Support** — Copy buttons on code blocks and full messages
 - **Page Inspection Banner** — Visual indicator when the agent is interacting with the page
 - **Stop Button** — Abort the agent mid-execution at any time
@@ -146,8 +146,8 @@ Click the gear icon or go to the extension's Options page to configure:
 **Skills:**
 - FreeSkillz.xyz ships enabled by default and can expose `read_youtube_transcript`, `resolve_public_media`, and `download_public_media` through its skill manifest after it is loaded for a relevant run; remove it from Settings → Skills if you do not want it available.
 - The OTP / verification-code helper also ships enabled by default and loads only for relevant requests. It declares no network tool: on the active run tab, it prefers selected text or a bounded accessibility-tree subtree, matches the newest relevant service code, excludes SMS/native-app access, and honors Strict secret handling. When used, the scoped page content and code are included in the normal request to your configured LLM provider. If Record traces is enabled, raw tool results and model responses are also stored locally until those traces are deleted. Remove the skill from Settings → Skills if you do not want this guidance available.
-- Imported skills are copied into browser local storage. Mid/Full runs send eligible names and summaries in the `load_skill` catalog; full instructions are appended to the system prompt only after activation for the current run. Compact exposes no loader, skill prompt, or skill tools.
-- Optional fenced `webbrain-skill` JSON metadata can declare a summary (maximum 200 characters) and `modes` (`ask`, `act`, or `dev`). Skills without metadata infer the first prose paragraph as their summary and default to Act/Dev.
+- Imported skills are copied into browser local storage. Mid/Full runs send eligible IDs, names, summaries, and optional canonical semantic intents to the planner and `load_skill` catalog; full instructions are appended to the system prompt only after activation for the current run. Compact exposes no loader, skill prompt, or skill tools.
+- Optional fenced `webbrain-skill` JSON metadata can declare a summary (maximum 200 characters), `modes` (`ask`, `act`, or `dev`), and up to six canonical `intents` such as `verification_code` or `public_media_download`. Intents are cross-language meaning hints for the LLM, not literal keyword matching. Skills without metadata infer the first prose paragraph as their summary, have no inferred intents, and default to Act/Dev.
 - A skill can expose read-only HTTP tools or short-lived download-job tools with a fenced `webbrain-tools` JSON manifest. Importing a skill is the trust boundary for its declared HTTPS endpoint; download-job skill tools still run in Act mode and use the normal Downloads permission gate before saving files.
 - Tool results from third-party content should be marked `resultPolicy: "untrusted"` so they are wrapped as data, not instructions.
 
@@ -330,7 +330,7 @@ WebBrain accepts slash commands as the first thing on a line in the input box. T
 | `/reset` | Clear the conversation and all per-conversation flags |
 | `/screenshot [--full-page]` | Capture the visible tab, or the full scrollable page with `--full-page` (Chrome only) |
 | `/record [--full-screen] [--transcribe]` | Record the current tab, or a selected screen/window with `--full-screen` (Chrome only); add `--transcribe` to save a transcript after stop |
-| `/export [--traces]` | Download the conversation as Markdown, or export the tool chain with `--traces` |
+| `/export [--traces]` | Download version-stamped conversation Markdown, or export the version-stamped tool chain with `--traces` |
 | `/profile` | Toggle profile auto-fill on/off without opening Settings |
 | `/vision` | Toggle vision mode (screenshot understanding) on the active provider |
 | `/ask` | Switch to Ask mode before sending |

@@ -661,6 +661,7 @@ export default {
   "sp.retry.attachments_unavailable": "Hindi na available ang mga attachment mula sa nabigong pagsubok; text lang ang susubukang muli.",
   "sp.plan.change": "Baguhin",
   "sp.plan.confidence": "Kumpiyansa {confidence}",
+  "sp.plan.skills": "Mga skill na ia-activate",
   "sp.plan.auto_approved": "Awtomatikong inaprubahan ang plano (kumpiyansa {confidence}) — tumatakbo…",
   "sp.memory.title_html": "<strong>Memory ng user</strong>",
   "sp.memory.empty": "Wala pang naka-save na memory ng user.",

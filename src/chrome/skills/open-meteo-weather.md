@@ -3,7 +3,8 @@
 ```webbrain-skill
 {
   "summary": "Look up current weather and short forecasts for cities or place names with Open-Meteo.",
-  "modes": ["ask", "act"]
+  "modes": ["ask", "act"],
+  "intents": ["current_weather", "weather_forecast", "location_forecast"]
 }
 ```
 

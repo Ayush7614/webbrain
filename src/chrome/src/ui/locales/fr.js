@@ -661,6 +661,7 @@ export default {
   "sp.retry.attachments_unavailable": "Les pièces jointes de la tentative échouée ne sont plus disponibles ; seul le texte sera réessayé.",
   "sp.plan.change": "Modifier",
   "sp.plan.confidence": "Confiance {confidence}",
+  "sp.plan.skills": "Compétences à activer",
   "sp.plan.auto_approved": "Plan approuvé automatiquement (confiance {confidence}) — exécution…",
   "sp.memory.title_html": "<strong>Mémoire utilisateur</strong>",
   "sp.memory.empty": "Aucune mémoire utilisateur enregistrée pour le moment.",

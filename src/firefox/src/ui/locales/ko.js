@@ -652,6 +652,7 @@ export default {
   "sp.retry.attachments_unavailable": "실패한 시도의 첨부 파일을 더 이상 사용할 수 없어 텍스트만 다시 시도합니다.",
   "sp.plan.change": "변경",
   "sp.plan.confidence": "신뢰도 {confidence}",
+  "sp.plan.skills": "활성화할 스킬",
   "sp.plan.auto_approved": "계획이 자동 승인되었습니다(신뢰도 {confidence}) — 실행 중…",
   "sp.memory.title_html": "<strong>사용자 메모리</strong>",
   "sp.memory.empty": "저장된 사용자 메모리가 아직 없습니다.",

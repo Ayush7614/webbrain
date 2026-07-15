@@ -42,7 +42,7 @@ import {
 } from './planner.js';
 import { extractFirstJsonObject } from './json-extract.js';
 import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
-import { buildCustomSkillsPrompt, buildSkillLoaderDefinition, buildSkillToolDefinitions, buildSkillToolRegistry, getEligibleCustomSkills, normalizeCustomSkills } from './skills.js';
+import { buildCustomSkillsPrompt, buildSkillLoaderDefinition, buildSkillToolDefinitions, buildSkillToolRegistry, getEligibleCustomSkills, getEligibleSkillCatalog, normalizeCustomSkills } from './skills.js';
 import { publicMediaUrlNeedsExplicitTarget } from './public-media-url.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
@@ -1245,10 +1245,16 @@ export class Agent {
       if (toolCall?.name !== 'download_public_media') continue;
       const explicitUrl = typeof toolCall.args?.url === 'string' ? toolCall.args.url.trim() : '';
       const explicitMatchesCurrent = !!explicitUrl && !!currentMediaUrl && this._normalizePublicMediaAttemptUrl(explicitUrl) === currentMediaUrl;
-      explicitAttempted = !!explicitUrl && !explicitMatchesCurrent;
-      attempted = !explicitUrl || explicitMatchesCurrent;
       let parsed = null;
       try { parsed = JSON.parse(this._unwrapUntrusted(msg.content)); } catch { /* malformed result still counts as an attempt */ }
+      // The feed/profile permalink guard runs before the skill tool and adds a
+      // synthetic tool result. It is not a FreeSkillz request, so do not let it
+      // unlock the browser fallback as though the remote downloader failed.
+      if (parsed?.needsExplicitMediaUrl === true) {
+        continue;
+      }
+      explicitAttempted = !!explicitUrl && !explicitMatchesCurrent;
+      attempted = !explicitUrl || explicitMatchesCurrent;
       const resultSucceeded = !!(parsed && typeof parsed === 'object' && parsed.success === true);
       succeeded = attempted && resultSucceeded;
       explicitSucceeded = explicitAttempted && resultSucceeded;
@@ -1263,15 +1269,21 @@ export class Agent {
     return out;
   }
 
-  async _downloadPublicMediaRedirectForSocial(tabId, fnName, fnArgs, allowedToolNames, messages) {
+  async _downloadPublicMediaRedirectForSocial(tabId, fnName, fnArgs, _allowedToolNames, messages) {
     if (fnName !== 'download_social_media') return null;
-    if (!allowedToolNames?.has?.('download_public_media')) return null;
-    if (!this._activeSkillToolForName(tabId, 'download_public_media')) return null;
     if (fnArgs?.scroll === true || fnArgs?.mode === 'all' || Number(fnArgs?.limit || 0) > 1) return null;
 
     const currentUrl = await this._currentUrl(tabId);
     const publicAttempt = this._downloadPublicMediaAttempt(messages, currentUrl);
     const needsExplicitTarget = this._publicMediaUrlNeedsExplicitTarget(currentUrl);
+    const mode = this.conversationModes.get(tabId) || 'act';
+    const tier = this._resolvePromptTier();
+    let activeTool = this._activeSkillToolForName(tabId, 'download_public_media');
+    const owner = activeTool
+      ? null
+      : this._eligibleSkillOwnerForToolName(tabId, 'download_public_media', mode, tier);
+    if (!activeTool && !owner) return null;
+
     if (publicAttempt.succeeded || (needsExplicitTarget && publicAttempt.explicitSucceeded)) {
       return {
         success: true,
@@ -1280,15 +1292,25 @@ export class Agent {
         error: 'Skipped download_social_media because download_public_media already succeeded. Do not run the browser-side fallback unless the user asks for an additional download.',
       };
     }
+    if (publicAttempt.attempted || publicAttempt.explicitAttempted) return null;
+
+    let activatedSkillId = null;
+    if (!activeTool && owner) {
+      const activated = this._activateSkillsForRun(tabId, [owner.id], mode, tier);
+      activatedSkillId = activated[0] || null;
+      activeTool = this._activeSkillToolForName(tabId, 'download_public_media');
+    }
+    if (!activeTool) return null;
+
     if (needsExplicitTarget && !publicAttempt.explicitAttempted) {
       return {
         ...this._publicMediaExplicitUrlRequiredResult(currentUrl),
         wrongTool: true,
         fallbackTool: 'download_social_media',
         suggestedArgs: this._downloadPublicMediaArgsFromSocialArgs(fnArgs),
+        ...(activatedSkillId ? { activatedSkillId } : {}),
       };
     }
-    if (publicAttempt.attempted || publicAttempt.explicitAttempted) return null;
 
     return {
       success: false,
@@ -1296,6 +1318,7 @@ export class Agent {
       useTool: 'download_public_media',
       fallbackTool: 'download_social_media',
       suggestedArgs: this._downloadPublicMediaArgsFromSocialArgs(fnArgs),
+      ...(activatedSkillId ? { activatedSkillId } : {}),
       error: 'download_social_media is the browser-side fallback. Because download_public_media is available, call download_public_media first for this public media download. If download_public_media fails, then call download_social_media.',
     };
   }
@@ -3486,6 +3509,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         model: provider?.model,
         providerId: provider?.name,
         providerClass: provider?.constructor?.name,
+        webbrainVersion: browser.runtime.getManifest().version || '',
         userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
         tabUrl,
         tabTitle,
@@ -3778,11 +3802,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.plannerFollowUpSkipTabs.delete(tabId);
 
     const historyDigest = this._buildPlannerHistoryDigest(priorMessages);
-    const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState, runId, historyDigest, tabInfo, plannerMode);
+    const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState, runId, historyDigest, tabInfo, plannerMode, mode);
     if (!gate.proceed) {
       messages.push({ role: 'assistant', content: gate.message || 'Task cancelled.' });
       this._persist(tabId);
       return { proceed: false, message: gate.message || 'Task cancelled.', reason: gate.reason };
+    }
+
+    if (gate.skillIds?.length) {
+      this._activateSkillsForRun(tabId, gate.skillIds, mode, this._resolvePromptTier());
     }
 
     if (gate.approvedScratchpadText) {
@@ -3840,16 +3868,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     ];
   }
 
-  async _runPlannerGate(tabId, enriched, onUpdate, costState, runId = null, historyDigest = '', tabInfo = null, plannerMode = this._plannerMode()) {
+  async _runPlannerGate(tabId, enriched, onUpdate, costState, runId = null, historyDigest = '', tabInfo = null, plannerMode = this._plannerMode(), conversationMode = 'act') {
     const { tabUrl, tabTitle } = tabInfo || await this._getTabUrlTitle(tabId);
     const strictPlanner = this._normalizePlanBeforeActMode(plannerMode) === 'strict';
 
     onUpdate('thinking', { step: 0, note: 'Planning…' });
 
     const provider = this.providerManager.getActive();
+    const tier = this._resolvePromptTier();
+    const skillCatalog = this._skillCatalog(conversationMode, tier);
     const plannerMessages = buildPlannerMessages(enriched, tabUrl, tabTitle, historyDigest, {
       noThink: this._plannerPrefersNoThinkPrompt(provider),
       allowApi: this.apiAllowedTabs.has(tabId),
+      skillCatalog,
     });
     const plannerStep = 0;
 
@@ -3918,6 +3949,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { proceed: false, message: msg };
       }
 
+      const eligibleSkillIds = new Set(skillCatalog.map((skill) => skill.id));
+      plan.skill_ids = (plan.skill_ids || []).filter((skillId) => eligibleSkillIds.has(skillId));
+
       const planId = `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       const markdown = formatPlanMarkdown(plan);
       const verboseMarkdown = formatPlanMarkdown(plan, { verbose: true });
@@ -3930,7 +3964,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           onUpdate('plan_auto_approved', { planId, confidence: plan.confidence });
         }
         const approvedScratchpadText = formatPlanScratchpad(plan, '', verboseMarkdown);
-        return { proceed: true, approvedScratchpadText, planId };
+        return { proceed: true, approvedScratchpadText, planId, skillIds: plan.skill_ids };
       }
       const choice = await this._waitForPlanReview(tabId, planId, plan, markdown, onUpdate, verboseMarkdown);
 
@@ -3945,8 +3979,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const approvedText = editedText && choice?.markdownMode === 'compact'
         ? `${editedText}\n\n${formatPlanExecutionMetadataMarkdown(plan)}`
         : editedText;
+      const verbosePlanEdited = choice?.markdownMode === 'verbose'
+        && editedText
+        && editedText !== String(verboseMarkdown || '').trim();
+      // Verbose review exposes the skill section. If the user changes that
+      // approved text, fail closed instead of activating IDs from the stale
+      // planner object that the edited plan may no longer authorize.
+      const approvedSkillIds = verbosePlanEdited ? [] : plan.skill_ids;
       const approvedScratchpadText = formatPlanScratchpad(plan, approvedText, verboseMarkdown);
-      return { proceed: true, approvedScratchpadText, planId };
+      return { proceed: true, approvedScratchpadText, planId, skillIds: approvedSkillIds };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
         return { proceed: false, message: e.message, reason: 'cost_limit' };
@@ -4574,6 +4615,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return getEligibleCustomSkills(this.customSkills, { mode, tier: tier || 'full' });
   }
 
+  _skillCatalog(mode, tier) {
+    return getEligibleSkillCatalog(this.customSkills, { mode, tier: tier || 'full' });
+  }
+
   _activeSkillRecords(tabId, mode, tier) {
     const activeIds = this.activeSkillIds.get(tabId) || new Set();
     if (activeIds.size === 0) return [];
@@ -4621,6 +4666,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }).get(name) || null;
   }
 
+  _eligibleSkillOwnerForToolName(tabId, name, mode, tier) {
+    if (!name) return null;
+    const siteAdapter = this._activeSkillSiteAdapter(tabId);
+    return this._eligibleSkills(mode, tier).find((skill) => buildSkillToolDefinitions([skill], {
+      mode,
+      tier: tier || 'full',
+      siteAdapter,
+      excludeNames: RESERVED_AGENT_TOOL_NAMES,
+    }).some((tool) => tool.function?.name === name)) || null;
+  }
+
   _activateSkillForRun(tabId, skillId, mode, tier) {
     const skill = this._eligibleSkills(mode, tier).find((item) => item.id === skillId);
     if (!skill) return { skill: null, alreadyLoaded: false };
@@ -4629,6 +4685,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     activeIds.add(skill.id);
     this.activeSkillIds.set(tabId, activeIds);
     return { skill, alreadyLoaded };
+  }
+
+  _refreshSystemPromptForTab(tabId, mode = this.conversationModes.get(tabId) || 'ask') {
+    const messages = this.conversations.get(tabId);
+    if (messages?.[0]?.role === 'system') {
+      messages[0].content = this._buildSystemPrompt(mode, tabId);
+    }
+  }
+
+  _activateSkillsForRun(tabId, skillIds, mode, tier) {
+    const activated = [];
+    for (const skillId of Array.isArray(skillIds) ? skillIds : []) {
+      const { skill } = this._activateSkillForRun(tabId, skillId, mode, tier);
+      if (skill) activated.push(skill.id);
+    }
+    if (activated.length) this._refreshSystemPromptForTab(tabId, mode);
+    return activated;
   }
 
   _loadSkillForRun(tabId, args = {}) {
@@ -4645,10 +4718,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           : `Skill ${skillId || '(missing id)'} is not enabled or available in ${mode} mode.`,
       };
     }
-    const messages = this.conversations.get(tabId);
-    if (messages?.[0]?.role === 'system') {
-      messages[0].content = this._buildSystemPrompt(mode, tabId);
-    }
+    this._refreshSystemPromptForTab(tabId, mode);
     return {
       success: true,
       skillId: skill.id,
@@ -4669,9 +4739,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       .map((name) => String(name || '').trim())
       .filter(Boolean);
     if (!names.length) return;
-    const eligible = this._eligibleSkills(mode, tier);
     for (const name of names) {
-      const owner = eligible.find((skill) => (skill.tools || []).some((tool) => tool.name === name));
+      const owner = this._eligibleSkillOwnerForToolName(tabId, name, mode, tier);
       if (owner) this._activateSkillForRun(tabId, owner.id, mode, tier);
     }
   }
@@ -5676,7 +5745,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let turnCount;
     let toolCount;
     try {
-      ({ markdown, turnCount, toolCount } = tracesToMarkdown(withEvents, { notes }));
+      ({ markdown, turnCount, toolCount } = tracesToMarkdown(withEvents, {
+        notes,
+        exportedByWebBrainVersion: browser.runtime.getManifest().version || '',
+      }));
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
@@ -8227,6 +8299,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const opts = {
           mode: toolArgs.mode || 'auto',
           all: !!toolArgs.scroll,
+          target: toolArgs.target || 'auto',
           limit: typeof toolArgs.limit === 'number' && toolArgs.limit > 0
             ? toolArgs.limit
             : (bulkSocialDownload ? Number.MAX_SAFE_INTEGER : 1),
@@ -8257,45 +8330,68 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 }
                 for (const b of (rec.orphanBuffers || [])) mseBytes += (b.bytes || 0);
               } catch (_) {}
+              const completedFromStats = Number(stats ? stats.completed : 0) || 0;
+              const completedVideoFromStats = Number(stats ? stats.completedVideo : 0) || 0;
+              const completedRequestedFromStats = ${JSON.stringify(opts.target)} === 'video'
+                ? completedVideoFromStats
+                : completedFromStats;
               // If the MSE recorder captured bytes, save them inline rather
               // than asking the agent to call execute_js → saveMse() in a
               // follow-up step. The follow-up pattern was broken by the
               // extension's own CSP (no \`unsafe-eval\`), and "28 MB captured
               // but won't save" was a head-scratcher. Now download_social_media
               // is a single call that completes the save end-to-end.
-              let mseSavedFiles = [];
+              let mseSavedFiles = null;
               let mseSaveError = null;
-              if (mseBytes > 0) {
+              let mseSaveCode = null;
+              if (mseBytes > 0 && ${JSON.stringify(opts.target)} !== 'image' && completedRequestedFromStats === 0) {
                 try {
                   mseSavedFiles = await window.SocialMediaDownloader.saveMse({
                     prefix: (window.location && window.location.hostname || 'mse').replace(/^www\\./, ''),
                     mode: ${JSON.stringify(opts.mode)},
+                    requireMuxedAudioVideo: ${JSON.stringify(opts.target !== 'audio' && opts.target !== 'image')},
                   });
                 } catch (e) {
                   mseSaveError = (e && e.message) || String(e);
+                  mseSaveCode = e && e.code || null;
                 }
               }
+              const mseSavedCount = Array.isArray(mseSavedFiles) ? mseSavedFiles.length : 0;
+              const mseSavedVideoCount = Array.isArray(mseSavedFiles)
+                ? mseSavedFiles.filter(file => String(file?.mime || '').toLowerCase().startsWith('video/')).length
+                : 0;
+              const completedVideoCount = completedVideoFromStats + mseSavedVideoCount;
               const recommendation = window.SocialMediaDownloader._buildRecommendation({
-                urls, profile, mseBytes, mseSavedFiles, mseSaveError, pageUrl: location.href,
+                urls, profile, mseBytes, mseSavedFiles, mseSaveError, mseSaveCode,
+                completedCount: completedFromStats,
+                completedVideoCount,
+                requestedTarget: ${JSON.stringify(opts.target)},
+                pageUrl: location.href,
               });
+              const videoResultRequired = ${JSON.stringify(opts.target)} === 'video';
+              const requestedVideoMissing = videoResultRequired && completedVideoCount === 0;
               // Honest per-status counts. Roll mse-saved files into the
               // completed count so the agent sees one consistent number.
-              const completedFromStats = stats ? stats.completed : 0;
-              const mseSavedCount = mseSavedFiles.length;
+              const completedCount = completedFromStats + mseSavedCount;
+              const strictMseFailure = mseSaveCode === 'split_mse_requires_server_merge';
               return {
-                success: true,
+                success: !(strictMseFailure || requestedVideoMissing),
                 site: profile,
                 mode: ${JSON.stringify(opts.mode)},
                 count: urls.length + mseSavedCount,
                 triggeredCount: (stats ? stats.triggered : urls.length) + mseSavedCount,
-                completedCount: completedFromStats + mseSavedCount,
+                completedCount,
+                completedVideoCount,
                 openedInTabCount: stats ? stats.openedInTab : null,
                 failedCount: stats ? stats.failed : null,
                 failures: stats ? stats.failures : [],
                 urls: urls.slice(0, 50),
                 mseBytes,
-                mseSavedFiles,
+                mseSavedFiles: mseSavedFiles || [],
                 ...(mseSaveError ? { mseSaveError } : {}),
+                ...(mseSaveCode ? { mseSaveCode } : {}),
+                ...(strictMseFailure ? { splitMedia: true } : {}),
+                ...(requestedVideoMissing ? { requestedMediaMissing: true } : {}),
                 recommendation,
               };
             } catch (e) {
@@ -8321,7 +8417,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return { success: false, error: `vision crop failed: ${e.message}` };
         }
       };
-      const hasCompletedDownload = (result) => result && result.success !== false && Number(result.completedCount || 0) > 0;
+      const hasCompletedDownload = (result) => {
+        if (!result || result.success === false) return false;
+        const videoResultRequired = toolArgs.target === 'video';
+        const completed = videoResultRequired ? result.completedVideoCount : result.completedCount;
+        return Number(completed || 0) > 0;
+      };
 
       try {
         const strategy = ['auto', 'dom', 'vision'].includes(toolArgs.strategy) ? toolArgs.strategy : 'auto';

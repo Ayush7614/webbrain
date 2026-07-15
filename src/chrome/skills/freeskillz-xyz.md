@@ -3,7 +3,8 @@
 ```webbrain-skill
 {
   "summary": "Read YouTube transcripts, fetch blocked NYTimes articles, or resolve and download supported public media through FreeSkillz.xyz.",
-  "modes": ["ask", "act"]
+  "modes": ["ask", "act"],
+  "intents": ["public_media_download", "social_media_video", "youtube_transcript", "nytimes_article", "media_metadata"]
 }
 ```
 

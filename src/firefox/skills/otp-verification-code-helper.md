@@ -3,7 +3,8 @@
 ```webbrain-skill
 {
   "summary": "Find, read, copy, or enter a one-time verification code from recent message content visible in the active browser tab.",
-  "modes": ["ask", "act"]
+  "modes": ["ask", "act"],
+  "intents": ["verification_code", "one_time_password", "two_factor_code", "email_code", "enter_code"]
 }
 ```
 

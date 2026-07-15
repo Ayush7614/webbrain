@@ -112,6 +112,7 @@ export async function startRun(meta) {
       model: meta.model || '',
       providerId: meta.providerId || '',
       providerClass: meta.providerClass || '',
+      webbrainVersion: meta.webbrainVersion || '',
       userMessage: meta.userMessage || '',
       tabUrl: meta.tabUrl || '',
       tabTitle: meta.tabTitle || '',

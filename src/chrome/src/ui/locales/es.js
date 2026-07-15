@@ -661,6 +661,7 @@ export default {
   "sp.retry.attachments_unavailable": "Los archivos adjuntos del intento fallido ya no están disponibles; se reintentará solo con el texto.",
   "sp.plan.change": "Cambiar",
   "sp.plan.confidence": "Confianza {confidence}",
+  "sp.plan.skills": "Habilidades que se activarán",
   "sp.plan.auto_approved": "Plan aprobado automáticamente (confianza {confidence}) — ejecutando…",
   "sp.memory.title_html": "<strong>Memoria del usuario</strong>",
   "sp.memory.empty": "Aún no hay memoria del usuario guardada.",

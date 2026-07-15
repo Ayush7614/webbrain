@@ -661,6 +661,7 @@ export default {
   "sp.retry.attachments_unavailable": "Lampiran dari percobaan yang gagal tidak lagi tersedia; hanya teks yang akan dicoba lagi.",
   "sp.plan.change": "Ubah",
   "sp.plan.confidence": "Keyakinan {confidence}",
+  "sp.plan.skills": "Skill yang akan diaktifkan",
   "sp.plan.auto_approved": "Rencana disetujui otomatis (keyakinan {confidence}) — menjalankan…",
   "sp.memory.title_html": "<strong>Memori pengguna</strong>",
   "sp.memory.empty": "Belum ada memori pengguna yang tersimpan.",

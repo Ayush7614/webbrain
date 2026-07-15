@@ -661,6 +661,7 @@ export default {
   "sp.retry.attachments_unavailable": "ไฟล์แนบจากความพยายามที่ล้มเหลวไม่พร้อมใช้งานแล้ว จะลองใหม่เฉพาะข้อความ",
   "sp.plan.change": "เปลี่ยน",
   "sp.plan.confidence": "ความมั่นใจ {confidence}",
+  "sp.plan.skills": "ทักษะที่จะเปิดใช้งาน",
   "sp.plan.auto_approved": "แผนได้รับการอนุมัติอัตโนมัติ (ความมั่นใจ {confidence}) — กำลังทำงาน…",
   "sp.memory.title_html": "<strong>หน่วยความจำผู้ใช้</strong>",
   "sp.memory.empty": "ยังไม่มีหน่วยความจำผู้ใช้ที่บันทึกไว้",

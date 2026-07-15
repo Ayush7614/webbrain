@@ -3,7 +3,8 @@
 ```webbrain-skill
 {
   "summary": "Find book details, ISBN records, authors, and publication information with Open Library.",
-  "modes": ["ask", "act"]
+  "modes": ["ask", "act"],
+  "intents": ["book_search", "book_metadata", "isbn_lookup", "author_lookup"]
 }
 ```
 

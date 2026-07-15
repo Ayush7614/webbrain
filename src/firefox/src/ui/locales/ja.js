@@ -652,6 +652,7 @@ export default {
   "sp.retry.attachments_unavailable": "失敗した試行の添付ファイルは利用できなくなったため、テキストのみで再試行します。",
   "sp.plan.change": "変更",
   "sp.plan.confidence": "信頼度 {confidence}",
+  "sp.plan.skills": "有効化するスキル",
   "sp.plan.auto_approved": "プランを自動承認しました（信頼度 {confidence}）— 実行中…",
   "sp.memory.title_html": "<strong>ユーザーメモリ</strong>",
   "sp.memory.empty": "保存済みのユーザーメモリはまだありません。",

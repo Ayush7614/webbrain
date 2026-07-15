@@ -137,13 +137,23 @@ Two built-in skills are enabled by default and can be removed independently in
 Settings → Skills. A removed default is remembered and is not silently restored.
 Enabled means available on demand, not injected into every request. Mid/Full
 runs send the configured LLM provider a small mode-eligible catalog containing
-skill IDs, names, and summaries (each summary is capped at 200 characters).
+skill IDs, names, summaries, and optional canonical semantic intents (each
+summary is capped at 200 characters; intents are capped at six 40-character
+identifiers). The Act/Dev planner receives the same routing-only catalog so it
+can select relevant skills before execution. Intents are semantic hints, not a
+literal keyword matcher.
 Full skill instructions and compatible tool schemas are sent only after
 `load_skill` activates a relevant skill for the current run; active skills reset
 before the next user turn. Compact sends no skill catalog, prose, or tools. Ask
 catalogs only explicitly Ask-compatible skills and still filters out mutating
 or download tools. Trusted recommended actions may preactivate their owning
 skill, such as FreeSkillz for `download_public_media`.
+
+Trace records store the WebBrain version that created each run. Conversation
+Markdown records the exporting version; trace Markdown records both the
+exporting version and each turn's recording version, while trace JSON includes
+`exportedByWebBrainVersion` plus the run's `webbrainVersion` when available.
+Legacy runs without recording metadata are labeled as version unavailable.
 
 The "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) is explicitly Ask/Act
 compatible and declares

@@ -3057,43 +3057,64 @@ function renderPlanReviewView(plan, fallbackMarkdown = '') {
   // so the steps can be rendered as-is.
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
   const summary = String(plan?.summary || '').trim();
+  const skillIds = Array.isArray(plan?.skill_ids)
+    ? plan.skill_ids.map(id => String(id || '').trim()).filter(Boolean)
+    : [];
 
   if (!steps.length) {
     const fallback = document.createElement('div');
     fallback.className = 'plan-review-step-fallback';
     fallback.textContent = (summary || String(fallbackMarkdown || '')).replace(/^#+\s*/gm, '').trim();
     view.appendChild(fallback);
-    return view;
+  } else {
+    if (summary) {
+      const summaryEl = document.createElement('div');
+      summaryEl.className = 'plan-review-summary';
+      summaryEl.textContent = summary;
+      view.appendChild(summaryEl);
+    }
+
+    const list = document.createElement('div');
+    list.className = 'plan-review-steps';
+    list.setAttribute('role', 'list');
+    for (const [index, step] of steps.entries()) {
+      const item = document.createElement('div');
+      item.className = 'plan-review-step';
+      item.setAttribute('role', 'listitem');
+
+      const number = document.createElement('span');
+      number.className = 'plan-review-step-number';
+      number.textContent = String(step.id).replace(/\.$/, '') || String(index + 1);
+
+      const action = document.createElement('span');
+      action.className = 'plan-review-step-action';
+      action.textContent = step.action;
+
+      item.appendChild(number);
+      item.appendChild(action);
+      list.appendChild(item);
+    }
+    view.appendChild(list);
   }
 
-  if (summary) {
-    const summaryEl = document.createElement('div');
-    summaryEl.className = 'plan-review-summary';
-    summaryEl.textContent = summary;
-    view.appendChild(summaryEl);
+  if (skillIds.length) {
+    const skills = document.createElement('div');
+    skills.className = 'plan-review-skills';
+    const label = document.createElement('div');
+    label.className = 'plan-review-skills-label';
+    label.textContent = typeof t === 'function' ? t('sp.plan.skills') : 'Skills to activate';
+    skills.appendChild(label);
+    const values = document.createElement('div');
+    values.className = 'plan-review-skill-list';
+    for (const skillId of skillIds) {
+      const value = document.createElement('code');
+      value.className = 'plan-review-skill';
+      value.textContent = skillId;
+      values.appendChild(value);
+    }
+    skills.appendChild(values);
+    view.appendChild(skills);
   }
-
-  const list = document.createElement('div');
-  list.className = 'plan-review-steps';
-  list.setAttribute('role', 'list');
-  for (const [index, step] of steps.entries()) {
-    const item = document.createElement('div');
-    item.className = 'plan-review-step';
-    item.setAttribute('role', 'listitem');
-
-    const number = document.createElement('span');
-    number.className = 'plan-review-step-number';
-    number.textContent = String(step.id).replace(/\.$/, '') || String(index + 1);
-
-    const action = document.createElement('span');
-    action.className = 'plan-review-step-action';
-    action.textContent = step.action;
-
-    item.appendChild(number);
-    item.appendChild(action);
-    list.appendChild(item);
-  }
-  view.appendChild(list);
   return view;
 }
 
@@ -3984,7 +4005,8 @@ async function parseSlashCommands(text, tabId = currentTabId) {
 
   if (command.value === '/export' && action === 'conversation') {
     const messages = messagesEl.querySelectorAll('.message');
-    let md = '# WebBrain Conversation\n\n';
+    const webbrainVersion = chrome.runtime.getManifest().version || 'unknown';
+    let md = `# WebBrain Conversation\n\n_Exported with WebBrain v${webbrainVersion}_\n\n`;
     for (const msg of messages) {
       const textEl = msg.querySelector('.message-text');
       if (!textEl) continue;

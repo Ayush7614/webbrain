@@ -652,6 +652,7 @@ export default {
   "sp.retry.attachments_unavailable": "失败尝试中的附件已不可用；将仅重试文本。",
   "sp.plan.change": "更改",
   "sp.plan.confidence": "置信度 {confidence}",
+  "sp.plan.skills": "要激活的技能",
   "sp.plan.auto_approved": "计划已自动批准（置信度 {confidence}）— 正在运行…",
   "sp.memory.title_html": "<strong>用户记忆</strong>",
   "sp.memory.empty": "尚无已保存的用户记忆。",

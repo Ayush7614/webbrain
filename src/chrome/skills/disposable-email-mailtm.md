@@ -3,7 +3,8 @@
 ```webbrain-skill
 {
   "summary": "Create and use a disposable Mail.tm inbox for low-importance signups and email verification flows.",
-  "modes": ["act"]
+  "modes": ["act"],
+  "intents": ["temporary_email", "disposable_email", "signup_email", "email_verification"]
 }
 ```
 

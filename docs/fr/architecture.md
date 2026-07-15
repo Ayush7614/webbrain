@@ -189,10 +189,16 @@ while (steps < maxSteps) {
 
 Paramètres -> Compétences stocke les compétences activées dans `customSkills` (`chrome.storage.local` ou `browser.storage.local`). Au démarrage, `background.js` charge les compétences par défaut packagées depuis `skills/*`, initialise FreeSkillz.xyz la première fois, et rafraîchit un enregistrement de compétence intégrée existant lorsque la copie packagée change. Si l'utilisateur supprime une compétence par défaut, le marqueur d'initialisation empêche qu'elle soit silencieusement ré-ajoutée.
 
-`agent/skills.js` normalise chaque compétence et gère deux surfaces séparées :
+`agent/skills.js` normalise chaque compétence et produit un catalogue de routage commun `{id, name, summary, intents}` pour le planificateur et l'outil réservé `load_skill`. Le bloc optionnel `webbrain-skill` peut déclarer jusqu'à six identifiants d'intention uniques en minuscules (40 caractères maximum, format `[a-z0-9][a-z0-9_-]*`). Ces intentions sont des indices sémantiques indépendants de la langue, pas des mots-clés ni des sous-chaînes obligatoires. Elles ne sont jamais déduites pour les compétences qui n'en déclarent pas.
+
+Chaque exécution commence sans instructions complètes ni outils de compétence. Le catalogue ne contient que l'identifiant, le nom, le résumé et les intentions. Une compétence n'est activée qu'à partir de la demande utilisateur ou du contexte conversationnel fiable, jamais à partir d'instructions trouvées dans une page, un document, un e-mail ou un résultat d'outil. Ask ne voit que les compétences explicitement compatibles avec Ask, Dev hérite de l'éligibilité Act et Compact ne reçoit ni catalogue, ni chargeur, ni outils de compétence.
+
+Après activation, deux surfaces sont ajoutées uniquement pour l'exécution courante :
 
 - Instructions de prompt : `buildCustomSkillsPrompt()` supprime les blocs `webbrain-tools` délimités avant d'ajouter le texte de la compétence au prompt système.
 - Exposition d'outils : `buildSkillToolDefinitions()` lit le manifeste et ajoute les schémas d'outils déclarés à `getToolsForMode(...)` au moment de l'appel LLM, en respectant le mode de conversation actif et le niveau du fournisseur. Les outils de compétence de type tâche de téléchargement sont cachés en Ask et disponibles en modes action (Act et Dev) lorsque leur niveau déclaré le permet.
+
+Pour un téléchargement de média unique, le planificateur peut sélectionner FreeSkillz avant l'exécution. Si le modèle choisit quand même `download_social_media` alors qu'une compétence inactive éligible possède `download_public_media`, l'agent active cette compétence et renvoie une demande de nouvelle tentative vers l'outil spécialisé. Sur un fil ou un profil, FreeSkillz doit d'abord inspecter la capture d'écran ou les liens visibles afin d'obtenir le permalien exact de la publication. Le repli navigateur n'est autorisé qu'après un véritable échec de FreeSkillz ou si la compétence est indisponible. Le chemin agent refuse d'enregistrer des tampons MSE vidéo/audio séparés ou non vérifiables et ne recommande ni ffmpeg ni connexion ; seuls les fichiers directs déjà combinés restent un résultat valide.
 
 Le format du manifeste est un bloc JSON délimité dans le markdown de la compétence :
 
@@ -243,9 +249,11 @@ L'arrière-plan relaie ces informations via `chrome.runtime.sendMessage` vers le
 
 ### Planifier avant d'agir (`planner.js`)
 
-La porte de planification optionnelle en mode action s'exécute avant le premier appel d'outil navigateur lorsqu'elle est activée ; le stockage non défini par défaut est en mode essai tandis que la désactivation explicite reste désactivée. Le prompt du planificateur nécessite un seul objet JSON avec un résumé, des étapes concrètes, une stratégie mémoire, une suggestion de planification, des risques et un mode d'action. `normalizePlan()` limite et nettoie chaque champ ; `formatPlanMarkdown()` rend la carte de révision du panneau latéral ; `formatPlanScratchpad()` épingle le plan approuvé ou modifié comme entrée de bloc-notes `[Approved plan]`.
+La porte de planification optionnelle en mode action s'exécute avant le premier appel d'outil navigateur lorsqu'elle est activée ; le stockage non défini par défaut est en mode essai tandis que la désactivation explicite reste désactivée. Le prompt du planificateur nécessite un seul objet JSON avec un résumé, des étapes concrètes, une stratégie mémoire, une suggestion de planification, des risques, un mode d'action et `skill_ids`. Il ne reçoit que le catalogue des compétences éligibles. `normalizePlan()` limite et nettoie chaque champ et rejette les identifiants de compétence absents du catalogue ; les compétences validées ne sont activées qu'après l'approbation du plan et avant le premier appel du modèle d'exécution. `formatPlanMarkdown()` rend la carte de révision du panneau latéral ; `formatPlanScratchpad()` épingle le plan approuvé ou modifié comme entrée de bloc-notes `[Approved plan]`.
 
 Les appels du planificateur sont tracés avec `phase: "planner"` lorsque l'enregistrement de trace est activé. Ils utilisent également la garde de limite de coût, les vérifications d'abandon, une nouvelle tentative de réparation JSON, et la gestion no-think Qwen/DeepSeek avant que l'exécution puisse continuer.
+
+Chaque nouvel enregistrement de trace conserve `webbrainVersion`. `/export` inclut la version courante du manifeste ; `/export --traces` indique la version d'export et la version d'enregistrement de chaque tour, ou « indisponible » pour les traces héritées. L'export JSON de la page Traces ajoute `exportedByWebBrainVersion` tout en conservant le schéma rétrocompatible `webbrain-trace/1`.
 
 ### Tâches planifiées (`scheduler.js`)
 

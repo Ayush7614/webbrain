@@ -612,6 +612,7 @@ export default {
   "sp.retry.attachments_unavailable": "Załączniki z nieudanej próby nie są już dostępne; ponowiony zostanie tylko tekst.",
   "sp.plan.change": "Zmień",
   "sp.plan.confidence": "Pewność {confidence}",
+  "sp.plan.skills": "Umiejętności do aktywacji",
   "sp.plan.auto_approved": "Plan zatwierdzony automatycznie (pewność {confidence}) — trwa wykonywanie…",
   "sp.memory.title_html": "<strong>Pamięć użytkownika</strong>",
   "sp.memory.empty": "Nie ma jeszcze zapisanej pamięci użytkownika.",

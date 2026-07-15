@@ -661,6 +661,7 @@ export default {
   "sp.retry.attachments_unavailable": "Вкладення з невдалої спроби більше недоступні; буде повторно надіслано лише текст.",
   "sp.plan.change": "Змінити",
   "sp.plan.confidence": "Упевненість {confidence}",
+  "sp.plan.skills": "Навички для активації",
   "sp.plan.auto_approved": "План схвалено автоматично (упевненість {confidence}) — виконується…",
   "sp.memory.title_html": "<strong>Пам’ять користувача</strong>",
   "sp.memory.empty": "Збереженої пам’яті користувача ще немає.",

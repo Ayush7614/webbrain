@@ -652,6 +652,7 @@ export default {
   "sp.retry.attachments_unavailable": "لم تعد مرفقات المحاولة الفاشلة متاحة؛ ستتم إعادة محاولة النص فقط.",
   "sp.plan.change": "تغيير",
   "sp.plan.confidence": "الثقة {confidence}",
+  "sp.plan.skills": "المهارات المطلوب تفعيلها",
   "sp.plan.auto_approved": "تمت الموافقة على الخطة تلقائيًا (الثقة {confidence}) — جارٍ التشغيل…",
   "sp.memory.title_html": "<strong>ذاكرة المستخدم</strong>",
   "sp.memory.empty": "لا توجد ذاكرة مستخدم محفوظة بعد.",

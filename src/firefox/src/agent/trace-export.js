@@ -85,9 +85,12 @@ function renderResult(result) {
 export function tracesToMarkdown(runsWithEvents, {
   title = 'WebBrain Conversation — tool chain',
   notes = [],
+  exportedByWebBrainVersion = '',
 } = {}) {
   const runs = Array.isArray(runsWithEvents) ? runsWithEvents : [];
   let md = `# ${title}\n\n`;
+  const exportVersion = oneLine(exportedByWebBrainVersion);
+  if (exportVersion) md += `_Exported with WebBrain v${exportVersion}_\n\n`;
   let turnCount = 0;
   let toolCount = 0;
 
@@ -96,7 +99,12 @@ export function tracesToMarkdown(runsWithEvents, {
     turnCount += 1;
     const run = entry.run;
     const user = oneLine(run.userMessage || '');
-    const meta = [run.model, run.status].filter(Boolean).join(' · ');
+    const recordedVersion = oneLine(run.webbrainVersion || '');
+    const meta = [
+      recordedVersion ? `recorded with WebBrain v${recordedVersion}` : 'recorded WebBrain version unavailable',
+      run.model,
+      run.status,
+    ].filter(Boolean).join(' · ');
     md += `## Turn ${turnCount}${user ? ` — ${user}` : ''}\n`;
     if (meta) md += `_${meta}_\n`;
     md += '\n';

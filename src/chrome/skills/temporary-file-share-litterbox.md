@@ -3,7 +3,8 @@
 ```webbrain-skill
 {
   "summary": "Upload one non-sensitive file to a short-lived public Litterbox link without creating an account.",
-  "modes": ["act"]
+  "modes": ["act"],
+  "intents": ["temporary_file_share", "public_upload_link", "expiring_file_upload"]
 }
 ```
 

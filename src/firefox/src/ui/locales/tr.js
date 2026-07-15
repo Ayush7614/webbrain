@@ -651,6 +651,7 @@ export default {
   "sp.retry.attachments_unavailable": "Başarısız denemedeki ekler artık kullanılamıyor; yalnızca metinle yeniden denenecek.",
   "sp.plan.change": "Değiştir",
   "sp.plan.confidence": "Güven {confidence}",
+  "sp.plan.skills": "Etkinleştirilecek beceriler",
   "sp.plan.auto_approved": "Plan otomatik onaylandı (güven {confidence}) — çalıştırılıyor…",
   "sp.memory.title_html": "<strong>Kullanıcı belleği</strong>",
   "sp.memory.empty": "Henüz kaydedilmiş kullanıcı belleği yok.",

@@ -214,12 +214,14 @@ new default IDs can still be migrated into existing installations.
 
 `agent/skills.js` normalizes each skill and handles three separate surfaces:
 
-- Loader catalog: optional fenced `webbrain-skill` JSON supplies a summary
-  (capped at 200 characters) and eligible modes. Without metadata, the first
-  prose paragraph becomes the summary and the skill defaults to Act/Dev. The
-  reserved `load_skill({skill_id})` definition contains only eligible IDs,
-  names, and summaries. It is exposed in Mid/Full Ask, Act, and Dev; Ask sees
-  only explicitly Ask-compatible skills, while Compact has no skill surface.
+- Routing catalog: optional fenced `webbrain-skill` JSON supplies a summary
+  (capped at 200 characters), eligible modes, and up to six canonical semantic
+  intents (40 characters each). Intents are cross-language meaning hints for
+  the LLM, not literal keywords. Without metadata, the first prose paragraph
+  becomes the summary, intents stay empty, and the skill defaults to Act/Dev.
+  `getEligibleSkillCatalog()` produces the shared `{id,name,summary,intents}`
+  records used by both the planner and `load_skill({skill_id})`. Ask sees only
+  explicitly Ask-compatible skills, while Compact has no skill surface.
 - Prompt instructions: `buildCustomSkillsPrompt()` strips both metadata and
   `webbrain-tools` fences, then appends full prose only for skills activated on
   the current run. Active IDs reset before the next user turn. Trusted
@@ -238,9 +240,12 @@ continue to override OTP disclosure guidance.
 #### How a skill is selected
 
 There is no separate keyword matcher, URL router, embedding search, or local
-classifier for ordinary skill selection. The active LLM makes the semantic
-routing decision from the user's request and trusted conversation context using
-the small catalog embedded in the `load_skill` tool definition.
+classifier for ordinary skill selection. The planner and active execution LLM
+make the semantic routing decision from the user's request and trusted
+conversation context using the same small catalog. The planner returns
+validated `skill_ids`; after approval the runtime activates those skills before
+the execution model's first call. Planner-disabled and Ask runs can still use
+`load_skill` during the normal model loop.
 
 The runtime flow is:
 
@@ -248,11 +253,13 @@ The runtime flow is:
 2. Filter enabled skills by provider tier and conversation mode. Compact yields
    no catalog; Ask includes only skills that explicitly declare `ask`; Dev
    includes skills that declare either `dev` or `act`.
-3. Give the model `load_skill` with an exact `skill_id` enum plus each eligible
-   skill's name and summary. Do not include full skill prose or skill tools yet.
-4. The model may load zero, one, or several skills. The runtime rejects an ID
-   that is not enabled or not eligible in the current mode/tier. Re-loading an
-   active ID succeeds without duplicating it.
+3. Give the Act/Dev planner and execution model the same eligible IDs, names,
+   summaries, and optional semantic intents. Do not include full skill prose or
+   skill tools yet.
+4. The planner may select zero, one, or several `skill_ids`; the runtime rejects
+   IDs that are not enabled or mode/tier eligible and activates valid IDs only
+   after plan approval. The execution model may also call `load_skill`; loading
+   an already-active ID succeeds without duplication.
 5. After a successful load, rebuild the system message with that skill's full
    prompt-stripped prose. On the next model iteration, also rebuild the tool list
    from active skills, applying tool mode, tier, and site-adapter filters.
@@ -266,6 +273,14 @@ the action's trusted `firstTool` or `tool` and activates that skill. For example
 the media-download recommendation preactivates FreeSkillz because it owns
 `download_public_media`; the YouTube-summary recommendation does the same for
 `read_youtube_transcript`.
+
+Single public-media downloads have a second deterministic guard. If the model
+calls `download_social_media` while an eligible inactive skill owns
+`download_public_media`, the runtime activates that skill and returns a retry
+pointing to the specialized downloader. A real failed public-media attempt
+re-enables browser fallback. The browser MSE path fails closed before saving
+split or unverifiably muxed video/audio buffers, so it cannot report separate
+tracks as a successful video or hand ffmpeg work to the user.
 
 | User intent | Expected skill | Catalog modes | Notes |
 | --- | --- | --- | --- |
@@ -354,9 +369,16 @@ Background relays these via `chrome.runtime.sendMessage` to the side panel, whic
 
 ### Plan before Act (`planner.js`)
 
-The optional action-mode planning gate runs before the first browser tool call when enabled; unset storage defaults to try mode while explicit off remains off. The planner prompt requires a single JSON object with summary, concrete steps, memory strategy, scheduling hint, risks, and an action mode. `normalizePlan()` bounds and sanitizes each field; `formatPlanMarkdown()` renders the side-panel review card; `formatPlanScratchpad()` pins the approved or edited plan as an `[Approved plan]` scratchpad entry.
+The optional action-mode planning gate runs before the first browser tool call when enabled; unset storage defaults to try mode while explicit off remains off. The planner prompt requires a single JSON object with summary, concrete steps, validated `skill_ids`, memory strategy, scheduling hint, risks, and an action mode. Mid/Full planners receive only the eligible routing catalog, and approved skill IDs are activated before the normal execution model call. `normalizePlan()` bounds and sanitizes each field; `formatPlanMarkdown()` renders the side-panel review card; `formatPlanScratchpad()` pins the approved or edited plan as an `[Approved plan]` scratchpad entry.
 
 Planner calls are traced with `phase: "planner"` when trace recording is enabled. They also use the cost allowance guard, abort checks, a JSON-repair retry, and Qwen/DeepSeek no-think handling before the run is allowed to continue.
+
+Each new trace run records the manifest version that created it. `/export`
+Markdown records the exporting version, `/export --traces` records both the
+exporting version and every turn's recording version, and Traces-page JSON adds
+`exportedByWebBrainVersion` while retaining the backward-compatible
+`webbrain-trace/1` schema. Legacy runs are labeled with an unavailable recording
+version rather than being attributed to the currently installed build.
 
 ### User Memory (`user-memory.js`)
 

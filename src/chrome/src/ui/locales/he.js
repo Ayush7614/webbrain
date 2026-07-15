@@ -206,6 +206,7 @@ export default {
   "sp.plan.cancel": "בטל",
   "sp.plan.edit_hint": "אופציונלי: ערוך את התוכנית לפני האישור",
   "sp.plan.confidence": "אֵמוּן {confidence}",
+  "sp.plan.skills": "מיומנויות להפעלה",
   "sp.plan.auto_approved": "התוכנית אושרה אוטומטית (ביטחון {confidence}) - פועל...",
   "sp.plan.approved": "התוכנית אושרה - פועל...",
   "sp.plan.cancelled": "התוכנית בוטלה.",
