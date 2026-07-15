@@ -128,6 +128,7 @@ python -m sglang.launch_server --model-path your-model --port 30000
 | Jan (`:1337/v1`) | 无需 | （你加载的模型） |
 | vLLM (`:8000/v1`) | 可选 | （你提供服务的模型） |
 | SGLang (`:30000/v1`) | 可选 | （你提供服务的模型） |
+| LocalAI (`:8080/v1`) | 可选 | （你加载的模型） |
 | OpenAI | 必需 | gpt-5.5 |
 | Anthropic Claude | 必需 | claude-sonnet-4-6 |
 | Google Gemini | 必需 | gemini-3.1-flash |
@@ -170,62 +171,87 @@ web/
 
 ## 智能体工具
 
-| 工具 | Ask | Act | Compact | 描述 |
-|------|-----|-----|---------|-------------|
-| `get_accessibility_tree` | 是 | 是 | 是 | 带持久 ref_id 的页面可访问性树的扁平缩进文本 |
-| `read_page` | 是 | 是 | 是 | 提取页面文本、链接、表单（旧版纯文本回退） |
-| `read_pdf` | 是 | 是 | -- | 通过内置 pdfjs-dist 从 PDF 文档提取文本 |
-| `screenshot` | 是 | 是 | 是 | 捕获可见标签页（可选 `save:true` 保存到下载） |
-| `full_page_screenshot` | 是 | 是 | -- | 捕获完整可滚动页面（仅 Chrome） |
-| `get_interactive_elements` | 是 | 是 | -- | 列出所有可点击/交互元素（旧版，穿透 shadow DOM） |
-| `get_frames` | 是 | 是 | -- | 列出页面上的所有 iframe |
-| `get_shadow_dom` | 是 | 是 | -- | 读取 shadow DOM 树 |
-| `scroll` | 是 | 是 | 是 | 滚动页面 |
-| `extract_data` | 是 | 是 | 是 | 提取表格、标题、图片 |
-| `get_selection` | 是 | 是 | 是 | 获取高亮文本 |
-| `click_ax` | -- | 是 | 是 | 通过可访问性树 ref_id 点击元素（首选） |
-| `type_ax` | -- | 是 | 是 | 通过 ref_id 向字段输入。支持 `lang: "tr-deasciify"` |
-| `set_field` | -- | 是 | 是 | 通过 ref_id 一次性聚焦 + 清空 + 输入 + 验证。支持 `lang: "tr-deasciify"` |
-| `click` | -- | 是 | 是 | 通过选择器、索引或坐标点击元素（旧版回退） |
-| `type_text` | -- | 是 | 是 | 向输入字段输入。支持 `lang: "tr-deasciify"` |
-| `press_keys` | -- | 是 | 是 | 按 Escape、Tab 或 Enter |
-| `hover` | -- | 是 | -- | 用于悬停显示菜单的 CDP 可信悬停（仅 Chrome） |
-| `drag_drop` | -- | 是 | -- | 通过 CDP 指针事件拖放（仅 Chrome） |
-| `navigate` | -- | 是 | 是 | 前往某个 URL |
-| `go_back` | -- | 是 | -- | 在当前标签页的浏览器历史中后退 |
-| `go_forward` | -- | 是 | -- | 在当前标签页的浏览器历史中前进 |
-| `new_tab` | -- | 是 | 是 | 打开新标签页 |
-| `wait_for_element` | -- | 是 | 是 | 等待选择器出现 |
-| `wait_for_stable` | -- | 是 | -- | 等待页面空闲（无 DOM 变化 + 无网络） |
-| `upload_file` | -- | 是 | -- | 向文件输入上传文件（仅 Chrome） |
-| `inject_css` | -- | 仅 Dev | -- | 在 Chrome 中注入可逆的临时 CSS，并返回 `patchId` |
-| `remove_injected_css` | -- | 仅 Dev | -- | 在 Chrome 中按 `patchId` 移除 CSS 注入 |
-| `patch_element` | -- | 仅 Dev | -- | 在 Chrome 中修改样式、类和属性，并返回精确的前后值 |
-| `revert_patch` | -- | 仅 Dev | -- | 在 Chrome 中按 `patchId` 恢复结构化修改 |
-| `execute_js` | -- | 仅 Dev | -- | Chrome 通过 CDP、Firefox 通过 MV2 内容脚本求值器执行异步 JavaScript 函数体 |
-| `read_console` | -- | 仅 Dev | -- | 在 Chrome 中读取缓冲的控制台消息和未捕获异常 |
-| `inspect_network_requests` | -- | 仅 Dev | -- | 在 Chrome 中检查 URL、方法、状态和耗时；默认不含头部和正文 |
-| `inspect_event_listeners` | -- | 仅 Dev | -- | 在 Chrome 中检查元素及其祖先的事件监听器 |
-| `highlight_element` | -- | 仅 Dev | -- | 在 Chrome 中临时高亮目标元素 |
-| `fetch_url` | 是 | 是 | 是 | 在后台使用用户的 cookie 获取 URL |
-| `research_url` | 是 | 是 | -- | 在隐藏标签页中打开 URL，等待 JS 渲染，返回内容 |
-| `download_files` | -- | 是 | -- | 下载一个或多个文件（单个 url 或数组，最多 3 个并发） |
-| `download_resource_from_page` | -- | 是 | -- | 从当前页面下载 `<img>`/`<video>`/blob URL |
-| `download_social_media` | -- | 是 | 是 | 一次性社交媒体下载；优先 DOM/CDN，可选可见媒体视觉裁剪回退 |
-| `list_downloads` | 是 | 是 | -- | 列出最近的下载，含状态与来源 URL |
-| `read_downloaded_file` | -- | 是 | -- | 重新获取已下载文件的内容（文本或 base64） |
-| `iframe_read` / `iframe_click` / `iframe_type` | -- | 是 | -- | 读取/点击/输入跨域 iframe 内部 |
-| `scratchpad_write` | 是 | 是 | 是 | 在上下文中固定一条在汇总后仍保留的笔记 |
-| `clarify` | 是 | 是 | 是 | 暂停并向用户提问 |
-| `verify_form` | -- | 是 | -- | 提交前验证表单字段 |
-| `solve_captcha` | -- | 是 | 是 | 通过 CapSolver API 解决验证码（可选，需 API 密钥） |
-| `done` | 是 | 是 | 是 | 标记任务完成 |
+WebBrain 将模型层级与对话模式分开：
 
-**压缩模式** 是为小型本地模型（2B-8B）设计的精简工具集 + 更短系统提示。在 Chrome 和 Firefox 构建中，它将 Act 模式的工具模式从 40+ 个削减到约 20 个，减少决策面与幻觉。在设置中按提供商启用（本地提供商上的复选框；默认关闭）。
+- **层级**（`compact`、`mid`、`full`）控制模型可见的常规浏览器工具数量。
+- **模式**（`ask`、`act`、`dev`）控制用户允许的任务类型。Ask 为只读。Act 暴露所选层级的常规工具。Dev 需要 Mid/Full 提供商，并附加源码/样式/调试工具（Mid 层级 Dev 还包含更深的 DOM/frame 检查）。
 
-Dev 附加工具仅在 Mid/Full 层级可用。在 Chrome 中，`inject_css` 可由 `remove_injected_css` 撤销，`patch_element` 可由 `revert_patch` 撤销。`execute_js` 需要主机权限并始终触发新的提交确认。控制台和网络诊断使用有界缓冲区；默认省略头部与正文，敏感头部会在存储前脱敏，页面派生结果按不可信内容处理。
+图例：**是** = 可用 · **-** = 不可用 · **C** = 仅 Chrome · **Dev** = Dev 模式附加（Mid/Full 提供商；不含 Compact）。
 
-> **Shadow DOM 注意：** 可访问性树仅遍历 light DOM。在大量使用 Web 组件的页面（Stripe、Salesforce、Shopify）上，请使用 `get_interactive_elements`（穿透开放 shadow root）或 `get_shadow_dom` / `shadow_dom_query` 进行定向读取。
+| 工具 | Ask | Compact | Mid | Full | Dev |
+|------|:---:|:-------:|:---:|:----:|:---:|
+| `get_accessibility_tree` | 是 | 是 | 是 | 是 | - |
+| `read_page` | 是 | 是 | 是 | 是 | - |
+| `read_pdf` | 是 | 否 | 是 | 是 | - |
+| `read_page_source` | 否 | 否 | 否 | 否 | 是 |
+| `get_window_info` | 是 | 是 | 是 | 是 | - |
+| `get_interactive_elements` | 是 | 否 | 是 | 是 | - |
+| `scroll` | 是 | 是 | 是 | 是 | - |
+| `extract_data` | 是 | 是 | 是 | 是 | - |
+| `inspect_element_styles` | 否 | 否 | 否 | 否 | 是 |
+| `wait_for_stable` | 是 | 否 | 是 | 是 | - |
+| `get_selection` | 是 | 是 | 是 | 是 | - |
+| `done` | 是 | 是 | 是 | 是 | - |
+| `clarify` | 否 | 是 | 是 | 是 | - |
+| `fetch_url` | 是 | 是 | 是 | 是 | - |
+| `research_url` | 是 | 否 | 是 | 是 | - |
+| `list_downloads` | 是 | 否 | 是 | 是 | - |
+| `click_ax` | 否 | 是 | 是 | 是 | - |
+| `type_ax` | 否 | 是 | 是 | 是 | - |
+| `set_field` | 否 | 是 | 是 | 是 | - |
+| `resize_window` | 否 | 否 | 否 | 是 | - |
+| `click` | 否 | 是 | 是 | 是 | - |
+| `type_text` | 否 | 是 | 是 | 是 | - |
+| `press_keys` | 否 | 是 | 是 | 是 | - |
+| `navigate` | 否 | 是 | 是 | 是 | - |
+| `wait_for_element` | 否 | 是 | 是 | 是 | - |
+| `new_tab` | 否 | 是 | 是 | 是 | - |
+| `scratchpad_write` | 否 | 是 | 是 | 是 | - |
+| `progress_update` | 否 | 是 | 是 | 是 | - |
+| `progress_read` | 否 | 是 | 是 | 是 | - |
+| `download_social_media` | 否 | 否 | 是 | 是 | - |
+| `solve_captcha` | 否 | 否 | 是 | 是 | - |
+| `go_back` | 否 | 否 | 是 | 是 | - |
+| `go_forward` | 否 | 否 | 是 | 是 | - |
+| `schedule_resume` | 否 | 否 | 是 | 是 | - |
+| `schedule_task` | 否 | 否 | 是 | 是 | - |
+| `iframe_read` | 否 | 否 | 是 | 是 | - |
+| `iframe_click` | 否 | 否 | 是 | 是 | - |
+| `iframe_type` | 否 | 否 | 是 | 是 | - |
+| `read_downloaded_file` | 否 | 否 | 是 | 是 | - |
+| `download_files` | 否 | 否 | 是 | 是 | - |
+| `download_resource_from_page` | 否 | 否 | 是 | 是 | - |
+| `upload_file` | 否 | 否 | C | C | - |
+| `verify_form` | 否 | 否 | 是 | 是 | - |
+| `hover` | 否 | 否 | 否 | 是 | - |
+| `drag_drop` | 否 | 否 | 否 | 是 | - |
+| `get_shadow_dom` | 否 | 否 | 否 | 是 | 是 |
+| `shadow_dom_query` | 否 | 否 | 否 | C | C |
+| `get_frames` | 否 | 否 | 否 | 是 | 是 |
+| `inject_css` | 否 | 否 | 否 | 否 | C |
+| `remove_injected_css` | 否 | 否 | 否 | 否 | C |
+| `patch_element` | 否 | 否 | 否 | 否 | C |
+| `revert_patch` | 否 | 否 | 否 | 否 | C |
+| `execute_js` | 否 | 否 | 否 | 否 | 是 |
+| `read_console` | 否 | 否 | 否 | 否 | C |
+| `inspect_network_requests` | 否 | 否 | 否 | 否 | C |
+| `inspect_event_listeners` | 否 | 否 | 否 | 否 | C |
+| `highlight_element` | 否 | 否 | 否 | 否 | C |
+
+已加载的技能可为当前运行追加工具 schema。例如内置 FreeSkillz.xyz 可暴露 `read_youtube_transcript`（YouTube 字幕）以及 `resolve_public_media` / `download_public_media`（公开媒体 URL）。这些技能工具未硬编码在上表中：技能加载前（或被移除后）不存在。即使所属技能已加载，Ask 仍会过滤变更/下载类工具。
+
+Dev 工具仅在 Dev 模式暴露，且 Compact 层级提供商无法使用 Dev。Chrome 的可逆编辑工具返回 patch ID：`inject_css` 对应 `remove_injected_css`，`patch_element` 对应 `revert_patch`。
+
+### Dev 模式页面编辑与诊断
+
+- `inject_css` / `remove_injected_css` 通过 `patchId` 应用与撤销临时 CSS。每个 patch 唯一且绑定到确切文档；导航会使旧句柄失效。
+- `patch_element` / `revert_patch` 以精确前后值修改内联样式、类与属性。`highlight_element` 提供临时目标覆盖层。
+- `execute_js` 在页面主世界执行异步 JavaScript 函数体。Chrome 使用 CDP `Runtime.evaluate`（15 秒限制）；Firefox 使用 MV2 内容脚本求值器。需主机权限与新的提交确认。
+- `read_console`、`inspect_network_requests`、`inspect_event_listeners` 在 Chrome 上提供有界诊断。默认省略网络头/正文；敏感头会脱敏；页面派生输出按不可信内容处理。
+
+**Compact 层级**：精简工具集 + 更短系统提示，面向小型本地模型。**Mid 层级**：常见任务工具、iframe、下载、调度与表单校验。**Full 层级**：hover、drag-drop、frames 与 shadow DOM。在设置中按提供商启用层级。
+
+> **Shadow DOM 注意：** 可访问性树仅遍历 light DOM。在大量使用 Web 组件的页面（Stripe、Salesforce、Shopify）上，请先使用 `get_interactive_elements`；在 Full Act 或 Dev 模式下使用 `get_shadow_dom` / `shadow_dom_query` 做定向读取。
 
 ## LM Studio 插件
 

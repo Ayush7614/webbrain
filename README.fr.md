@@ -128,6 +128,7 @@ Les URL de base sont préremplies dans les paramètres lorsque vous choisissez u
 | Jan (`:1337/v1`) | Non requise | (votre modèle chargé) |
 | vLLM (`:8000/v1`) | Optionnelle | (votre modèle servi) |
 | SGLang (`:30000/v1`) | Optionnelle | (votre modèle servi) |
+| LocalAI (`:8080/v1`) | Optionnelle | (votre modèle chargé) |
 | OpenAI | Requise | gpt-5.5 |
 | Anthropic Claude | Requise | claude-sonnet-4-6 |
 | Google Gemini | Requise | gemini-3.1-flash |
@@ -170,62 +171,87 @@ Une documentation plus approfondie se trouve dans [`docs/`](docs/) : [architectu
 
 ## Outils de l'agent
 
-| Outil | Ask | Act | Compact | Description |
-|------|-----|-----|---------|-------------|
-| `get_accessibility_tree` | Oui | Oui | Oui | Texte indenté à plat de l'arbre d'accessibilité de la page avec des ref_ids persistants |
-| `read_page` | Oui | Oui | Oui | Extrait le texte, les liens, les formulaires de la page (repli texte hérité) |
-| `read_pdf` | Oui | Oui | -- | Extrait le texte des documents PDF via pdfjs-dist intégré |
-| `screenshot` | Oui | Oui | Oui | Capture l'onglet visible (avec `save:true` optionnel vers Téléchargements) |
-| `full_page_screenshot` | Oui | Oui | -- | Capture la page entière défilable (Chrome uniquement) |
-| `get_interactive_elements` | Oui | Oui | -- | Liste tous les éléments cliquables/interactifs (hérité, traverse le shadow DOM) |
-| `get_frames` | Oui | Oui | -- | Liste toutes les iframes de la page |
-| `get_shadow_dom` | Oui | Oui | -- | Lit les arbres shadow DOM |
-| `scroll` | Oui | Oui | Oui | Fait défiler la page |
-| `extract_data` | Oui | Oui | Oui | Extrait les tableaux, titres, images |
-| `get_selection` | Oui | Oui | Oui | Récupère le texte surligné |
-| `click_ax` | -- | Oui | Oui | Clique sur un élément par ref_id de l'arbre d'accessibilité (préféré) |
-| `type_ax` | -- | Oui | Oui | Saisit dans un champ par ref_id. Prend en charge `lang: "tr-deasciify"` |
-| `set_field` | -- | Oui | Oui | Focus + effacement + saisie + vérification en une fois par ref_id. Prend en charge `lang: "tr-deasciify"` |
-| `click` | -- | Oui | Oui | Clique sur des éléments par sélecteur, index ou coordonnées (repli hérité) |
-| `type_text` | -- | Oui | Oui | Saisit dans les champs de saisie. Prend en charge `lang: "tr-deasciify"` |
-| `press_keys` | -- | Oui | Oui | Appuie sur Échap, Tab ou Entrée |
-| `hover` | -- | Oui | -- | Survol approuvé par CDP pour les menus révélés au survol (Chrome uniquement) |
-| `drag_drop` | -- | Oui | -- | Glisser-déposer via les événements de pointeur CDP (Chrome uniquement) |
-| `navigate` | -- | Oui | Oui | Aller à une URL |
-| `go_back` | -- | Oui | -- | Revenir en arrière dans l'historique de l'onglet actuel |
-| `go_forward` | -- | Oui | -- | Avancer dans l'historique de l'onglet actuel |
-| `new_tab` | -- | Oui | Oui | Ouvrir un nouvel onglet |
-| `wait_for_element` | -- | Oui | Oui | Attendre qu'un sélecteur apparaisse |
-| `wait_for_stable` | -- | Oui | -- | Attendre que la page soit inactive (aucune mutation du DOM + aucun réseau) |
-| `upload_file` | -- | Oui | -- | Télécharger un fichier vers un champ de fichier (Chrome uniquement) |
-| `inject_css` | -- | Dev uniquement | -- | Injecter du CSS temporaire réversible sur Chrome et retourner un `patchId` |
-| `remove_injected_css` | -- | Dev uniquement | -- | Retirer une injection CSS Chrome par `patchId` |
-| `patch_element` | -- | Dev uniquement | -- | Modifier styles, classes et attributs avec valeurs avant/après sur Chrome |
-| `revert_patch` | -- | Dev uniquement | -- | Restaurer une modification structurée par `patchId` sur Chrome |
-| `execute_js` | -- | Dev uniquement | -- | Exécuter un corps de fonction JavaScript asynchrone via CDP sur Chrome ou l'évaluateur MV2 sur Firefox |
-| `read_console` | -- | Dev uniquement | -- | Lire les messages console et exceptions mis en mémoire tampon sur Chrome |
-| `inspect_network_requests` | -- | Dev uniquement | -- | Inspecter URL, méthode, statut et durée réseau sur Chrome ; en-têtes et corps exclus par défaut |
-| `inspect_event_listeners` | -- | Dev uniquement | -- | Inspecter les écouteurs d'un élément et de ses ancêtres sur Chrome |
-| `highlight_element` | -- | Dev uniquement | -- | Afficher temporairement une surcouche autour d'un élément sur Chrome |
-| `fetch_url` | Oui | Oui | Oui | Récupérer une URL depuis l'arrière-plan avec les cookies de l'utilisateur |
-| `research_url` | Oui | Oui | -- | Ouvrir une URL dans un onglet caché, attendre le rendu JS, retourner le contenu |
-| `download_files` | -- | Oui | -- | Télécharger un ou plusieurs fichiers (url unique ou tableau, max 3 simultanés) |
-| `download_resource_from_page` | -- | Oui | -- | Télécharger une URL `<img>`/`<video>`/blob de la page actuelle |
-| `download_social_media` | -- | Oui | Oui | Téléchargement de médias sociaux en une fois ; DOM/CDN d'abord, repli optionnel par recadrage vision du média visible |
-| `list_downloads` | Oui | Oui | -- | Lister les téléchargements récents avec statut et URL sources |
-| `read_downloaded_file` | -- | Oui | -- | Récupérer à nouveau le contenu d'un fichier téléchargé (texte ou base64) |
-| `iframe_read` / `iframe_click` / `iframe_type` | -- | Oui | -- | Lire/cliquer/saisir à l'intérieur d'iframes inter-origines |
-| `scratchpad_write` | Oui | Oui | Oui | Épingler une note dans le contexte qui survit à la synthèse |
-| `clarify` | Oui | Oui | Oui | Mettre en pause et poser une question à l'utilisateur |
-| `verify_form` | -- | Oui | -- | Vérifier les champs du formulaire avant de soumettre |
-| `solve_captcha` | -- | Oui | Oui | Résoudre les CAPTCHAs via l'API CapSolver (optionnel, nécessite une clé API) |
-| `done` | Oui | Oui | Oui | Signaler l'achèvement de la tâche |
+WebBrain sépare le niveau de modèle du mode de conversation :
 
-**Le mode Compact** est un ensemble d'outils réduit + un prompt système plus court conçu pour les petits modèles locaux (2B-8B). Dans les builds Chrome et Firefox, il réduit le schéma du mode Act de plus de 40 outils à environ 20, diminuant la surface de décision et les hallucinations. Activez-le par fournisseur dans les Paramètres (case à cocher sur les fournisseurs locaux ; désactivé par défaut).
+- **Niveau** (`compact`, `mid`, `full`) contrôle combien d'outils navigateur normaux le modèle voit.
+- **Mode** (`ask`, `act`, `dev`) contrôle le type de tâche autorisé. Ask est en lecture seule. Act expose les outils normaux du niveau sélectionné. Dev exige un fournisseur Mid/Full et ajoute une annexe source/style/debug, y compris une inspection DOM/frame plus profonde pour les exécutions Dev Mid.
 
-Les ajouts Dev ne sont disponibles qu'avec les niveaux Mid/Full. Sur Chrome, `inject_css` s'annule avec `remove_injected_css` et `patch_element` avec `revert_patch`. `execute_js` est soumis à l'autorisation de l'hôte et à une confirmation de soumission fraîche. Les diagnostics réseau/console sont bornés, les en-têtes et corps sont omis par défaut, les en-têtes sensibles sont caviardés avant stockage et les résultats issus de la page sont traités comme contenu non fiable.
+Légende : **Oui** = disponible · **-** = indisponible · **C** = Chrome uniquement · **Dev** = module Dev (fournisseurs Mid/Full ; pas Compact).
 
-> **Note sur le Shadow DOM :** L'arbre d'accessibilité ne traverse que le light DOM. Sur les pages riches en Web Components (Stripe, Salesforce, Shopify), utilisez `get_interactive_elements` (traverse les shadow roots ouverts) ou `get_shadow_dom` / `shadow_dom_query` pour des lectures ciblées.
+| Outil | Ask | Compact | Mid | Full | Dev |
+|-------|:---:|:-------:|:---:|:----:|:---:|
+| `get_accessibility_tree` | Oui | Oui | Oui | Oui | - |
+| `read_page` | Oui | Oui | Oui | Oui | - |
+| `read_pdf` | Oui | Non | Oui | Oui | - |
+| `read_page_source` | Non | Non | Non | Non | Oui |
+| `get_window_info` | Oui | Oui | Oui | Oui | - |
+| `get_interactive_elements` | Oui | Non | Oui | Oui | - |
+| `scroll` | Oui | Oui | Oui | Oui | - |
+| `extract_data` | Oui | Oui | Oui | Oui | - |
+| `inspect_element_styles` | Non | Non | Non | Non | Oui |
+| `wait_for_stable` | Oui | Non | Oui | Oui | - |
+| `get_selection` | Oui | Oui | Oui | Oui | - |
+| `done` | Oui | Oui | Oui | Oui | - |
+| `clarify` | Non | Oui | Oui | Oui | - |
+| `fetch_url` | Oui | Oui | Oui | Oui | - |
+| `research_url` | Oui | Non | Oui | Oui | - |
+| `list_downloads` | Oui | Non | Oui | Oui | - |
+| `click_ax` | Non | Oui | Oui | Oui | - |
+| `type_ax` | Non | Oui | Oui | Oui | - |
+| `set_field` | Non | Oui | Oui | Oui | - |
+| `resize_window` | Non | Non | Non | Oui | - |
+| `click` | Non | Oui | Oui | Oui | - |
+| `type_text` | Non | Oui | Oui | Oui | - |
+| `press_keys` | Non | Oui | Oui | Oui | - |
+| `navigate` | Non | Oui | Oui | Oui | - |
+| `wait_for_element` | Non | Oui | Oui | Oui | - |
+| `new_tab` | Non | Oui | Oui | Oui | - |
+| `scratchpad_write` | Non | Oui | Oui | Oui | - |
+| `progress_update` | Non | Oui | Oui | Oui | - |
+| `progress_read` | Non | Oui | Oui | Oui | - |
+| `download_social_media` | Non | Non | Oui | Oui | - |
+| `solve_captcha` | Non | Non | Oui | Oui | - |
+| `go_back` | Non | Non | Oui | Oui | - |
+| `go_forward` | Non | Non | Oui | Oui | - |
+| `schedule_resume` | Non | Non | Oui | Oui | - |
+| `schedule_task` | Non | Non | Oui | Oui | - |
+| `iframe_read` | Non | Non | Oui | Oui | - |
+| `iframe_click` | Non | Non | Oui | Oui | - |
+| `iframe_type` | Non | Non | Oui | Oui | - |
+| `read_downloaded_file` | Non | Non | Oui | Oui | - |
+| `download_files` | Non | Non | Oui | Oui | - |
+| `download_resource_from_page` | Non | Non | Oui | Oui | - |
+| `upload_file` | Non | Non | C | C | - |
+| `verify_form` | Non | Non | Oui | Oui | - |
+| `hover` | Non | Non | Non | Oui | - |
+| `drag_drop` | Non | Non | Non | Oui | - |
+| `get_shadow_dom` | Non | Non | Non | Oui | Oui |
+| `shadow_dom_query` | Non | Non | Non | C | C |
+| `get_frames` | Non | Non | Non | Oui | Oui |
+| `inject_css` | Non | Non | Non | Non | C |
+| `remove_injected_css` | Non | Non | Non | Non | C |
+| `patch_element` | Non | Non | Non | Non | C |
+| `revert_patch` | Non | Non | Non | Non | C |
+| `execute_js` | Non | Non | Non | Non | Oui |
+| `read_console` | Non | Non | Non | Non | C |
+| `inspect_network_requests` | Non | Non | Non | Non | C |
+| `inspect_event_listeners` | Non | Non | Non | Non | C |
+| `highlight_element` | Non | Non | Non | Non | C |
+
+Les compétences chargées peuvent ajouter des schémas d'outils pour l'exécution en cours. Par exemple, la compétence FreeSkillz.xyz peut exposer `read_youtube_transcript` pour YouTube et `resolve_public_media` / `download_public_media` pour les médias publics. Ces outils de compétence ne sont pas codés en dur dans le tableau ci-dessus : avant le chargement de la compétence (ou si elle est retirée), ils sont absents. Ask filtre aussi les outils de mutation/téléchargement même lorsque la compétence propriétaire est chargée.
+
+Les outils Dev ne sont exposés qu'en mode Dev, et le mode Dev est bloqué pour les fournisseurs Compact. Les outils d'édition réversible Chrome renvoient des patch IDs : `inject_css` avec `remove_injected_css`, `patch_element` avec `revert_patch`.
+
+### Édition et diagnostics en mode Dev
+
+- `inject_css` / `remove_injected_css` appliquent et annulent du CSS temporaire par `patchId`. Chaque patch est unique et lié au document exact ; la navigation invalide l'ancien identifiant.
+- `patch_element` / `revert_patch` modifient styles inline, classes et attributs avec valeurs avant/après exactes. `highlight_element` affiche une surcouche temporaire.
+- `execute_js` exécute un corps de fonction JavaScript asynchrone dans le monde principal de la page. Chrome utilise CDP `Runtime.evaluate` (limite 15 s) ; Firefox utilise l'évaluateur de script de contenu MV2. Autorisation hôte + confirmation de soumission fraîche.
+- `read_console`, `inspect_network_requests` et `inspect_event_listeners` fournissent des diagnostics bornés sur Chrome. En-têtes et corps réseau omis par défaut ; en-têtes sensibles caviardés ; sortie issue de la page traitée comme contenu non fiable.
+
+**Niveau Compact** : ensemble d'outils réduit + prompt plus court pour les petits modèles locaux. **Niveau Mid** : outils de tâche courants, iframes, téléchargements, planification et vérification de formulaires. **Niveau Full** : hover, drag-drop, frames et shadow DOM. Activez le niveau par fournisseur dans les Paramètres.
+
+> **Note Shadow DOM :** L'arbre d'accessibilité ne traverse que le light DOM. Sur les pages riches en Web Components (Stripe, Salesforce, Shopify), utilisez d'abord `get_interactive_elements` ; en Full Act ou Dev, utilisez `get_shadow_dom` / `shadow_dom_query` pour des lectures ciblées.
 
 ## Plugin LM Studio
 
