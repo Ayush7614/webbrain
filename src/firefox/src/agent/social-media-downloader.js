@@ -1192,7 +1192,10 @@ window.SocialMediaDownloader = (() => {
       }
     }
 
-    if (completedDownloads > 0) return null;
+    const completedRequestedDownloads = requestedTarget === 'video'
+      ? completedVideos
+      : completedDownloads;
+    if (completedRequestedDownloads > 0) return null;
 
     // MSE capture available. The new flow: download_social_media calls
     // saveMse() inline and passes mseSavedFiles / mseSaveError in.

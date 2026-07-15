@@ -12939,10 +12939,13 @@ test('social media MSE strict mode refuses split tracks and accepts verified mux
     mseBytes: 5,
     mseSaveError: 'split capture',
     mseSaveCode: 'split_mse_requires_server_merge',
-    completedCount: 0,
+    completedCount: 1,
+    completedVideoCount: 0,
+    requestedTarget: 'video',
     pageUrl: 'https://www.instagram.com/reel/abc/',
   });
   assert.equal(recommendation.kind, 'split_mse_unmerged');
+  assert.match(recommendation.message, /split or unverifiably muxed/i);
   assert.doesNotMatch(recommendation.message, /ffmpeg|sign(?:ing)? in|login/i);
 
   const muxed = loadSocialMediaDownloaderRuntime();
