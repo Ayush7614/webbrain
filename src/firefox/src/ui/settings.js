@@ -43,6 +43,8 @@ const maxStepsRange = document.getElementById('range-max-steps');
 const stepsValueLabel = document.getElementById('steps-value');
 const requestTimeoutRange = document.getElementById('range-request-timeout');
 const requestTimeoutValueLabel = document.getElementById('timeout-value');
+const clarifyTimeoutRange = document.getElementById('range-clarify-timeout');
+const clarifyTimeoutValueLabel = document.getElementById('clarify-timeout-value');
 const costSessionLimitInput = document.getElementById('input-cost-session-limit');
 const costTotalLimitInput = document.getElementById('input-cost-total-limit');
 const costSpentValueLabel = document.getElementById('cost-spent-value');
@@ -362,7 +364,7 @@ async function init() {
   browser.storage.local.remove(['authToken', 'authEmail', 'authDefaultModel']).catch(() => {});
 
   // Load display settings
-  const stored = await browser.storage.local.get(['verboseMode', 'selectionShortcutEnabled', 'screenshotFallback', 'maxAgentSteps', 'autoScreenshot', 'useSiteAdapters', 'voiceInputEnabled', 'apiMutationObserverEnabled', 'planBeforeActMode', 'planBeforeAct', 'planReviewMode', 'planReviewConfidenceThreshold', 'notifySound', 'completionConfetti', 'tracingEnabled', 'strictSecretMode', 'agentAllowLocalNetwork', 'scheduledTasksEnabled', 'scheduledRequireConsequentialConfirmation', 'providerFilter', 'requestTimeoutMs', 'costAllowanceSessionUsd', 'costAllowanceTotalUsd', 'cloudCostSpentUsd', 'screenshotRedaction']);
+  const stored = await browser.storage.local.get(['verboseMode', 'selectionShortcutEnabled', 'screenshotFallback', 'maxAgentSteps', 'autoScreenshot', 'useSiteAdapters', 'voiceInputEnabled', 'apiMutationObserverEnabled', 'planBeforeActMode', 'planBeforeAct', 'planReviewMode', 'planReviewConfidenceThreshold', 'notifySound', 'completionConfetti', 'tracingEnabled', 'strictSecretMode', 'agentAllowLocalNetwork', 'scheduledTasksEnabled', 'scheduledRequireConsequentialConfirmation', 'providerFilter', 'requestTimeoutMs', 'clarifyTimeoutSec', 'costAllowanceSessionUsd', 'costAllowanceTotalUsd', 'cloudCostSpentUsd', 'screenshotRedaction']);
   if (typeof stored.providerFilter === 'string' && ['all','local','cloud','router'].includes(stored.providerFilter)) {
     providerFilter = stored.providerFilter;
   }
@@ -384,6 +386,13 @@ async function init() {
     const tSec = Math.max(10, Math.min(600, Math.round(tMs / 1000)));
     requestTimeoutRange.value = tSec;
     requestTimeoutValueLabel.textContent = tSec + 's';
+  }
+  // Clarify auto-timeout: 0 = wait forever, default 60s, max 1200s.
+  if (clarifyTimeoutRange && clarifyTimeoutValueLabel) {
+    const raw = Number(stored.clarifyTimeoutSec);
+    const cSec = Number.isFinite(raw) && raw >= 0 ? Math.min(1200, Math.floor(raw)) : 60;
+    clarifyTimeoutRange.value = cSec;
+    clarifyTimeoutValueLabel.textContent = formatClarifyTimeoutLabel(cSec);
   }
   if (autoScreenshotSelect) autoScreenshotSelect.value = stored.autoScreenshot || 'state_change';
   if (siteAdaptersToggle) siteAdaptersToggle.checked = stored.useSiteAdapters ?? true;
@@ -929,6 +938,25 @@ if (requestTimeoutRange) {
   requestTimeoutRange.addEventListener('change', async () => {
     const sec = parseInt(requestTimeoutRange.value, 10);
     await browser.storage.local.set({ requestTimeoutMs: sec * 1000 }).catch(() => {});
+  });
+}
+
+function formatClarifyTimeoutLabel(sec) {
+  if (sec === 0) {
+    return (typeof t === 'function' ? t('st.display.clarify_timeout.off') : null) || 'Off';
+  }
+  return `${sec}s`;
+}
+
+if (clarifyTimeoutRange) {
+  clarifyTimeoutRange.addEventListener('input', () => {
+    if (clarifyTimeoutValueLabel) {
+      clarifyTimeoutValueLabel.textContent = formatClarifyTimeoutLabel(parseInt(clarifyTimeoutRange.value, 10) || 0);
+    }
+  });
+  clarifyTimeoutRange.addEventListener('change', async () => {
+    const sec = Math.max(0, Math.min(1200, parseInt(clarifyTimeoutRange.value, 10) || 0));
+    await browser.storage.local.set({ clarifyTimeoutSec: sec }).catch(() => {});
   });
 }
 

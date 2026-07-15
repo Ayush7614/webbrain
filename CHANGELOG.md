@@ -4,6 +4,21 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [23.3.2] - 2026-07-15
+
+### Added
+- Added a configurable clarify auto-timeout (default 60s, 0–1200s under Settings → General → Advanced) for Chrome and Firefox. Unanswered `clarify` prompts auto-select the first option (or a timeout marker when options are empty); permission and form-submit confirmations stay untimed.
+
+### Changed
+- Documented that timeout auto-selects are not real user confirmations in the `clarify` tool schema and system prompts, and kept timeout answers out of user-memory extraction.
+
+### Fixed
+- Cleared scheduled-job `needs_user_input` / `pendingClarify` on clarify auto-timeout without replaying a start-of-run `running` event that could orphan the original assistant bubble.
+- Restarted clarify countdown metadata after sidepanel restore/rebind so closed panels do not leave stale open cards.
+
+### Tests
+- Added Chrome and Firefox regression coverage for clarify timeout settings, schema/prompt guidance, scheduler wait-state cleanup, restore countdown metadata, and memory exclusion of timeout sources.
+
 ## [23.3.1] - 2026-07-15
 
 ### Changed

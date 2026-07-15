@@ -165,6 +165,20 @@ async function loadMaxSteps() {
 }
 loadMaxSteps();
 
+function normalizeClarifyTimeoutSec(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 60;
+  return Math.min(1200, Math.floor(n));
+}
+
+async function loadClarifyTimeout() {
+  const stored = await browser.storage.local.get('clarifyTimeoutSec');
+  agent.clarifyTimeoutSec = normalizeClarifyTimeoutSec(
+    stored.clarifyTimeoutSec != null ? stored.clarifyTimeoutSec : 60,
+  );
+}
+loadClarifyTimeout();
+
 async function loadAutoScreenshot() {
   const stored = await browser.storage.local.get('autoScreenshot');
   if (stored.autoScreenshot != null) agent.autoScreenshot = stored.autoScreenshot;
@@ -680,6 +694,7 @@ browser.runtime.onInstalled.addListener(async () => {
   createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
+  await loadClarifyTimeout();
   await loadAutoScreenshot();
   await syncAgentUserMemoryFromStorage().catch(() => {});
   scheduleUserMemoryExtractionDrain(5000);
@@ -698,6 +713,9 @@ browser.storage.onChanged.addListener((changes) => {
   if (changes.providers || changes.activeProvider) providerManager.load().catch(() => {});
   if (changes.maxAgentSteps) {
     agent.maxSteps = normalizeMaxAgentSteps(changes.maxAgentSteps.newValue);
+  }
+  if (changes.clarifyTimeoutSec) {
+    agent.clarifyTimeoutSec = normalizeClarifyTimeoutSec(changes.clarifyTimeoutSec.newValue);
   }
   if (changes.autoScreenshot) {
     agent.autoScreenshot = changes.autoScreenshot.newValue;
@@ -1701,10 +1719,12 @@ async function handleMessage(msg, sender) {
       const answer = String(msg.answer || '').trim();
       if (!clarifyId) return { ok: false, error: 'clarifyId required' };
       if (!answer) return { ok: false, error: 'answer required' };
-      const matched = agent.submitClarifyResponse(tabId, clarifyId, answer, msg.source || 'user');
-      if (matched && msg.memorySource === 'clarification_response') {
+      const source = String(msg.source || 'user');
+      const matched = agent.submitClarifyResponse(tabId, clarifyId, answer, source);
+      // Auto-timeout defaults are not user-authored preferences.
+      if (matched && source !== 'timeout' && msg.memorySource === 'clarification_response') {
         recordClarificationMemoryCandidate(tabId, msg.question, answer);
-      } else if (matched && msg.memorySource === 'form_confirmation') {
+      } else if (matched && source !== 'timeout' && msg.memorySource === 'form_confirmation') {
         recordFormCompletionMemoryCandidate(tabId, answer);
       }
       return { ok: matched, matched };

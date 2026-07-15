@@ -87,6 +87,10 @@ export class Agent {
     this.currentRunId = new Map(); // tabId -> active trace runId
     this.currentCostState = new Map(); // tabId -> active cloud/router cost state
     this.maxSteps = 130; // safety limit for autonomous loops (configurable via settings)
+    // Seconds to wait on clarify() before auto-picking the first option.
+    // 0 = wait indefinitely. Permission/form-submit prompts are never timed out.
+    // Loaded from browser.storage.local in background.js (default 60).
+    this.clarifyTimeoutSec = 60;
     this.maxContextMessages = 50; // minimum soft cap; larger provider windows scale this up
     this._debugLog = []; // ring buffer for deep verbose (LLM requests/responses)
     this._debugLogMax = 200; // max entries before oldest are dropped
@@ -3429,7 +3433,34 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!tabPending) return false;
     const entry = tabPending.get(clarifyId);
     if (!entry) return false;
-    try { entry.resolve({ answer, source }); } catch {}
+    this._settleClarification(entry, { answer, source });
+    return true;
+  }
+
+  /**
+   * Clamp clarify auto-timeout seconds from settings (0–1200). Invalid values
+   * fall back to the product default of 60s.
+   */
+  _normalizeClarifyTimeoutSec(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return 60;
+    return Math.min(1200, Math.floor(n));
+  }
+
+  _clearClarifyTimer(entry) {
+    if (!entry?.timer) return;
+    try { clearTimeout(entry.timer); } catch {}
+    entry.timer = null;
+  }
+
+  /**
+   * Resolve a pending clarify entry exactly once and clear its auto-timeout.
+   */
+  _settleClarification(entry, payload) {
+    if (!entry || entry.settled) return false;
+    entry.settled = true;
+    this._clearClarifyTimer(entry);
+    try { entry.resolve(payload); } catch {}
     return true;
   }
 
@@ -3442,7 +3473,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const tabPending = this._pendingClarifications.get(tabId);
     if (!tabPending) return;
     for (const [, entry] of tabPending) {
-      try { entry.resolve({ cancelled: true, reason }); } catch {}
+      this._settleClarification(entry, { cancelled: true, reason });
     }
     this._pendingClarifications.delete(tabId);
   }
@@ -7695,8 +7726,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // clarify: pause the run and wait for the user to answer. This tool
     // does NOT touch the page — it's a meta-action that bridges agent ↔
     // user. The handler resolves when background.js routes the user's
-    // response via submitClarifyResponse(), or when abort/clearConversation
-    // cancels.
+    // response via submitClarifyResponse(), when abort/clearConversation
+    // cancels, or when the configurable auto-timeout elapses (first option
+    // / timeout note). Permission and form-submit prompts use separate
+    // helpers and never time out.
     if (name === 'clarify') {
       const question = String(args?.question || '').trim();
       if (!question) {
@@ -7707,21 +7740,51 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         : [];
       const reason = args?.reason ? String(args.reason).slice(0, 300) : null;
       const clarifyId = `clr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const timeoutSec = this._normalizeClarifyTimeoutSec(this.clarifyTimeoutSec);
+      const deadlineTs = timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : 0;
 
       const tabPending = this._pendingClarifications.get(tabId) || new Map();
       this._pendingClarifications.set(tabId, tabPending);
 
       const responsePromise = new Promise((resolve) => {
-        tabPending.set(clarifyId, { resolve, ts: Date.now() });
+        const entry = { resolve, ts: Date.now(), timer: null, settled: false };
+        if (timeoutSec > 0) {
+          entry.timer = setTimeout(() => {
+            entry.timer = null;
+            // Prefer the first suggested option; free-text-only prompts get a
+            // clear timeout marker so the agent can continue without hanging.
+            const answer = options.length > 0
+              ? options[0]
+              : '(no response — timed out)';
+            try {
+              if (typeof onUpdate === 'function') {
+                onUpdate('clarify_auto', { clarifyId, answer, source: 'timeout', timeoutSec });
+              }
+            } catch { /* UI emit must never break the run */ }
+            this._settleClarification(entry, { answer, source: 'timeout' });
+          }, timeoutSec * 1000);
+        }
+        tabPending.set(clarifyId, entry);
       });
 
       if (typeof onUpdate === 'function') {
         try {
-          onUpdate('clarify', { clarifyId, question, options, reason });
+          onUpdate('clarify', {
+            clarifyId,
+            question,
+            options,
+            reason,
+            timeoutSec,
+            deadlineTs: deadlineTs || undefined,
+          });
         } catch { /* UI emit must never break the run */ }
       }
 
       const response = await responsePromise;
+      {
+        const entry = tabPending.get(clarifyId);
+        this._clearClarifyTimer(entry);
+      }
       tabPending.delete(clarifyId);
       if (tabPending.size === 0) this._pendingClarifications.delete(tabId);
 
@@ -7729,11 +7792,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { success: false, cancelled: true, reason: response.reason || 'clarify cancelled' };
       }
       const answer = String(response?.answer || '').trim();
+      const source = response?.source || 'user';
+      const timedOut = source === 'timeout';
       return {
         success: true,
         answer,
-        source: response?.source || 'user',
-        note: 'This is a direct reply from the user. Treat it as authoritative for the question you asked; do not re-ask. Continue the task with this answer in mind.',
+        source,
+        note: timedOut
+          ? 'This answer was AUTO-SELECTED because the clarify timeout elapsed with no user reply (source=timeout). It is NOT a real user confirmation. Continue only with the safe default path; do NOT treat this as approval for irreversible, costly, or destructive actions — re-ask via clarify or stop if the next step is high-risk. Put the safe/default choice first in options next time.'
+          : 'This is a direct reply from the user. Treat it as authoritative for the question you asked; do not re-ask. Continue the task with this answer in mind.',
       };
     }
 

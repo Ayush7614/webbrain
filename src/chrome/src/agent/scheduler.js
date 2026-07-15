@@ -77,6 +77,16 @@ function normalizePendingClarify(data, now = Date.now()) {
     reason: obj.reason ? String(obj.reason).slice(0, 400) : null,
     createdAt: iso(now),
   };
+  // Preserve clarify auto-timeout so rehydrated scheduled cards can restart
+  // the countdown (and UI backup submit) after panel close/reopen.
+  const timeoutSec = Number(obj.timeoutSec);
+  if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
+    pending.timeoutSec = Math.min(1200, Math.floor(timeoutSec));
+  }
+  const deadlineTs = Number(obj.deadlineTs);
+  if (Number.isFinite(deadlineTs) && deadlineTs > 0) {
+    pending.deadlineTs = Math.floor(deadlineTs);
+  }
   const permission = asObject(obj.permission);
   if (permission.capability || permission.host) {
     pending.permission = {
@@ -1131,8 +1141,31 @@ export class ScheduledJobManager {
         }).catch((e) => {
           console.warn('[WebBrain] failed to mark scheduled job as waiting for input:', e);
         });
+      } else if (type === 'clarify_auto') {
+        // Auto-timeout settled the clarify; the agent is running again. Clear
+        // needs_user_input / pendingClarify so the job UI and rehydrated cards
+        // do not keep showing a stale wait-for-input prompt.
+        this._waitingForInput.delete(job.id);
+        this._updateJobIf(job.id, (prev) => prev.status === 'needs_user_input', () => ({
+          status: 'running',
+          lastError: null,
+          pendingClarify: null,
+        })).then((resumed) => {
+          // Emit 'updated', not 'running': the sidepanel treats every
+          // scheduled_job running event as start-of-run and creates a new
+          // assistant bubble. Replaying that after clarify timeout orphans
+          // the original scheduled message and leaves a blank spinner open.
+          if (resumed?.status === 'running') this._emit(resumed, 'updated');
+        }).catch((e) => {
+          console.warn('[WebBrain] failed to resume scheduled job after clarify timeout:', e);
+        });
       }
-      this.sendUpdate(tabId, type, type === 'clarify' ? { ...data, scheduledJobId: job.id } : data);
+      // Tag scheduled clarify prompts (and their auto-timeout follow-ups) with
+      // the job id so the sidepanel can scope cards and lock on timeout.
+      const withJob = (type === 'clarify' || type === 'clarify_auto')
+        ? { ...data, scheduledJobId: job.id }
+        : data;
+      this.sendUpdate(tabId, type, withJob);
     };
 
     this.showIndicator(tabId);

@@ -2169,6 +2169,12 @@ body {
   border-top: 1px dashed var(--border);
 }
 
+.clarify-timeout {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ─── Planner gate (issue #165) ───────────────────────────────────── */
 
 .plan-review-card {
