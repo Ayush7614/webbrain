@@ -1198,6 +1198,125 @@ export class CDPClient {
           '[class*="cookie-banner" i]', '[id*="cookie-banner" i]',
           '[class*="onetrust" i]',
         ];
+        const PAGE_GATE_SELECTORS = [
+          '[role="dialog"]', '[role="alertdialog"]', 'dialog[open]', '[aria-modal="true"]',
+          '[class*="paywall" i]', '[id*="paywall" i]', '[class*="gateway" i]', '[id*="gateway" i]',
+          '[class*="regiwall" i]', '[id*="regiwall" i]', '[class*="subscription" i]', '[id*="subscription" i]',
+          '[data-testid*="paywall" i]', '[data-testid*="gateway" i]', '[data-testid*="subscription" i]', '[data-testid*="registration" i]',
+        ];
+        const gateElementIsRendered = (el) => {
+          if (!el || !el.isConnected) return false;
+          try {
+            const rect = el.getBoundingClientRect();
+            for (let node = el; node; node = node.parentElement) {
+              const style = getComputedStyle(node);
+              if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+              if (Number.parseFloat(style.opacity || '1') <= 0.01) return false;
+              if (node.getAttribute?.('aria-hidden') === 'true') return false;
+            }
+            return rect.width >= 20 && rect.height >= 20;
+          } catch (e) { return false; }
+        };
+        const gateHasAccessLanguage = (text) => /(?:(?:subscribe|subscription).{0,48}(?:continue|read|access|article|options|required|unlock)|subscriber[- ]only|unlimited access|unlock (?:this|the) article|start (?:your )?(?:free )?trial|create (?:a )?(?:free )?account|register to (?:continue|read)|sign up to (?:continue|read)|(?:log|sign) in to (?:continue|read)|continue reading (?:with|by)|to continue reading|already have an account)/.test(String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase());
+        const gateHasInlineBlockingLanguage = (text) => /(?:to continue reading|continue reading (?:with|by)|subscriber[- ]only|(?:subscribe|subscription required|register|sign up|log in|sign in|create (?:a )?(?:free )?account).{0,64}(?:continue reading|read (?:this |the )?(?:full )?(?:article|story)|unlock (?:this|the) (?:article|story)|access (?:this|the) (?:article|story)))/.test(String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase());
+        const pageHasArticleContext = () => {
+          try {
+            return !!(
+              document.querySelector('meta[property="og:type"][content="article"]') ||
+              document.querySelector('meta[name="article:published_time"]') ||
+              document.querySelector('[itemtype*="Article" i]') ||
+              document.querySelector('article, [role="article"]')
+            );
+          } catch (e) { return false; }
+        };
+        const boundedGateLabel = (el, rawLabel) => {
+          const options = [];
+          let boundaryElement = null;
+          for (const value of [el.getAttribute('aria-label'), el.getAttribute('title')]) {
+            const normalized = String(value || '').replace(/\\s+/g, ' ').trim();
+            if (gateHasAccessLanguage(normalized)) options.push(normalized);
+          }
+          let descendants = [];
+          try { descendants = el.querySelectorAll('h1, h2, h3, p, button, a, label, [role="heading"]'); } catch (e) {}
+          for (const node of Array.from(descendants).slice(0, 80)) {
+            if (!gateElementIsRendered(node)) continue;
+            const normalized = String(node.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (normalized.length <= 600 && gateHasAccessLanguage(normalized)) {
+              boundaryElement ||= node;
+              options.push(normalized);
+            }
+          }
+          options.sort((a, b) => a.length - b.length);
+          if (options[0]) return { label: options[0].slice(0, 240), boundaryElement };
+          const accessStart = rawLabel.search(/\\b(?:subscribe|subscription|subscriber|unlock|register|sign up|log in|sign in|create an? account|continue reading)\\b/i);
+          return {
+            label: rawLabel.slice(Math.max(0, accessStart), Math.max(0, accessStart) + 240),
+            boundaryElement,
+          };
+        };
+        const gateType = (text) => {
+          const value = String(text || '').toLowerCase();
+          if (/\\bsubscribe\\b|\\bsubscription\\b|subscriber[- ]only|unlimited access|unlock (?:this|the) article|start (?:your )?(?:free )?trial/.test(value)) return 'subscription';
+          if (/create (?:a )?(?:free )?account|register to (?:continue|read)|sign up to (?:continue|read)/.test(value)) return 'registration';
+          if (/(?:log|sign) in to (?:continue|read)|already have an account|create (?:a )?(?:free )?account or log in/.test(value)) return 'login';
+          return 'unknown';
+        };
+        const detectPageGate = () => {
+          const seen = new Set();
+          const candidates = [];
+          const articleContext = pageHasArticleContext();
+          for (const selector of PAGE_GATE_SELECTORS) {
+            let matches = [];
+            try { matches = document.querySelectorAll(selector); } catch (e) { continue; }
+            for (const el of matches) {
+              if (seen.has(el) || !gateElementIsRendered(el)) continue;
+              seen.add(el);
+              const rawLabel = String(el.innerText || '').replace(/\\s+/g, ' ').trim();
+              const role = String(el.getAttribute('role') || '').toLowerCase();
+              let surface = (role === 'dialog' || role === 'alertdialog' || el.tagName === 'DIALOG' || el.getAttribute('aria-modal') === 'true') ? 'dialog' : 'inline';
+              const inArticle = !!el.closest('article, [role="article"], main, [role="main"]');
+              let coveringOverlay = false;
+              try {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+                const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+                const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+                coveringOverlay = ['fixed', 'sticky', 'absolute'].includes(style.position) && ((visibleWidth * visibleHeight) / viewportArea) >= 0.2;
+              } catch (e) {}
+              if (coveringOverlay) surface = 'dialog';
+              if (surface === 'dialog') {
+                if (!articleContext || !gateHasAccessLanguage(rawLabel)) continue;
+              } else {
+                if (!inArticle || !gateHasInlineBlockingLanguage(rawLabel)) continue;
+              }
+              const gateText = boundedGateLabel(el, rawLabel);
+              const label = gateText.label;
+              const namedGate = /paywall|gateway|regiwall|subscription|registration/i.test([el.id, typeof el.className === 'string' ? el.className : '', el.getAttribute('data-testid') || ''].join(' '));
+              const score = (surface === 'dialog' ? 100 : 0) + (inArticle ? 40 : 0) + (coveringOverlay ? 30 : 0) + (namedGate ? 15 : 0) - Math.min(label.length, 2000) / 2000;
+              candidates.push({ element: surface === 'inline' ? (gateText.boundaryElement || el) : el, type: gateType(rawLabel), surface, label: label.slice(0, 240), score });
+            }
+          }
+          candidates.sort((a, b) => b.score - a.score);
+          return candidates[0] || null;
+        };
+        const textBeforeGate = (root, gateElement) => {
+          if (!root || !gateElement || !root.contains(gateElement)) return '';
+          const blocks = [];
+          const seenText = new Set();
+          let nodes = [];
+          try { nodes = root.querySelectorAll('h1, h2, h3, p, li, blockquote, figcaption'); } catch (e) { return ''; }
+          for (const node of nodes) {
+            if (node === gateElement || gateElement.contains(node) || node.contains(gateElement)) continue;
+            if (!(node.compareDocumentPosition(gateElement) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+            if (!gateElementIsRendered(node) || node.closest('nav, header, footer, aside, [aria-hidden="true"]')) continue;
+            const value = String(node.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (!value || seenText.has(value)) continue;
+            seenText.add(value);
+            blocks.push(value);
+          }
+          return blocks.join('\\n\\n').trim();
+        };
         const stripChrome = (root) => {
           if (includeChrome || !root) return root;
           let clone;
@@ -1217,7 +1336,18 @@ export class CDPClient {
             document.querySelector('article')
           );
         } catch (e) {}
+        const gate = detectPageGate();
+        const pageGate = gate ? { type: gate.type, blocking: true, surface: gate.surface, label: gate.label } : null;
         const getText = () => {
+          if (gate?.surface === 'dialog') {
+            textSource = 'page-gate';
+            return gate.label;
+          }
+          if (gate?.surface === 'inline') {
+            const articleRoot = gate.element.closest('article, [role="article"], main, [role="main"]');
+            textSource = 'article (pre-gate)';
+            return textBeforeGate(articleRoot, gate.element) || gate.label;
+          }
           for (const sel of ARTICLE_SELECTORS) {
             let el;
             try { el = document.querySelector(sel); } catch (e) { continue; }
@@ -1232,19 +1362,21 @@ export class CDPClient {
         };
 
         const text = getText();
+        const blockedAuxiliaryContent = pageGate?.blocking === true;
         return {
           url: window.location.href,
           title: document.title,
           description: document.querySelector('meta[name="description"]')?.content || '',
+          ...(pageGate ? { pageGate } : {}),
           text,
           textSource,
           isArticlePage,
           includeChrome,
-          links: Array.from(document.querySelectorAll('a[href]')).slice(0, 100).map(a => ({
+          links: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('a[href]')).slice(0, 100).map(a => ({
             text: a.innerText.trim().slice(0, 100),
             href: a.href,
           })),
-          forms: Array.from(document.querySelectorAll('form')).map((form, i) => ({
+          forms: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('form')).map((form, i) => ({
             id: form.id || 'form-' + i,
             action: form.action,
             inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(el => ({
@@ -1255,12 +1387,12 @@ export class CDPClient {
               value: el.value || '',
             })),
           })),
-          shadowHosts: Array.from(document.querySelectorAll('*')).filter(el => el.shadowRoot).map(el => ({
+          shadowHosts: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('*')).filter(el => el.shadowRoot).map(el => ({
             tag: el.tagName.toLowerCase(),
             id: el.id || '',
             shadowRootMode: el.shadowRoot?.mode,
           })),
-          iframes: Array.from(document.querySelectorAll('iframe')).map(iframe => ({
+          iframes: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('iframe')).map(iframe => ({
             src: iframe.src,
             id: iframe.id || '',
             name: iframe.name || '',

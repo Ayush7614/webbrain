@@ -16,6 +16,7 @@ import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { CDPClient } from '../../src/chrome/src/cdp/cdp-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..', '..');
@@ -61,6 +62,17 @@ async function setup(page, fixture) {
   await page.waitForFunction(() => typeof window.__wb_handler === 'function');
 }
 
+async function setupContentFixture(page, fixture, browserKind) {
+  const firefox = browserKind === 'firefox';
+  await page.addInitScript(firefox ? stubFirefoxBrowser : stubChrome);
+  await page.goto(fixtureUrl(fixture));
+  const axSrc = await readFile(firefox ? firefoxAccessibilityTreeJsPath : accessibilityTreeJsPath, 'utf-8');
+  await page.addScriptTag({ content: axSrc });
+  const contentSrc = await readFile(firefox ? firefoxContentJsPath : contentJsPath, 'utf-8');
+  await page.addScriptTag({ content: contentSrc });
+  await page.waitForFunction(() => typeof window.__wb_handler === 'function');
+}
+
 async function setupFirefoxHtml(page, html) {
   await page.setContent(html, { waitUntil: 'domcontentloaded' });
   await page.addScriptTag({ content: stubFirefoxBrowser });
@@ -85,6 +97,14 @@ async function call(page, action, params) {
     );
     if (ret !== true && ret !== undefined) resolve(ret);
   }), { action, params });
+}
+
+async function readThroughCdpMirror(page, opts = {}) {
+  const client = new CDPClient();
+  client.evaluate = async (_tabId, expression) => ({
+    result: { value: await page.evaluate(expression) },
+  });
+  return client.readPage(1, opts);
 }
 
 async function clickedSentinel(page) {
@@ -179,6 +199,132 @@ async function selectFixtureText(page, selector = '#copy') {
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+
+for (const [label, browserKind] of [['Chrome', 'chrome'], ['Firefox', 'firefox']]) {
+  test(`${label}: blocking NYTimes registration dialog suppresses article DOM`, async (page) => {
+    await setupContentFixture(page, 'nyt-registration-gate.html', browserKind);
+    const result = await call(page, 'get_page_info_cdp', {});
+    if (result.pageGate?.blocking !== true || result.pageGate?.surface !== 'dialog' || result.pageGate?.type !== 'registration') {
+      throw new Error(`registration pageGate mismatch: ${JSON.stringify(result.pageGate)}`);
+    }
+    const serializedResult = JSON.stringify(result);
+    if (result.textSource !== 'page-gate' || /SECRET_NYT_(?:ARTICLE|LINK|IMAGE|FORM|SHADOW)/.test(serializedResult)) {
+      throw new Error(`blocked article data leaked: ${serializedResult}`);
+    }
+    if (result.links?.length || result.forms?.length || result.shadowDOM?.length || result.iframes?.length || result.media?.imageCount || result.media?.videoCount) {
+      throw new Error(`blocking gate retained auxiliary page data: ${serializedResult}`);
+    }
+    if (JSON.stringify(result).indexOf('"pageGate"') > JSON.stringify(result).indexOf('"text"')) {
+      throw new Error('pageGate must serialize before long article text for trace visibility');
+    }
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'visible', maxDepth: 5 });
+    if (tree.pageGate?.blocking !== true || !/Create a free account/i.test(tree.pageGate.label || '')) {
+      throw new Error(`accessibility tree omitted structured pageGate: ${JSON.stringify(tree.pageGate)}`);
+    }
+    if (tree.textSource !== 'page-gate' || /SECRET_NYT_ARTICLE_BODY/.test(tree.pageContent || '')) {
+      throw new Error(`accessibility tree leaked blocked article text: ${JSON.stringify(tree)}`);
+    }
+    const gateButtonRef = /button "Continue" \[(ref_\d+)\]/.exec(tree.pageContent || '')?.[1];
+    const gateEmailRef = /textbox "Email" \[(ref_\d+)\]/.exec(tree.pageContent || '')?.[1];
+    if (!gateButtonRef || !gateEmailRef) {
+      throw new Error(`accessibility tree omitted visible gate controls: ${JSON.stringify(tree)}`);
+    }
+    const clickResult = await call(page, 'click_ax', { ref_id: gateButtonRef });
+    const gateControlClicked = await page.evaluate(() => window.__gateControlClicked === true);
+    if (clickResult?.success !== true || !gateControlClicked) {
+      throw new Error(`gate control ref was not actionable: ${JSON.stringify(clickResult)}`);
+    }
+    const basicResult = await call(page, 'get_page_info', {});
+    if (/SECRET_NYT_(?:ARTICLE|LINK|IMAGE|FORM|SHADOW)/.test(JSON.stringify(basicResult))) {
+      throw new Error(`basic page info leaked blocked article data: ${JSON.stringify(basicResult)}`);
+    }
+  });
+
+  test(`${label}: The Athletic covering subscription overlay suppresses server-rendered body`, async (page) => {
+    await setupContentFixture(page, 'athletic-subscription-overlay.html', browserKind);
+    const result = await call(page, 'get_page_info_cdp', {});
+    if (result.pageGate?.type !== 'subscription' || result.pageGate?.surface !== 'dialog') {
+      throw new Error(`Athletic pageGate mismatch: ${JSON.stringify(result.pageGate)}`);
+    }
+    if (/SECRET_ATHLETIC_(?:ARTICLE|LINK|FORM)/.test(JSON.stringify(result)) || result.textSource !== 'page-gate') {
+      throw new Error(`Athletic article data leaked: ${JSON.stringify(result)}`);
+    }
+  });
+
+  test(`${label}: inline article gate returns only the visible preview`, async (page) => {
+    await setupContentFixture(page, 'inline-article-paywall.html', browserKind);
+    const result = await call(page, 'get_page_info_cdp', {});
+    if (result.pageGate?.blocking !== true || result.pageGate?.surface !== 'inline') {
+      throw new Error(`inline pageGate mismatch: ${JSON.stringify(result.pageGate)}`);
+    }
+    if (!/VISIBLE_PREVIEW_PARAGRAPH/.test(result.text || '') || /SECRET_POST_GATE_PARAGRAPH/.test(result.text || '')) {
+      throw new Error(`inline preview boundary mismatch: ${JSON.stringify(result.text)}`);
+    }
+    if (!/\(pre-gate\)$/.test(result.textSource || '')) {
+      throw new Error(`inline textSource missing pre-gate marker: ${result.textSource}`);
+    }
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'visible', maxDepth: 5 });
+    if (!/VISIBLE_PREVIEW_PARAGRAPH/.test(tree.pageContent || '') || /SECRET_POST_GATE_PARAGRAPH/.test(tree.pageContent || '')) {
+      throw new Error(`inline accessibility boundary mismatch: ${JSON.stringify(tree)}`);
+    }
+  });
+
+  test(`${label}: readable article ignores header controls, inline upsells, and hidden gate markup`, async (page) => {
+    await setupContentFixture(page, 'readable-article-no-gate.html', browserKind);
+    const result = await call(page, 'get_page_info_cdp', {});
+    if (result.pageGate) throw new Error(`false-positive pageGate: ${JSON.stringify(result.pageGate)}`);
+    if (!/READABLE_ARTICLE_BODY/.test(result.text || '') || !/READABLE_ARTICLE_AFTER_UPSELL/.test(result.text || '') || result.textSource === 'page-gate') {
+      throw new Error(`readable article body missing: ${JSON.stringify({ textSource: result.textSource, text: result.text })}`);
+    }
+  });
+
+  test(`${label}: non-article signup dialog preserves form controls`, async (page) => {
+    await setupContentFixture(page, 'non-article-signup-dialog.html', browserKind);
+    const result = await call(page, 'get_page_info_cdp', {});
+    if (result.pageGate) throw new Error(`non-article dialog became a page gate: ${JSON.stringify(result.pageGate)}`);
+    if (result.forms?.length !== 1 || result.forms[0]?.inputs?.[0]?.name !== 'email') {
+      throw new Error(`signup form was stripped from page info: ${JSON.stringify(result.forms)}`);
+    }
+    const basicResult = await call(page, 'get_page_info', {});
+    if (basicResult.pageGate || basicResult.forms?.length !== 1) {
+      throw new Error(`basic page info stripped the signup form: ${JSON.stringify(basicResult)}`);
+    }
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'visible', maxDepth: 6 });
+    if (tree.pageGate || !/Work email/.test(tree.pageContent || '')) {
+      throw new Error(`signup accessibility tree was stripped: ${JSON.stringify(tree)}`);
+    }
+  });
+}
+
+test('Chrome CDP mirror suppresses a blocking Athletic article body', async (page) => {
+  await page.goto(fixtureUrl('athletic-subscription-overlay.html'));
+  const result = await readThroughCdpMirror(page);
+  if (result.pageGate?.type !== 'subscription' || result.pageGate?.surface !== 'dialog') {
+    throw new Error(`CDP pageGate mismatch: ${JSON.stringify(result.pageGate)}`);
+  }
+  if (result.textSource !== 'page-gate' || /SECRET_ATHLETIC_(?:ARTICLE|LINK|FORM)/.test(JSON.stringify(result))) {
+    throw new Error(`CDP mirror leaked blocked article data: ${JSON.stringify(result)}`);
+  }
+  if (result.links?.length || result.forms?.length || result.shadowHosts?.length || result.iframes?.length) {
+    throw new Error(`CDP blocking gate retained auxiliary page data: ${JSON.stringify(result)}`);
+  }
+});
+
+test('Chrome CDP mirror preserves a readable article across an inline upsell', async (page) => {
+  await page.goto(fixtureUrl('readable-article-no-gate.html'));
+  const result = await readThroughCdpMirror(page);
+  if (result.pageGate || !/READABLE_ARTICLE_BODY/.test(result.text || '') || !/READABLE_ARTICLE_AFTER_UPSELL/.test(result.text || '')) {
+    throw new Error(`CDP readable article mismatch: ${JSON.stringify({ pageGate: result.pageGate, text: result.text })}`);
+  }
+});
+
+test('Chrome CDP mirror preserves a non-article signup dialog', async (page) => {
+  await page.goto(fixtureUrl('non-article-signup-dialog.html'));
+  const result = await readThroughCdpMirror(page);
+  if (result.pageGate || result.forms?.length !== 1 || result.forms[0]?.inputs?.[0]?.name !== 'email') {
+    throw new Error(`CDP non-article signup mismatch: ${JSON.stringify(result)}`);
+  }
+});
 
 for (const [label, sourcePath, manualOpen] of [
   ['Chrome', selectionShortcutJsPath, false],

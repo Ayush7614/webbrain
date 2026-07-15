@@ -8,6 +8,161 @@
   if (window.__webbrain_injected) return;
   window.__webbrain_injected = true;
 
+  const PAGE_GATE_SELECTORS = [
+    '[role="dialog"]', '[role="alertdialog"]', 'dialog[open]', '[aria-modal="true"]',
+    '[class*="paywall" i]', '[id*="paywall" i]',
+    '[class*="gateway" i]', '[id*="gateway" i]',
+    '[class*="regiwall" i]', '[id*="regiwall" i]',
+    '[class*="subscription" i]', '[id*="subscription" i]',
+    '[data-testid*="paywall" i]', '[data-testid*="gateway" i]',
+    '[data-testid*="subscription" i]', '[data-testid*="registration" i]',
+  ];
+
+  function gateElementIsRendered(el) {
+    if (!el || !el.isConnected) return false;
+    let rect;
+    try {
+      rect = el.getBoundingClientRect();
+      for (let node = el; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+        if (Number.parseFloat(style.opacity || '1') <= 0.01) return false;
+        if (node.getAttribute?.('aria-hidden') === 'true') return false;
+      }
+    } catch {
+      return false;
+    }
+    return rect.width >= 20 && rect.height >= 20;
+  }
+
+  function pageGateType(text) {
+    const value = String(text || '').toLowerCase();
+    if (/\bsubscribe\b|\bsubscription\b|subscriber[- ]only|unlimited access|unlock (?:this|the) article|start (?:your )?(?:free )?trial/.test(value)) return 'subscription';
+    if (/create (?:a )?(?:free )?account|register to (?:continue|read)|sign up to (?:continue|read)/.test(value)) return 'registration';
+    if (/(?:log|sign) in to (?:continue|read)|already have an account|create (?:a )?(?:free )?account or log in/.test(value)) return 'login';
+    return 'unknown';
+  }
+
+  function pageGateHasAccessLanguage(text) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!value) return false;
+    return /(?:(?:subscribe|subscription).{0,48}(?:continue|read|access|article|options|required|unlock)|subscriber[- ]only|unlimited access|unlock (?:this|the) article|start (?:your )?(?:free )?trial|create (?:a )?(?:free )?account|register to (?:continue|read)|sign up to (?:continue|read)|(?:log|sign) in to (?:continue|read)|continue reading (?:with|by)|to continue reading|already have an account)/.test(value);
+  }
+
+  function pageGateHasInlineBlockingLanguage(text) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!value) return false;
+    return /(?:to continue reading|continue reading (?:with|by)|subscriber[- ]only|(?:subscribe|subscription required|register|sign up|log in|sign in|create (?:a )?(?:free )?account).{0,64}(?:continue reading|read (?:this |the )?(?:full )?(?:article|story)|unlock (?:this|the) (?:article|story)|access (?:this|the) (?:article|story)))/.test(value);
+  }
+
+  function pageHasArticleContext() {
+    try {
+      return !!(
+        document.querySelector('meta[property="og:type"][content="article"]') ||
+        document.querySelector('meta[name="article:published_time"]') ||
+        document.querySelector('[itemtype*="Article" i]') ||
+        document.querySelector('article, [role="article"]')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function boundedPageGateLabel(el, rawLabel) {
+    const options = [];
+    let boundaryElement = null;
+    for (const value of [el.getAttribute('aria-label'), el.getAttribute('title')]) {
+      const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+      if (pageGateHasAccessLanguage(normalized)) options.push(normalized);
+    }
+    let descendants = [];
+    try { descendants = el.querySelectorAll('h1, h2, h3, p, button, a, label, [role="heading"]'); } catch {}
+    for (const node of Array.from(descendants).slice(0, 80)) {
+      if (!gateElementIsRendered(node)) continue;
+      const normalized = String(node.innerText || '').replace(/\s+/g, ' ').trim();
+      if (normalized.length <= 600 && pageGateHasAccessLanguage(normalized)) {
+        boundaryElement ||= node;
+        options.push(normalized);
+      }
+    }
+    options.sort((a, b) => a.length - b.length);
+    if (options[0]) return { label: options[0].slice(0, 240), boundaryElement };
+    const accessStart = rawLabel.search(/\b(?:subscribe|subscription|subscriber|unlock|register|sign up|log in|sign in|create an? account|continue reading)\b/i);
+    return {
+      label: rawLabel.slice(Math.max(0, accessStart), Math.max(0, accessStart) + 240),
+      boundaryElement,
+    };
+  }
+
+  function pageGatePublic(gate) {
+    if (!gate) return null;
+    return { type: gate.type, blocking: true, surface: gate.surface, label: gate.label };
+  }
+
+  function detectPageGate() {
+    const seen = new Set();
+    const candidates = [];
+    const articleContext = pageHasArticleContext();
+    for (const selector of PAGE_GATE_SELECTORS) {
+      let matches = [];
+      try { matches = document.querySelectorAll(selector); } catch { continue; }
+      for (const el of matches) {
+        if (seen.has(el) || !gateElementIsRendered(el)) continue;
+        seen.add(el);
+        const rawLabel = String(el.innerText || '').replace(/\s+/g, ' ').trim();
+        const role = String(el.getAttribute('role') || '').toLowerCase();
+        let surface = (role === 'dialog' || role === 'alertdialog' || el.tagName === 'DIALOG' || el.getAttribute('aria-modal') === 'true') ? 'dialog' : 'inline';
+        const inArticle = !!el.closest('article, [role="article"], main, [role="main"]');
+        let coveringOverlay = false;
+        try {
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+          const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+          const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+          coveringOverlay = ['fixed', 'sticky', 'absolute'].includes(style.position) && ((visibleWidth * visibleHeight) / viewportArea) >= 0.2;
+        } catch {}
+        if (coveringOverlay) surface = 'dialog';
+        if (surface === 'dialog') {
+          if (!articleContext || !pageGateHasAccessLanguage(rawLabel)) continue;
+        } else {
+          if (!inArticle || !pageGateHasInlineBlockingLanguage(rawLabel)) continue;
+        }
+        const gateText = boundedPageGateLabel(el, rawLabel);
+        const label = gateText.label;
+        const namedGate = /paywall|gateway|regiwall|subscription|registration/i.test([el.id, typeof el.className === 'string' ? el.className : '', el.getAttribute('data-testid') || ''].join(' '));
+        const score = (surface === 'dialog' ? 100 : 0) + (inArticle ? 40 : 0) + (coveringOverlay ? 30 : 0) + (namedGate ? 15 : 0) - Math.min(label.length, 2000) / 2000;
+        candidates.push({
+          element: surface === 'inline' ? (gateText.boundaryElement || el) : el,
+          type: pageGateType(rawLabel),
+          surface,
+          label: label.slice(0, 240),
+          score,
+        });
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] || null;
+  }
+
+  function renderedArticleTextBeforeGate(root, gateElement) {
+    if (!root || !gateElement || !root.contains(gateElement)) return '';
+    const blocks = [];
+    const seenText = new Set();
+    let nodes = [];
+    try { nodes = root.querySelectorAll('h1, h2, h3, p, li, blockquote, figcaption'); } catch { return ''; }
+    for (const node of nodes) {
+      if (node === gateElement || gateElement.contains(node) || node.contains(gateElement)) continue;
+      if (!(node.compareDocumentPosition(gateElement) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      if (!gateElementIsRendered(node) || node.closest('nav, header, footer, aside, [aria-hidden="true"]')) continue;
+      const value = String(node.innerText || '').replace(/\s+/g, ' ').trim();
+      if (!value || seenText.has(value)) continue;
+      seenText.add(value);
+      blocks.push(value);
+    }
+    return blocks.join('\n\n').trim();
+  }
+
   /**
    * Extract readable text content from the page.
    *
@@ -84,6 +239,21 @@
       );
     } catch { /* malformed selector engines */ }
 
+    const gate = detectPageGate();
+    const pageGate = pageGatePublic(gate);
+    if (gate?.surface === 'dialog') {
+      return { text: gate.label, textSource: 'page-gate', isArticlePage, pageGate };
+    }
+    if (gate?.surface === 'inline') {
+      const articleRoot = gate.element.closest('article, [role="article"], main, [role="main"]');
+      return {
+        text: renderedArticleTextBeforeGate(articleRoot, gate.element) || gate.label,
+        textSource: 'article (pre-gate)',
+        isArticlePage,
+        pageGate,
+      };
+    }
+
     for (const sel of ARTICLE_SELECTORS) {
       let el;
       try { el = document.querySelector(sel); } catch { continue; }
@@ -92,13 +262,13 @@
       const txt = (cleaned && cleaned.innerText ? cleaned.innerText : '').trim();
       if (txt.length > 300) {
         textSource = sel;
-        return { text: txt, textSource, isArticlePage };
+        return { text: txt, textSource, isArticlePage, ...(pageGate ? { pageGate } : {}) };
       }
     }
     const fallback = stripChrome(document.body);
     textSource = includeChrome ? 'body (raw)' : 'body (chrome-stripped)';
     const text = (fallback && fallback.innerText ? fallback.innerText : '').trim();
-    return { text, textSource, isArticlePage };
+    return { text, textSource, isArticlePage, ...(pageGate ? { pageGate } : {}) };
   }
 
 
@@ -166,21 +336,25 @@
    */
   function getPageInfo(params) {
     const t = getPageText(params || {});
+    const blockedAuxiliaryContent = t.pageGate?.blocking === true;
     return {
       url: window.location.href,
       title: document.title,
       description: document.querySelector('meta[name="description"]')?.content || '',
+      ...(t.pageGate ? { pageGate: t.pageGate } : {}),
       text: t.text,
       textSource: t.textSource,
       isArticlePage: t.isArticlePage,
       includeChrome: !!(params && params.includeChrome),
-      media: getPageMediaSummary(),
-      activeElement: getActiveEditableSummary(),
-      links: Array.from(document.querySelectorAll('a[href]')).slice(0, 100).map(a => ({
+      media: blockedAuxiliaryContent
+        ? { videoCount: 0, imageCount: 0, videos: [], images: [] }
+        : getPageMediaSummary(),
+      activeElement: blockedAuxiliaryContent ? null : getActiveEditableSummary(),
+      links: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('a[href]')).slice(0, 100).map(a => ({
         text: a.innerText.trim().slice(0, 100),
         href: a.href,
       })),
-      forms: Array.from(document.querySelectorAll('form')).map((form, i) => ({
+      forms: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('form')).map((form, i) => ({
         id: form.id || `form-${i}`,
         action: form.action,
         inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(el => ({
@@ -196,6 +370,7 @@
 
   function getPageInfoFull(params) {
     const t = getPageText(params || {});
+    const blockedAuxiliaryContent = t.pageGate?.blocking === true;
     const getShadowContent = (root = document) => {
       const shadowContent = [];
       const hosts = root.querySelectorAll('*');
@@ -218,17 +393,20 @@
       url: window.location.href,
       title: document.title,
       description: document.querySelector('meta[name="description"]')?.content || '',
+      ...(t.pageGate ? { pageGate: t.pageGate } : {}),
       text: t.text,
       textSource: t.textSource,
       isArticlePage: t.isArticlePage,
       includeChrome: !!(params && params.includeChrome),
-      media: getPageMediaSummary(),
-      activeElement: getActiveEditableSummary(),
-      links: Array.from(document.querySelectorAll('a[href]')).slice(0, 100).map(a => ({
+      media: blockedAuxiliaryContent
+        ? { videoCount: 0, imageCount: 0, videos: [], images: [] }
+        : getPageMediaSummary(),
+      activeElement: blockedAuxiliaryContent ? null : getActiveEditableSummary(),
+      links: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('a[href]')).slice(0, 100).map(a => ({
         text: a.innerText.trim().slice(0, 100),
         href: a.href,
       })),
-      forms: Array.from(document.querySelectorAll('form')).map((form, i) => ({
+      forms: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('form')).map((form, i) => ({
         id: form.id || `form-${i}`,
         action: form.action,
         inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(el => ({
@@ -239,8 +417,8 @@
           value: el.value || '',
         })),
       })),
-      shadowDOM: getShadowContent(),
-      iframes: Array.from(document.querySelectorAll('iframe')).map((iframe, i) => ({
+      shadowDOM: blockedAuxiliaryContent ? [] : getShadowContent(),
+      iframes: blockedAuxiliaryContent ? [] : Array.from(document.querySelectorAll('iframe')).map((iframe, i) => ({
         index: i,
         src: iframe.src,
         id: iframe.id || '',
@@ -2249,6 +2427,28 @@
             return { error: 'accessibility-tree.js not injected' };
           }
           const { filter, maxDepth, maxChars, ref_id, page } = msg.params || {};
+          const gate = detectPageGate();
+          if (gate) {
+            const pageGate = pageGatePublic(gate);
+            if (gate.surface === 'dialog') {
+              if (typeof window.__generateAccessibilitySubtree === 'function') {
+                const gateFilter = filter === 'interactive' ? 'interactive' : 'visible';
+                const requestedDepth = Number(maxDepth);
+                const requestedChars = Number(maxChars);
+                const gateMaxDepth = Math.min(Number.isFinite(requestedDepth) ? Math.max(1, Math.trunc(requestedDepth)) : 8, 8);
+                const gateMaxChars = Math.min(Number.isFinite(requestedChars) ? Math.max(256, Math.trunc(requestedChars)) : 3000, 5000);
+                const tree = window.__generateAccessibilitySubtree(gate.element, gateFilter, gateMaxDepth, gateMaxChars, page);
+                return { pageGate, ...tree, textSource: 'page-gate' };
+              }
+              return { pageGate, pageContent: gate.label, textSource: 'page-gate' };
+            }
+            const articleRoot = gate.element.closest('article, [role="article"], main, [role="main"]');
+            return {
+              pageGate,
+              pageContent: renderedArticleTextBeforeGate(articleRoot, gate.element),
+              textSource: 'article (pre-gate)',
+            };
+          }
           return window.__generateAccessibilityTree(filter, maxDepth, maxChars, ref_id, page);
         } catch (e) {
           return { error: 'Failed to build accessibility tree: ' + (e && e.message || String(e)) };

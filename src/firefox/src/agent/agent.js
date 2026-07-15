@@ -124,6 +124,7 @@ export class Agent {
     this.profileText = '';
     this.customSkills = [];
     this.activeSkillIds = new Map(); // tabId -> skill ids loaded only for the current run
+    this._nytimesPageGateNotified = new Set(); // tabIds already given trusted gate guidance this run
     this.userMemoryEnabled = true;
     this.userMemoryRecords = [];
     this.userMemoryMaxPromptChars = USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS;
@@ -1968,6 +1969,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
       const toolResult = this._normalizeToolResult(fnName, rawToolResult, missingResponseOutcomeUnknown);
       const _toolLatency = Date.now() - _toolStart;
+      const nytimesPageGateFallback = this._nytimesPageGateFallback(tabId, fnName, toolResult);
+      if (nytimesPageGateFallback && toolResult && typeof toolResult === 'object') {
+        toolResult.pageGateFallback = {
+          available: nytimesPageGateFallback.available,
+          ...(nytimesPageGateFallback.activatedSkillId ? { activatedSkillId: nytimesPageGateFallback.activatedSkillId } : {}),
+        };
+      }
 
       // Pin any durable download handle this tool produced, so a later
       // read survives context compaction even if the model never calls
@@ -2159,6 +2167,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // our own trusted notes (the loop nudge), so the nudge stays outside the
       // <untrusted_page_content> box and is read as an instruction, not data.
       let resultContent = this._wrapUntrusted(fnName, this._limitToolResult(toolResult));
+      if (nytimesPageGateFallback) {
+        resultContent += `\n${nytimesPageGateFallback.note}`;
+        onUpdate('warning', {
+          message: nytimesPageGateFallback.available
+            ? 'NYTimes access gate detected; fetch_nytimes_article is available.'
+            : 'NYTimes access gate detected; article fallback is unavailable.',
+        });
+      }
       if (progressObserved) {
         resultContent += `\n[PROGRESS LEDGER OBSERVED: GitHub stargazers buttons observed=${progressObserved.observedButtons}; added ${progressObserved.addedPending} pending Follow row(s); skipped ${progressObserved.alreadyFollowedSkipped} already-followed row(s) and ${progressObserved.excludedSkipped} excluded row(s). Only rows created from visible Follow buttons need follow action.]`;
       }
@@ -4786,8 +4802,59 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
   }
 
+  _preactivateNyTimesSkillForRun(tabId, mode) {
+    if (this._activeSkillSiteAdapter(tabId) !== 'nytimes') return false;
+    const tier = this._resolvePromptTier();
+    if (tier === 'compact') return false;
+    const owner = this._eligibleSkills(mode, tier).find((skill) => skill.id === 'freeskillz-xyz' &&
+      buildSkillToolDefinitions([skill], {
+        mode,
+        tier,
+        siteAdapter: 'nytimes',
+        excludeNames: RESERVED_AGENT_TOOL_NAMES,
+      }).some((tool) => tool.function?.name === 'fetch_nytimes_article'));
+    if (!owner) return false;
+    return this._activateSkillsForRun(tabId, [owner.id], mode, tier).includes(owner.id);
+  }
+
+  _nytimesPageGateFallback(tabId, toolName, toolResult) {
+    if (!['read_page', 'get_accessibility_tree'].includes(toolName)) return null;
+    if (toolResult?.pageGate?.blocking !== true) return null;
+    if (this._activeSkillSiteAdapter(tabId) !== 'nytimes') return null;
+    if (this._nytimesPageGateNotified.has(tabId)) return null;
+    this._nytimesPageGateNotified.add(tabId);
+
+    const mode = this.conversationModes.get(tabId) || 'ask';
+    const tier = this._resolvePromptTier();
+    let tool = this._activeSkillToolForName(tabId, 'fetch_nytimes_article');
+    let activatedSkillId = '';
+    if (!tool && tier !== 'compact') {
+      const owner = this._eligibleSkills(mode, tier).find((skill) => skill.id === 'freeskillz-xyz' &&
+        buildSkillToolDefinitions([skill], {
+          mode,
+          tier,
+          siteAdapter: 'nytimes',
+          excludeNames: RESERVED_AGENT_TOOL_NAMES,
+        }).some((candidate) => candidate.function?.name === 'fetch_nytimes_article'));
+      if (owner) {
+        const activated = this._activateSkillsForRun(tabId, [owner.id], mode, tier);
+        activatedSkillId = activated[0] || '';
+        tool = this._activeSkillToolForName(tabId, 'fetch_nytimes_article');
+      }
+    }
+
+    return {
+      available: !!tool,
+      ...(activatedSkillId ? { activatedSkillId } : {}),
+      note: tool
+        ? '[NYTIMES ARTICLE FALLBACK: The structured pageGate result confirms that a blocking NYTimes/The Athletic access gate is rendered. If the user requested article content, call fetch_nytimes_article now without asking first. If the user only asked whether a gate exists, answer that question without fetching. Never summarize article text hidden behind the gate.]'
+        : '[NYTIMES ARTICLE FALLBACK UNAVAILABLE: The structured pageGate result confirms that a blocking NYTimes/The Athletic access gate is rendered, but fetch_nytimes_article is not enabled or available in this mode/tier. Report the gate and available metadata; do not use article text hidden behind it.]',
+    };
+  }
+
   _resetActiveSkillsForRun(tabId, { refreshPrompt = true } = {}) {
     this.activeSkillIds.delete(tabId);
+    this._nytimesPageGateNotified.delete(tabId);
     if (!refreshPrompt) return;
     const messages = this.conversations.get(tabId);
     if (messages?.[0]?.role !== 'system') return;
@@ -4943,6 +5010,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.lastAutoScreenshotTs.delete(tabId);
     this.lastSeenAdapter.delete(tabId);
     this.activeSkillIds.delete(tabId);
+    this._nytimesPageGateNotified.delete(tabId);
     this._doneBlockCount.delete(tabId);
     this._recentSubmitClicks.delete(tabId);
     if (!preserveRunGuard) {
@@ -9219,6 +9287,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     await this._manageContext(tabId, messages, onUpdate, costState);
 
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
+    this._preactivateNyTimesSkillForRun(tabId, mode);
 
     const provider = this.providerManager.getActive();
 
@@ -9642,6 +9711,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     await this._manageContext(tabId, messages, onUpdate, costState);
 
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
+    this._preactivateNyTimesSkillForRun(tabId, mode);
 
     const provider = this.providerManager.getActive();
 

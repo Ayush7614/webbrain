@@ -225,7 +225,9 @@ new default IDs can still be migrated into existing installations.
 - Prompt instructions: `buildCustomSkillsPrompt()` strips both metadata and
   `webbrain-tools` fences, then appends full prose only for skills activated on
   the current run. Active IDs reset before the next user turn. Trusted
-  recommended actions can preactivate the skill that owns their first tool.
+  recommended actions can preactivate the skill that owns their first tool;
+  NYTimes adapter runs narrowly preactivate FreeSkillz so its site-scoped,
+  read-only article fallback is ready after a structured blocking `pageGate`.
 - Tool exposure: `buildSkillToolDefinitions()` reads manifests only from active
   skills and appends compatible schemas to `getToolsForMode(...)` at LLM-call
   time, respecting mode, tier, and site adapter. Download-job tools remain
@@ -239,8 +241,8 @@ continue to override OTP disclosure guidance.
 
 #### How a skill is selected
 
-There is no separate keyword matcher, URL router, embedding search, or local
-classifier for ordinary skill selection. The planner and active execution LLM
+There is no separate keyword matcher, embedding search, or local classifier for
+ordinary skill selection. The planner and active execution LLM
 make the semantic routing decision from the user's request and trusted
 conversation context using the same small catalog. The planner returns
 validated `skill_ids`; after approval the runtime activates those skills before
@@ -267,12 +269,16 @@ The runtime flow is:
    without skill prose. The prior `load_skill` call remains in conversation
    history, so a follow-up can choose to load the skill again.
 
-Trusted recommended actions are the deterministic exception. Before the first
+Trusted recommended actions and the NYTimes site-scoped article fallback are
+the deterministic exceptions. Before the first
 model call, `_preactivateRecommendedActionSkill()` looks up the skill that owns
 the action's trusted `firstTool` or `tool` and activates that skill. For example,
 the media-download recommendation preactivates FreeSkillz because it owns
 `download_public_media`; the YouTube-summary recommendation does the same for
-`read_youtube_transcript`.
+`read_youtube_transcript`. On a NYTimes/The Athletic tab, the runtime also
+preactivates enabled FreeSkillz for that run; only a structured blocking
+`pageGate` adds the trusted instruction to call `fetch_nytimes_article`, so raw
+page prose cannot spoof fallback routing.
 
 Single public-media downloads have a second deterministic guard. If the model
 calls `download_social_media` while an eligible inactive skill owns

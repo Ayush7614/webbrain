@@ -147,7 +147,10 @@ Full skill instructions and compatible tool schemas are sent only after
 before the next user turn. Compact sends no skill catalog, prose, or tools. Ask
 catalogs only explicitly Ask-compatible skills and still filters out mutating
 or download tools. Trusted recommended actions may preactivate their owning
-skill, such as FreeSkillz for `download_public_media`.
+skill, such as FreeSkillz for `download_public_media`. NYTimes/The Athletic
+tabs also preactivate the enabled FreeSkillz skill for the current run so a
+structured blocking `pageGate` can expose its site-scoped read-only fallback
+without a second `load_skill` turn.
 
 Trace records store the WebBrain version that created each run. Conversation
 Markdown records the exporting version; trace Markdown records both the
@@ -157,15 +160,18 @@ Legacy runs without recording metadata are labeled as version unavailable.
 
 The "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) is explicitly Ask/Act
 compatible and declares
-`read_youtube_transcript`, `resolve_public_media`, and
+`read_youtube_transcript`, `fetch_nytimes_article`, `resolve_public_media`, and
 `download_public_media` tools. When the model calls one of those tools,
 WebBrain sends only the current or model-provided URL, plus declared options
 such as transcript language, media kind, maximum height, or filename hint, to
 the declared `https://freeskillz.xyz` endpoint over HTTPS — a first-party
 service operated by the extension's developer, separate from the user's
-configured LLM provider. The transcript tool is limited to YouTube/youtu.be
-URLs, while the media tools are limited to public media hosts declared in the
-skill manifest. The read-only transcript and resolver tools do not require
+configured LLM provider. The article fallback is limited to allowlisted
+`nytimes.com` URLs (including The Athletic paths) and sends only that URL
+without browser credentials or cookies. The transcript tool is limited to
+YouTube/youtu.be URLs, while the media tools are limited to public media hosts
+declared in the skill manifest. The read-only article, transcript, and resolver
+tools do not require
 `/allow-api`; `download_public_media` is available only in action modes and
 requires download permission because it creates a short-lived provider job,
 saves the completed file through the browser Downloads API, and then asks the
