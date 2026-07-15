@@ -1,7 +1,7 @@
 import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID, SYSTEM_PROMPT_DEV_APPENDIX } from './tools.js';
 import { handleDoneJson } from './cloud-output.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
-import { isCredentialField, CREDENTIAL_NOTE_STRICT } from './credential-fields.js';
+import { isCredentialField, CREDENTIAL_NOTE_STRICT, STRICT_SECRET_SYSTEM_NOTE } from './credential-fields.js';
 import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isBlockedLedgerDowngrade, isTerminalLedgerStatus, isValidLedgerStatus, ledgerDoneBlock, normalizeLedgerStatus, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
 import { buildGithubStargazerProgressItems } from './observers/github-stargazers.js';
 import { analyzeMastodonPage, mastodonHandoffInstruction, mastodonProgressGuard } from './observers/mastodon.js';
@@ -42,7 +42,7 @@ import {
 } from './planner.js';
 import { extractFirstJsonObject } from './json-extract.js';
 import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
-import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
+import { buildCustomSkillsPrompt, buildSkillLoaderDefinition, buildSkillToolDefinitions, buildSkillToolRegistry, getEligibleCustomSkills, normalizeCustomSkills } from './skills.js';
 import { publicMediaUrlNeedsExplicitTarget } from './public-media-url.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
@@ -123,6 +123,7 @@ export class Agent {
     this.profileEnabled = false;
     this.profileText = '';
     this.customSkills = [];
+    this.activeSkillIds = new Map(); // tabId -> skill ids loaded only for the current run
     this.userMemoryEnabled = true;
     this.userMemoryRecords = [];
     this.userMemoryMaxPromptChars = USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS;
@@ -1265,7 +1266,7 @@ export class Agent {
   async _downloadPublicMediaRedirectForSocial(tabId, fnName, fnArgs, allowedToolNames, messages) {
     if (fnName !== 'download_social_media') return null;
     if (!allowedToolNames?.has?.('download_public_media')) return null;
-    if (!this._skillToolForName('download_public_media')) return null;
+    if (!this._activeSkillToolForName(tabId, 'download_public_media')) return null;
     if (fnArgs?.scroll === true || fnArgs?.mode === 'all' || Number(fnArgs?.limit || 0) > 1) return null;
 
     const currentUrl = await this._currentUrl(tabId);
@@ -1752,7 +1753,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // anchor). Read-only tools map to null and pass straight through.
       // A call may require MORE THAN ONE capability — e.g. set_field({submit})
       // both types AND submits, so it needs a TYPE grant and a CLICK grant.
-      const skillCallTool = this._skillToolForName(fnName);
+      const skillCallTool = this._activeSkillToolForName(tabId, fnName);
       let capabilities = capabilitiesFor(fnName, fnArgs);
       if (skillCallTool?.requiresDownloadPermission && !capabilities.includes(Capability.DOWNLOAD)) {
         capabilities.push(Capability.DOWNLOAD);
@@ -4510,7 +4511,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * profile block. Base goes first so prompt-cache prefixes stay stable when
    * user toggles settings.
    */
-  _buildSystemPrompt(mode) {
+  _buildSystemPrompt(mode, tabId = null) {
     let prompt = this._isActionMode(mode) ? this._getActPrompt() : SYSTEM_PROMPT_ASK;
     if (mode === 'dev') {
       prompt += `\n\n${SYSTEM_PROMPT_DEV_APPENDIX.trim()}`;
@@ -4518,7 +4519,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (this.useSiteAdapters) {
       prompt += `\n\n${UNIVERSAL_PREAMBLE.trim()}`;
     }
-    const skillsPrompt = buildCustomSkillsPrompt(this.customSkills);
+    const tier = this._resolvePromptTier();
+    const skillsPrompt = buildCustomSkillsPrompt(this.customSkills, {
+      mode,
+      tier,
+      activeSkillIds: tabId == null ? new Set() : (this.activeSkillIds.get(tabId) || new Set()),
+    });
     if (skillsPrompt) {
       prompt += `\n\n${skillsPrompt}`;
     }
@@ -4533,6 +4539,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     if (this.captchaSolverEnabled) {
       prompt += `\n\n[CAPTCHA SOLVER — the user has configured CapSolver. When a CAPTCHA blocks a step, call \`solve_captcha\` once (with no arguments — it auto-detects reCAPTCHA v2/v3, hCaptcha, and Cloudflare Turnstile). On success, click the form's submit button and continue. On failure, ask the user to solve it manually — do not retry solve_captcha repeatedly.]`;
+    }
+    // Keep this last so the opt-in strict setting overrides loaded skills,
+    // including read-only workflows that discover a secret before set_field
+    // has a chance to emit CREDENTIAL_NOTE_STRICT.
+    if (this.strictSecretMode) {
+      prompt += `\n\n${STRICT_SECRET_SYSTEM_NOTE}`;
     }
     return prompt;
   }
@@ -4558,8 +4570,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return this.lastSeenAdapter.get(tabId) || '';
   }
 
-  _skillToolDefinitions(mode, tier, siteAdapter = '') {
-    return buildSkillToolDefinitions(this.customSkills, {
+  _eligibleSkills(mode, tier) {
+    return getEligibleCustomSkills(this.customSkills, { mode, tier: tier || 'full' });
+  }
+
+  _activeSkillRecords(tabId, mode, tier) {
+    const activeIds = this.activeSkillIds.get(tabId) || new Set();
+    if (activeIds.size === 0) return [];
+    return this._eligibleSkills(mode, tier).filter((skill) => activeIds.has(skill.id));
+  }
+
+  _skillLoaderDefinition(mode, tier) {
+    return buildSkillLoaderDefinition(this.customSkills, { mode, tier: tier || 'full' });
+  }
+
+  _skillToolDefinitions(tabId, mode, tier, siteAdapter = '') {
+    return buildSkillToolDefinitions(this._activeSkillRecords(tabId, mode, tier), {
       mode,
       tier: tier || 'full',
       siteAdapter,
@@ -4578,6 +4604,88 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return this._skillToolRegistry().get(name) || null;
   }
 
+  _activeSkillToolForName(tabId, name) {
+    if (!name) return null;
+    const mode = this.conversationModes.get(tabId) || 'ask';
+    const tier = this._resolvePromptTier();
+    const skills = this._activeSkillRecords(tabId, mode, tier);
+    const allowed = buildSkillToolDefinitions(skills, {
+      mode,
+      tier,
+      siteAdapter: this._activeSkillSiteAdapter(tabId),
+      excludeNames: RESERVED_AGENT_TOOL_NAMES,
+    }).some((tool) => tool.function?.name === name);
+    if (!allowed) return null;
+    return buildSkillToolRegistry(skills, {
+      excludeNames: RESERVED_AGENT_TOOL_NAMES,
+    }).get(name) || null;
+  }
+
+  _activateSkillForRun(tabId, skillId, mode, tier) {
+    const skill = this._eligibleSkills(mode, tier).find((item) => item.id === skillId);
+    if (!skill) return { skill: null, alreadyLoaded: false };
+    const activeIds = this.activeSkillIds.get(tabId) || new Set();
+    const alreadyLoaded = activeIds.has(skill.id);
+    activeIds.add(skill.id);
+    this.activeSkillIds.set(tabId, activeIds);
+    return { skill, alreadyLoaded };
+  }
+
+  _loadSkillForRun(tabId, args = {}) {
+    const mode = this.conversationModes.get(tabId) || 'ask';
+    const tier = this._resolvePromptTier();
+    const skillId = String(args.skill_id || '').trim();
+    const { skill, alreadyLoaded } = this._activateSkillForRun(tabId, skillId, mode, tier);
+    if (!skill) {
+      return {
+        success: false,
+        denied: true,
+        error: tier === 'compact'
+          ? 'Skills are unavailable for Compact-tier providers.'
+          : `Skill ${skillId || '(missing id)'} is not enabled or available in ${mode} mode.`,
+      };
+    }
+    const messages = this.conversations.get(tabId);
+    if (messages?.[0]?.role === 'system') {
+      messages[0].content = this._buildSystemPrompt(mode, tabId);
+    }
+    return {
+      success: true,
+      skillId: skill.id,
+      skillName: skill.name,
+      alreadyLoaded,
+      note: alreadyLoaded
+        ? 'This skill was already loaded for the current run.'
+        : 'The skill instructions are now in the system prompt; continue the user task with any newly exposed tools.',
+    };
+  }
+
+  _preactivateRecommendedActionSkill(tabId, runOptions, mode) {
+    const action = runOptions?.recommendedAction;
+    if (!action || typeof action !== 'object') return;
+    const tier = this._resolvePromptTier();
+    if (tier === 'compact') return;
+    const names = [action.firstTool, action.tool]
+      .map((name) => String(name || '').trim())
+      .filter(Boolean);
+    if (!names.length) return;
+    const eligible = this._eligibleSkills(mode, tier);
+    for (const name of names) {
+      const owner = eligible.find((skill) => (skill.tools || []).some((tool) => tool.name === name));
+      if (owner) this._activateSkillForRun(tabId, owner.id, mode, tier);
+    }
+  }
+
+  _resetActiveSkillsForRun(tabId, { refreshPrompt = true } = {}) {
+    this.activeSkillIds.delete(tabId);
+    if (!refreshPrompt) return;
+    const messages = this.conversations.get(tabId);
+    if (messages?.[0]?.role !== 'system') return;
+    const mode = this.conversationModes.get(tabId) || 'ask';
+    messages[0].content = this._buildSystemPrompt(mode, tabId);
+    this._persist(tabId);
+  }
+
   _skillPermissionArgsForCapability(skillTool, capability, args) {
     if (capability !== Capability.DOWNLOAD || !skillTool?.requiresDownloadPermission) return args;
     const inputUrlArg = skillTool.inputUrlArg || 'url';
@@ -4587,7 +4695,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return { ...args, url: inputUrl };
   }
 
-  _skillToolForEndpoint(url, siteAdapter = '') {
+  _skillToolForEndpoint(url, siteAdapter = '', tabId = null) {
     if (!url) return null;
     let target;
     try {
@@ -4597,8 +4705,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return null;
     }
     const normalizePath = (value) => String(value || '/').replace(/\/+$/, '') || '/';
-    for (const tool of this._skillToolRegistry().values()) {
+    const registry = tabId == null
+      ? this._skillToolRegistry()
+      : buildSkillToolRegistry(this._activeSkillRecords(
+        tabId,
+        this.conversationModes.get(tabId) || 'ask',
+        this._resolvePromptTier(),
+      ), { excludeNames: RESERVED_AGENT_TOOL_NAMES });
+    for (const tool of registry.values()) {
       if (!tool || !tool.endpoint) continue;
+      if (tabId != null && !this._activeSkillToolForName(tabId, tool.name)) continue;
       if (Array.isArray(tool.siteAdapters) && tool.siteAdapters.length > 0) {
         const activeAdapter = String(siteAdapter || '').toLowerCase();
         if (!activeAdapter || !tool.siteAdapters.includes(activeAdapter)) continue;
@@ -4624,7 +4740,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _skillEndpointToolRedirect(name, args, tabId = null) {
     if (name !== 'fetch_url' && name !== 'research_url') return null;
-    const skillTool = this._skillToolForEndpoint(args?.url, this._activeSkillSiteAdapter(tabId));
+    const skillTool = this._skillToolForEndpoint(args?.url, this._activeSkillSiteAdapter(tabId), tabId);
     if (!skillTool) return null;
     return {
       success: false,
@@ -4644,14 +4760,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     for (const [tabId, messages] of this.conversations) {
       if (!messages || messages[0]?.role !== 'system') continue;
       const mode = this.conversationModes.get(tabId) || this._conversationMode || 'ask';
-      messages[0].content = this._buildSystemPrompt(mode);
+      messages[0].content = this._buildSystemPrompt(mode, tabId);
     }
   }
 
   getConversation(tabId, mode = 'ask') {
     if (!this.conversations.has(tabId)) {
       this.conversations.set(tabId, [
-        { role: 'system', content: this._buildSystemPrompt(mode) },
+        { role: 'system', content: this._buildSystemPrompt(mode, tabId) },
       ]);
       this.conversationModes.set(tabId, mode);
       this._conversationMode = mode;
@@ -4673,7 +4789,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (messages[0]?.role === 'system') {
       // Provider settings can change while a tab conversation stays alive.
       // Rebuild on reuse so the prompt matches the current provider's tools.
-      const nextPrompt = this._buildSystemPrompt(mode);
+      const nextPrompt = this._buildSystemPrompt(mode, tabId);
       if (messages[0].content !== nextPrompt) messages[0].content = nextPrompt;
     }
     return messages;
@@ -4716,6 +4832,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.mastodonStates.delete(tabId);
     this.lastAutoScreenshotTs.delete(tabId);
     this.lastSeenAdapter.delete(tabId);
+    this.activeSkillIds.delete(tabId);
     this._doneBlockCount.delete(tabId);
     this._recentSubmitClicks.delete(tabId);
     if (!preserveRunGuard) {
@@ -4970,7 +5087,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       } else if (name === 'download_social_media') {
         const n = Number(result.completedCount || 0);
         if (n > 0) this._autoScratchpadNote(tabId, `[auto] download_social_media saved ${n} file(s) — find their ids/paths via list_downloads.`);
-      } else if (this._skillToolForName(name)?.requiresDownloadPermission) {
+      } else if (this._activeSkillToolForName(tabId, name)?.requiresDownloadPermission) {
         this._pinDownloadId(tabId, result.downloadId);
       }
     } catch { /* best-effort */ }
@@ -7336,6 +7453,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   async executeTool(tabId, name, args, onUpdate = null) {
+    if (name === 'load_skill') {
+      return this._loadSkillForRun(tabId, args || {});
+    }
     if (name === 'done_json') {
       return handleDoneJson(this.cloudRunContexts.get(tabId), args);
     }
@@ -7753,7 +7873,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // attach the user's cookies only for fetches that share the registrable
     // domain (eTLD+1) of the active tab — see network-tools.js for cookie &
     // redirect policy.
-    const skillTool = this._skillToolForName(name);
+    const skillTool = this._activeSkillToolForName(tabId, name);
     if (skillTool) {
       return await executeHttpSkillTool(skillTool, args, { tabId });
     }
@@ -8844,6 +8964,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (this._runningTabs.has(tabId)) {
       throw new Error('An agent run is already in progress for this tab.');
     }
+    this._resetActiveSkillsForRun(tabId, { refreshPrompt: false });
     this._clearLoopState(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
@@ -8854,6 +8975,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageInner(tabId, userMessage, onUpdate, mode, attachments, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
+      this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {
         if (previousCloudContext) this.cloudRunContexts.set(tabId, previousCloudContext);
         else this.cloudRunContexts.delete(tabId);
@@ -8921,6 +9043,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _processMessageInner(tabId, userMessage, onUpdate, mode, attachments = [], runOptions = {}) {
     await this._hydrate(tabId);
+    this._preactivateRecommendedActionSkill(tabId, runOptions, mode);
     const messages = this.getConversation(tabId, mode);
     // Scheduled resumes get the live ledger appended at fire time, so the
     // model's first turn sees current row state even if it never calls
@@ -9004,11 +9127,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
     const tier = provider.promptTier;
-    let skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
+    let skillTools = this._skillToolDefinitions(tabId, mode, tier, this._activeSkillSiteAdapter(tabId));
     const cloudRunContext = this.cloudRunContexts.get(tabId) || null;
     let tools = getToolsForMode(mode, {
       strictSecretMode: this.strictSecretMode,
       tier,
+      skillLoaderTool: this._skillLoaderDefinition(mode, tier),
       skillTools,
       cloudRun: !!cloudRunContext,
       outputSchema: cloudRunContext?.outputSchema || null,
@@ -9052,10 +9176,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         await this._maybeReinjectAdapter(tabId, messages);
       }
 
-      skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
+      skillTools = this._skillToolDefinitions(tabId, mode, tier, this._activeSkillSiteAdapter(tabId));
       tools = getToolsForMode(mode, {
         strictSecretMode: this.strictSecretMode,
         tier,
+        skillLoaderTool: this._skillLoaderDefinition(mode, tier),
         skillTools,
         cloudRun: !!cloudRunContext,
         outputSchema: cloudRunContext?.outputSchema || null,
@@ -9316,6 +9441,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (this._runningTabs.has(tabId)) {
       throw new Error('An agent run is already in progress for this tab.');
     }
+    this._resetActiveSkillsForRun(tabId, { refreshPrompt: false });
     this._clearLoopState(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
@@ -9326,6 +9452,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageStreamInner(tabId, userMessage, onUpdate, mode, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
+      this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {
         if (previousCloudContext) this.cloudRunContexts.set(tabId, previousCloudContext);
         else this.cloudRunContexts.delete(tabId);
@@ -9337,6 +9464,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _processMessageStreamInner(tabId, userMessage, onUpdate, mode, runOptions = {}) {
     await this._hydrate(tabId);
+    this._preactivateRecommendedActionSkill(tabId, runOptions, mode);
     const messages = this.getConversation(tabId, mode);
     const costState = this._newCostRunState();
     this.currentCostState.set(tabId, costState);
@@ -9396,11 +9524,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
     const tier = provider.promptTier;
-    let skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
+    let skillTools = this._skillToolDefinitions(tabId, mode, tier, this._activeSkillSiteAdapter(tabId));
     const cloudRunContext = this.cloudRunContexts.get(tabId) || null;
     let tools = getToolsForMode(mode, {
       strictSecretMode: this.strictSecretMode,
       tier,
+      skillLoaderTool: this._skillLoaderDefinition(mode, tier),
       skillTools,
       cloudRun: !!cloudRunContext,
       outputSchema: cloudRunContext?.outputSchema || null,
@@ -9432,10 +9561,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         await this._maybeReinjectAdapter(tabId, messages);
       }
 
-      skillTools = this._skillToolDefinitions(mode, tier, this._activeSkillSiteAdapter(tabId));
+      skillTools = this._skillToolDefinitions(tabId, mode, tier, this._activeSkillSiteAdapter(tabId));
       tools = getToolsForMode(mode, {
         strictSecretMode: this.strictSecretMode,
         tier,
+        skillLoaderTool: this._skillLoaderDefinition(mode, tier),
         skillTools,
         cloudRun: !!cloudRunContext,
         outputSchema: cloudRunContext?.outputSchema || null,

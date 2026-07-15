@@ -476,7 +476,7 @@ export default {
   'st.providers.webbrain_note.body': 'Free daily WebBrain Cloud usage is included. Requests go through api.webbrain.one; by default we log metadata for quota and debugging, not prompt text, page content, screenshots, or model responses. {privacyLink}. For more usage, subscribe at {subscribeLink}. Manage billing at {accountLink}.',
   'st.providers.webbrain_note.privacy_link': 'Privacy policy',
 
-  'st.skills.desc_html': 'Skills can append instructions to WebBrain\'s main system prompt and expose tools when they include a <code>webbrain-tools</code> manifest. FreeSkillz.xyz is enabled by default and can be removed from the list below.',
+  'st.skills.desc_html': 'Enabled skills are available on demand in Mid and Full tiers; Compact does not load skills. A small catalog sends only each eligible skill\'s name and summary. Full instructions and compatible <code>webbrain-tools</code> are exposed only after WebBrain loads a relevant skill for the current run. Optional <code>webbrain-skill</code> metadata controls the summary and Ask/Act compatibility.',
   'st.skills.name.label': 'Name (optional)',
   'st.skills.name.placeholder': 'e.g. GitHub triage style',
   'st.skills.url.label': 'Skill URL',
@@ -501,7 +501,7 @@ export default {
   'st.skills.remove': 'Remove',
   'st.skills.preview.rendered': 'Preview',
   'st.skills.preview.raw': 'Raw',
-  'st.skills.security_html': '<strong>Heads-up:</strong> custom skills are stored in plaintext in browser local storage and sent to your configured LLM provider as part of the system prompt. Imported skill tools can send their declared inputs to their declared HTTPS endpoints without per-call confirmation; download tools still ask through the normal Downloads permission gate before saving files. Only import tools you trust; remote content is copied into storage at import time.',
+  'st.skills.security_html': '<strong>Heads-up:</strong> custom skills are stored in plaintext in browser local storage. In Mid/Full tiers, eligible names and summaries are sent to your configured LLM provider as a small loader catalog; a skill\'s full instructions are sent only after it is loaded for the current run. Imported skill tools can then send their declared inputs to their declared HTTPS endpoints without per-call confirmation; download tools still ask through the normal Downloads permission gate before saving files. Only import tools you trust; remote content is copied into storage at import time.',
   'st.skills.error.url': 'Enter a valid http(s) URL.',
   'st.skills.error.empty_text': 'Paste skill text first.',
   'st.skills.error.empty_content': 'No usable skill text found.',

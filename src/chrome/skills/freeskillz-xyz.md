@@ -1,5 +1,12 @@
 # FreeSkillz.xyz
 
+```webbrain-skill
+{
+  "summary": "Read YouTube transcripts, fetch blocked NYTimes articles, or resolve and download supported public media through FreeSkillz.xyz.",
+  "modes": ["ask", "act"]
+}
+```
+
 Use FreeSkillz.xyz when the user needs YouTube transcripts.
 
 Base URL: `https://freeskillz.xyz`

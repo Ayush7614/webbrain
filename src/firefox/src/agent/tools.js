@@ -879,7 +879,7 @@ export const ASK_ONLY_TOOLS = [
  */
 export const AGENT_TOOL_NAMES = new Set(AGENT_TOOLS.map(t => t.function.name));
 export const RETIRED_AGENT_TOOL_NAMES = new Set(['screenshot', 'full_page_screenshot', 'record_tab', 'stop_recording']);
-export const RESERVED_AGENT_TOOL_NAMES = new Set([...AGENT_TOOL_NAMES, ...RETIRED_AGENT_TOOL_NAMES, 'done_json']);
+export const RESERVED_AGENT_TOOL_NAMES = new Set([...AGENT_TOOL_NAMES, ...RETIRED_AGENT_TOOL_NAMES, 'done_json', 'load_skill']);
 export const DEV_ONLY_TOOL_NAMES = new Set(['read_page_source', 'inspect_element_styles', 'execute_js']);
 export const DEV_EXTENDED_TOOL_NAMES = new Set([
   ...DEV_ONLY_TOOL_NAMES,
@@ -1005,6 +1005,9 @@ export function getToolsForMode(mode, opts = {}) {
     const seen = new Set(base.map(t => t.function?.name).filter(Boolean));
     const devTools = AGENT_TOOLS.filter(t => DEV_EXTENDED_TOOL_NAMES.has(t.function.name) && !seen.has(t.function.name));
     base = [...base, ...devTools];
+  }
+  if (!devCompactBlocked && tier !== 'compact' && opts.skillLoaderTool?.function?.name === 'load_skill') {
+    base = [...base, opts.skillLoaderTool];
   }
   if (!devCompactBlocked && Array.isArray(opts.skillTools) && opts.skillTools.length) {
     const seen = new Set([...RESERVED_AGENT_TOOL_NAMES, ...base.map(t => t.function?.name).filter(Boolean)]);

@@ -4,6 +4,18 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [23.2.2] - 2026-07-15
+
+### Changed
+- Made enabled skills available on demand: Mid/Full Ask, Act, and Dev runs receive a small eligible name/summary catalog, full instructions and compatible tools load only for the current relevant run, and Compact exposes no skill surface.
+- Added optional prompt-stripped `webbrain-skill` metadata for capped summaries and explicit Ask/Act compatibility while preserving existing skill storage and `webbrain-tools` manifests.
+
+### Fixed
+- Replaced ambiguous Content-Disposition filename matching in Chrome and Firefox public-media downloads with a bounded single-pass parameter parser that preserves RFC 5987 precedence and fails closed on malformed quoted values.
+
+### Tests
+- Added mirrored coverage for skill catalog eligibility, activation isolation and reset, strict-secret ordering, recommended-action preactivation, and adversarial Content-Disposition filename parsing.
+
 ## [23.2.0] - 2026-07-14
 
 ### Added

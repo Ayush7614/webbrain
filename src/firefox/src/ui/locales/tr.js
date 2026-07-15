@@ -33,7 +33,7 @@ export default {
   'st.perms.clear_all': "Tüm izinleri temizle",
   'st.perms.gate.label': "Önemli işlemlerden önce sor",
 
-  'st.skills.desc_html': 'Skill\'ler WebBrain ana sistem istemine talimat ekleyebilir ve <code>webbrain-tools</code> manifesti içeriyorsa agent\'a tool expose edebilir. FreeSkillz.xyz varsayılan olarak etkin gelir ve aşağıdaki listeden kaldırılabilir. Download tool\'ları dosya kaydetmeden önce normal izin akışını kullanır.',
+  'st.skills.desc_html': 'Etkin skill\'ler Mid ve Full katmanlarında isteğe bağlı olarak yüklenir; Compact skill yüklemez. Küçük katalog yalnızca uygun skill\'lerin adını ve özetini gönderir. Tam talimatlar ve uyumlu <code>webbrain-tools</code> araçları, WebBrain ilgili skill\'i o çalışma için yükledikten sonra sunulur. İsteğe bağlı <code>webbrain-skill</code> metadatası özeti ve Ask/Act uyumluluğunu belirler.',
   'st.skills.name.label': 'Ad (isteğe bağlı)',
   'st.skills.name.placeholder': 'örn. GitHub triage tarzı',
   'st.skills.url.label': 'Skill URL\'si',
@@ -58,7 +58,7 @@ export default {
   'st.skills.remove': 'Kaldır',
   'st.skills.preview.rendered': 'Önizleme',
   'st.skills.preview.raw': 'Ham',
-  'st.skills.security_html': '<strong>Dikkat:</strong> özel skill\'ler tarayıcı yerel depolamasında düz metin olarak saklanır ve sistem isteminin parçası olarak yapılandırdığın LLM sağlayıcısına gönderilir. İçe aktarılan skill tool\'ları çağrı başına tekrar onay istemeden beyan edilen girdileri beyan edilen HTTPS endpoint\'lerine gönderebilir; download tool\'ları dosya kaydetmeden önce normal Downloads izin akışını kullanır. Yalnızca güvendiğin tool\'ları içe aktar; uzak içerik içe aktarma sırasında depoya kopyalanır.',
+  'st.skills.security_html': '<strong>Dikkat:</strong> özel skill\'ler tarayıcı yerel depolamasında düz metin olarak saklanır. Mid/Full katmanlarında uygun adlar ve özetler küçük bir yükleyici kataloğu olarak yapılandırdığın LLM sağlayıcısına gönderilir; tam talimatlar yalnızca skill o çalışma için yüklendikten sonra gönderilir. İçe aktarılan skill tool\'ları daha sonra, çağrı başına tekrar onay istemeden beyan edilen girdileri beyan edilen HTTPS endpoint\'lerine gönderebilir; download tool\'ları dosya kaydetmeden önce normal Downloads izin akışını kullanır. Yalnızca güvendiğin tool\'ları içe aktar; uzak içerik içe aktarma sırasında depoya kopyalanır.',
   'st.skills.error.url': 'Geçerli bir http(s) URL gir.',
   'st.skills.error.empty_text': 'Önce skill metni yapıştır.',
   'st.skills.error.empty_content': 'Kullanılabilir skill metni bulunamadı.',

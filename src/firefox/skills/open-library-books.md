@@ -1,5 +1,12 @@
 # Open Library
 
+```webbrain-skill
+{
+  "summary": "Find book details, ISBN records, authors, and publication information with Open Library.",
+  "modes": ["ask", "act"]
+}
+```
+
 Use this skill when the user asks to find book details, ISBN lookups, author searches, or publication info while browsing or researching.
 
 Provider: Open Library (`https://openlibrary.org`) — free, no API key.

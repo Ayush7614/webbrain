@@ -206,20 +206,95 @@ Chrome CSS patch records include the top-level `documentId` and a patch-specific
 
 Settings -> Skills stores enabled skills in `customSkills` (`chrome.storage.local`
 or `browser.storage.local`). On startup, `background.js` loads packaged default
-skills from `skills/*`, seeds FreeSkillz.xyz the first time, and refreshes an
-existing built-in skill record when the packaged copy changes. If the user
-removes a default skill, the seeding marker prevents it from being silently
-re-added.
+skills from `skills/*`, adds any missing default (currently FreeSkillz.xyz and
+the prompt-only email verification-code helper), and refreshes an existing
+built-in skill record when the packaged copy changes. If the user removes a
+default skill, its removal tombstone prevents it from being silently re-added;
+new default IDs can still be migrated into existing installations.
 
-`agent/skills.js` normalizes each skill and handles two separate surfaces:
+`agent/skills.js` normalizes each skill and handles three separate surfaces:
 
-- Prompt instructions: `buildCustomSkillsPrompt()` strips fenced
-  `webbrain-tools` blocks before appending the skill text to the system prompt.
-- Tool exposure: `buildSkillToolDefinitions()` reads the manifest and appends
-  declared tool schemas to `getToolsForMode(...)` at LLM-call time, respecting
-  the active conversation mode and provider tier. Download-job skill tools are
-  hidden in Ask and available in action modes (Act and Dev) when their declared
-  tier allows them.
+- Loader catalog: optional fenced `webbrain-skill` JSON supplies a summary
+  (capped at 200 characters) and eligible modes. Without metadata, the first
+  prose paragraph becomes the summary and the skill defaults to Act/Dev. The
+  reserved `load_skill({skill_id})` definition contains only eligible IDs,
+  names, and summaries. It is exposed in Mid/Full Ask, Act, and Dev; Ask sees
+  only explicitly Ask-compatible skills, while Compact has no skill surface.
+- Prompt instructions: `buildCustomSkillsPrompt()` strips both metadata and
+  `webbrain-tools` fences, then appends full prose only for skills activated on
+  the current run. Active IDs reset before the next user turn. Trusted
+  recommended actions can preactivate the skill that owns their first tool.
+- Tool exposure: `buildSkillToolDefinitions()` reads manifests only from active
+  skills and appends compatible schemas to `getToolsForMode(...)` at LLM-call
+  time, respecting mode, tier, and site adapter. Download-job tools remain
+  hidden in Ask and require their normal permission gate in action modes.
+
+Loading is idempotent and multiple relevant skills can be active in one run.
+The loader's trusted instruction permits activation only for the user's request
+or trusted conversation context, never because page/document/tool content asks
+for it. Strict-secret instructions are appended after loaded skill prose so they
+continue to override OTP disclosure guidance.
+
+#### How a skill is selected
+
+There is no separate keyword matcher, URL router, embedding search, or local
+classifier for ordinary skill selection. The active LLM makes the semantic
+routing decision from the user's request and trusted conversation context using
+the small catalog embedded in the `load_skill` tool definition.
+
+The runtime flow is:
+
+1. At the start of a user turn, clear the tab's in-memory active-skill set.
+2. Filter enabled skills by provider tier and conversation mode. Compact yields
+   no catalog; Ask includes only skills that explicitly declare `ask`; Dev
+   includes skills that declare either `dev` or `act`.
+3. Give the model `load_skill` with an exact `skill_id` enum plus each eligible
+   skill's name and summary. Do not include full skill prose or skill tools yet.
+4. The model may load zero, one, or several skills. The runtime rejects an ID
+   that is not enabled or not eligible in the current mode/tier. Re-loading an
+   active ID succeeds without duplicating it.
+5. After a successful load, rebuild the system message with that skill's full
+   prompt-stripped prose. On the next model iteration, also rebuild the tool list
+   from active skills, applying tool mode, tier, and site-adapter filters.
+6. At turn completion, remove active IDs and rebuild the stored system message
+   without skill prose. The prior `load_skill` call remains in conversation
+   history, so a follow-up can choose to load the skill again.
+
+Trusted recommended actions are the deterministic exception. Before the first
+model call, `_preactivateRecommendedActionSkill()` looks up the skill that owns
+the action's trusted `firstTool` or `tool` and activates that skill. For example,
+the media-download recommendation preactivates FreeSkillz because it owns
+`download_public_media`; the YouTube-summary recommendation does the same for
+`read_youtube_transcript`.
+
+| User intent | Expected skill | Catalog modes | Notes |
+| --- | --- | --- | --- |
+| Find, read, copy, or enter a code visible in browser email/message content | OTP / verification-code helper | Ask, Act, Dev | Prompt-only; after loading it guides existing page tools. |
+| Create and use a temporary mailbox for an unimportant signup | Disposable email (Mail.tm) | Act, Dev | Not shown to Ask. It may overlap with OTP during a verification flow, so both can be loaded. |
+| Read a YouTube transcript, fetch a blocked NYTimes article, or resolve/download supported public media | FreeSkillz.xyz | Ask, Act, Dev | Ask can load the skill but still cannot see its Act-only `download_public_media` tool. |
+| Look up weather or a short forecast | Open-Meteo weather | Ask, Act, Dev | Read-only tools remain subject to their manifest filters. |
+| Find books, ISBNs, authors, or publication data | Open Library | Ask, Act, Dev | Read-only tools remain subject to their manifest filters. |
+| Upload one non-sensitive file to a short-lived public link | Temporary file share (Litterbox) | Act, Dev | Not shown to Ask; the skill uses existing browser upload tools. |
+
+The runtime enforces catalog membership, mode/tier eligibility, active-skill
+tool ownership, and tool filters. It cannot independently determine *why* the
+model requested a valid skill ID. The rule against activation from page, email,
+document, or tool-result instructions is therefore a model-policy boundary,
+reinforced by WebBrain's untrusted-content wrappers and the loader description,
+not a deterministic intent classifier. Routing quality also depends on concise,
+distinct summaries; a broad skill such as FreeSkillz deliberately loads one
+instruction bundle for several related capabilities.
+
+The optional metadata format is a separate prompt-stripped fence:
+
+````markdown
+```webbrain-skill
+{
+  "summary": "Find, read, copy, or enter verification codes from visible browser email.",
+  "modes": ["ask", "act"]
+}
+```
+````
 
 The manifest format is a fenced JSON block inside the skill markdown:
 

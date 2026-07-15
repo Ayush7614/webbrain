@@ -1,5 +1,12 @@
 # Temporary file share (Litterbox)
 
+```webbrain-skill
+{
+  "summary": "Upload one non-sensitive file to a short-lived public Litterbox link without creating an account.",
+  "modes": ["act"]
+}
+```
+
 Use this skill when the user wants to share a non-sensitive file quickly and does not want to create an account anywhere. It uploads one file to a short-lived, no-account host and returns a public link that expires on its own.
 
 Default provider: Litterbox (`https://litterbox.catbox.moe`). No account, no API key, and no sign-in are required.

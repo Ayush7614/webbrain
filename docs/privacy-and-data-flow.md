@@ -122,7 +122,7 @@ The only outbound HTTP requests are:
 1. **LLM provider API calls** (to URLs the user configured)
 2. **CapSolver API calls** (if the user enables CAPTCHA solving)
 3. **Content fetches** via `fetch_url` / `research_url` tools (to URLs the agent is asked to fetch)
-4. **Skill tool calls** (to the HTTPS endpoint(s) declared by enabled skills — see "Bundled Skills" below for the one enabled by default)
+4. **Skill tool calls** (to the HTTPS endpoint(s) declared by network-capable enabled skills — see "Bundled Skills" below; the default email verification-code helper declares no endpoint)
 5. **User memory extraction calls** (only if auto-learn is enabled; sent to the configured LLM provider after a completed turn)
 6. **Encrypted Cloud Sync calls** to `https://api.webbrain.one/v1/sync` (only after a subscriber explicitly enables sync; vault content is encrypted before upload)
 7. **Slash-driven tab/screen recording** creates no outbound traffic (the .webm is saved to the Downloads folder via `chrome.downloads.download`)
@@ -133,9 +133,21 @@ the page already made so repeated UI mutations can be diagnosed.
 
 ### Bundled Skills
 
-A built-in "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) is seeded into
-Settings → Skills on first run, enabled by default, and can be removed there.
-It declares `read_youtube_transcript`, `resolve_public_media`, and
+Two built-in skills are enabled by default and can be removed independently in
+Settings → Skills. A removed default is remembered and is not silently restored.
+Enabled means available on demand, not injected into every request. Mid/Full
+runs send the configured LLM provider a small mode-eligible catalog containing
+skill IDs, names, and summaries (each summary is capped at 200 characters).
+Full skill instructions and compatible tool schemas are sent only after
+`load_skill` activates a relevant skill for the current run; active skills reset
+before the next user turn. Compact sends no skill catalog, prose, or tools. Ask
+catalogs only explicitly Ask-compatible skills and still filters out mutating
+or download tools. Trusted recommended actions may preactivate their owning
+skill, such as FreeSkillz for `download_public_media`.
+
+The "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) is explicitly Ask/Act
+compatible and declares
+`read_youtube_transcript`, `resolve_public_media`, and
 `download_public_media` tools. When the model calls one of those tools,
 WebBrain sends only the current or model-provided URL, plus declared options
 such as transcript language, media kind, maximum height, or filename hint, to
@@ -151,6 +163,25 @@ provider to delete the job. These calls do not send page content, chat history,
 or browsing history beyond the URL and declared tool arguments. Users can
 remove this skill, or any user-imported skill tool, from Settings → Skills to
 stop this data flow entirely.
+
+The "OTP / verification-code helper (email)" skill
+(`skills/otp-verification-code-helper.md`) is explicitly Ask/Act compatible,
+is prompt-only, and declares no external tool or endpoint. It guides WebBrain's
+existing page-reading tools to
+prefer selected text or a bounded, message-scoped accessibility-tree subtree on
+the active run tab when finding a recent, service-matching code. It cannot list
+or switch to background tabs, read SMS, phone notifications, native apps, or
+another device, and it forbids private mailbox APIs or sign-in bypasses. The
+skill itself creates no additional network request. When the user asks WebBrain
+to read a code, however, the scoped page content and extracted code are included
+in the normal request to the user's configured LLM provider as part of the
+current conversation. When Record traces is enabled, the raw page-reading tool
+result and model response are also retained locally in the `webbrain_traces`
+IndexedDB database until the user deletes those traces; the skill cannot erase
+conversation or trace history after use. Its instructions disclose that
+retention before reading, treat message content as untrusted, honor Strict
+secret handling, reject ambiguous numeric strings and recovery tokens, and
+prohibit intentionally copying the code into scratchpad or user memory.
 
 ---
 
@@ -237,7 +268,7 @@ CDP capture → JPEG/PNG data URL
 | Tracing toggle | Prevents any trace data from being stored |
 | Screenshot fallback | Controls whether page images are sent to the LLM |
 | Auto-screenshot mode | Controls how frequently viewport captures are sent |
-| Strict secret handling | Prevents credentials from appearing in summaries |
+| Strict secret handling | Prevents credentials discovered in chat or page reads from appearing in assistant text or completion summaries |
 | Profile auto-fill | Controls whether user profile text is sent to the LLM |
 | User memory | Controls whether saved memory records are sent to the LLM |
 | User memory auto-learn | Controls whether post-turn extractor calls run |

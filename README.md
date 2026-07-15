@@ -49,7 +49,7 @@
 - **Smart Context** — Token-aware auto-compaction (summarizes older turns once the conversation nears the model's context window, with a visible "Context automatically compacted" notice), tool result limits, and emergency overflow recovery
 - **Browser History Control** — Act mode can use native `go_back` / `go_forward` history tools instead of CSP-sensitive page JavaScript
 - **API Shortcut Hints** — Repeated clicks that fire the same XHR/fetch request can surface a matching `fetch_url` suggestion while preserving the UI-first and `/allow-api` mutation policy
-- **Custom Skills and Skill Tools** — Settings → Skills can import trusted skill text or URLs; skills may also expose HTTP or download-job tools through a `webbrain-tools` manifest. FreeSkillz.xyz is enabled by default for YouTube transcripts and public media downloads, and can be removed.
+- **On-demand Skills and Skill Tools** — Settings → Skills can import trusted skill text or URLs. Mid/Full runs receive a small eligible name/summary catalog and load full instructions plus compatible `webbrain-tools` only when relevant; Compact disables skills. FreeSkillz.xyz and the browser-only email verification-code helper are enabled by default, and either can be removed.
 - **Copy Support** — Copy buttons on code blocks and full messages
 - **Page Inspection Banner** — Visual indicator when the agent is interacting with the page
 - **Stop Button** — Abort the agent mid-execution at any time
@@ -144,8 +144,10 @@ Click the gear icon or go to the extension's Options page to configure:
 - When enabled, active memory records are sent to the configured LLM provider as part of the system prompt; optional auto-learning makes a best-effort provider call only after a turn completes.
 
 **Skills:**
-- FreeSkillz.xyz ships enabled by default and exposes `read_youtube_transcript`, `resolve_public_media`, and `download_public_media` through its skill manifest; remove it from Settings → Skills if you do not want those tools available.
-- Imported skills are copied into browser local storage and appended to the agent's system prompt when enabled.
+- FreeSkillz.xyz ships enabled by default and can expose `read_youtube_transcript`, `resolve_public_media`, and `download_public_media` through its skill manifest after it is loaded for a relevant run; remove it from Settings → Skills if you do not want it available.
+- The OTP / verification-code helper also ships enabled by default and loads only for relevant requests. It declares no network tool: on the active run tab, it prefers selected text or a bounded accessibility-tree subtree, matches the newest relevant service code, excludes SMS/native-app access, and honors Strict secret handling. When used, the scoped page content and code are included in the normal request to your configured LLM provider. If Record traces is enabled, raw tool results and model responses are also stored locally until those traces are deleted. Remove the skill from Settings → Skills if you do not want this guidance available.
+- Imported skills are copied into browser local storage. Mid/Full runs send eligible names and summaries in the `load_skill` catalog; full instructions are appended to the system prompt only after activation for the current run. Compact exposes no loader, skill prompt, or skill tools.
+- Optional fenced `webbrain-skill` JSON metadata can declare a summary (maximum 200 characters) and `modes` (`ask`, `act`, or `dev`). Skills without metadata infer the first prose paragraph as their summary and default to Act/Dev.
 - A skill can expose read-only HTTP tools or short-lived download-job tools with a fenced `webbrain-tools` JSON manifest. Importing a skill is the trust boundary for its declared HTTPS endpoint; download-job skill tools still run in Act mode and use the normal Downloads permission gate before saving files.
 - Tool results from third-party content should be marked `resultPolicy: "untrusted"` so they are wrapped as data, not instructions.
 
@@ -267,12 +269,12 @@ WebBrain separates model tier from conversation mode:
 | `inspect_event_listeners` | No | No | No | No | Chrome |
 | `highlight_element` | No | No | No | No | Chrome |
 
-Enabled skills can append additional tool schemas at runtime. For example,
-the bundled FreeSkillz.xyz skill exposes `read_youtube_transcript` for YouTube
+Loaded skills can append additional tool schemas for the current run. For example,
+the bundled FreeSkillz.xyz skill can expose `read_youtube_transcript` for YouTube
 transcripts plus `resolve_public_media` / `download_public_media` for public
 media URLs. These skill tools are not hard-coded in the static table above:
-if the skill is removed or renamed, the tool disappears or appears under the
-manifest's declared name.
+before the skill is loaded (or if it is removed), the tools are absent. Ask
+also filters out mutating/download tools even when their owning skill is loaded.
 
 Dev Add-on tools are only exposed in Dev mode, and Dev mode is blocked for Compact-tier providers. Chrome's reversible editing tools return patch IDs: `inject_css` pairs with `remove_injected_css`, and `patch_element` pairs with `revert_patch`.
 

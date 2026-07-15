@@ -1,5 +1,12 @@
 # Open-Meteo weather
 
+```webbrain-skill
+{
+  "summary": "Look up current weather and short forecasts for cities or place names with Open-Meteo.",
+  "modes": ["ask", "act"]
+}
+```
+
 Use this skill when the user asks for current weather, a short forecast, or conditions for a city or place name.
 
 Provider: Open-Meteo (`https://open-meteo.com`) — free, no API key.
