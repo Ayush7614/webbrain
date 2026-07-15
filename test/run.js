@@ -19279,12 +19279,10 @@ test('nullish tool responses classify consequential outcomes and stop unsafe bat
       const toolCalls = [
         { id: `${toolName}_missing`, function: { name: toolName, arguments: JSON.stringify(args) } },
       ];
-      if (expectedOutcomeUnknown) {
-        toolCalls.push({
-          id: `${toolName}_unsafe_followup`,
-          function: { name: 'type_ax', arguments: JSON.stringify({ ref_id: 'ref_99', text: 'must not run' }) },
-        });
-      }
+      toolCalls.push({
+        id: `${toolName}_unsafe_followup`,
+        function: { name: 'type_ax', arguments: JSON.stringify({ ref_id: 'ref_99', text: 'must not run' }) },
+      });
 
       const result = await agent._executeToolBatch(
         tabId,
@@ -19306,10 +19304,10 @@ test('nullish tool responses classify consequential outcomes and stop unsafe bat
       assert.match(toolMessage?.content || '', /missingToolResponse/, `${label}/${toolName}: model did not receive the normalized result`);
       if (expectedOutcomeUnknown) {
         assert.match(toolMessage?.content || '', /do not repeat the action blindly/i, `${label}/${toolName}: unsafe retry guidance missing`);
-        assert.deepEqual(executedTools, [toolName], `${label}/${toolName}: later batch action ran after an unknown outcome`);
-        const skippedMessage = messages.find(message => message.tool_call_id === `${toolName}_unsafe_followup`);
-        assert.match(skippedMessage?.content || '', /skipped: an earlier consequential tool returned no response/i, `${label}/${toolName}: later batch action did not receive a synthetic result`);
       }
+      assert.deepEqual(executedTools, [toolName], `${label}/${toolName}: later batch action ran after a missing response`);
+      const skippedMessage = messages.find(message => message.tool_call_id === `${toolName}_unsafe_followup`);
+      assert.match(skippedMessage?.content || '', /skipped: an earlier tool returned no response/i, `${label}/${toolName}: later batch action did not receive a synthetic result`);
     }
   }
 });

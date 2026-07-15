@@ -2578,23 +2578,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         content: resultContent,
       });
 
-      // A consequential call may have completed before its response was lost.
-      // Do not execute the rest of this model-produced batch against a page or
-      // external system whose state is now unknown. Preserve provider message
-      // structure with synthetic results, then let the model verify state on
-      // its next turn before choosing any follow-up action.
-      if (toolResult?.missingToolResponse && toolResult.outcomeUnknown) {
+      // A response can disappear while the page is navigating or reloading,
+      // even for a read-only observation. Do not execute the rest of this
+      // model-produced batch against unverified page state. Preserve provider
+      // message structure with synthetic results, then let the model verify
+      // state on its next turn before choosing any follow-up action.
+      if (toolResult?.missingToolResponse) {
         const skippedCount = this._appendSyntheticToolResults(
           tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
           () => ({
             success: false,
             skipped: true,
-            error: 'skipped: an earlier consequential tool returned no response; verify the current state before retrying',
+            error: 'skipped: an earlier tool returned no response; verify the current state before retrying',
           }),
         );
         this._injectNavNotices(messages, navNotices, onUpdate);
         onUpdate('warning', {
-          message: `Consequential tool response was lost; paused ${skippedCount} remaining tool call(s) for state verification.`,
+          message: `Tool response was lost; paused ${skippedCount} remaining tool call(s) for state verification.`,
         });
         this._persist(tabId);
         return { action: 'continue' };
