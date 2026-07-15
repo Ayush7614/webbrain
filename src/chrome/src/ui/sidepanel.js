@@ -2620,6 +2620,11 @@ async function switchToTab(newTabId) {
   pendingTabSwitch = null;
   tabSwitchTransitionId = newTabId;
   queuedTabSwitchMessages = [];
+  // The activity strip is a single panel-wide DOM node, unlike the tab-scoped
+  // chat and run journals. Clear the outgoing tab's transient status before
+  // any async restore work can yield; restoreActiveRunState (or a queued target
+  // update) will show it again if the destination tab is actually running.
+  hideActivity();
 
   try {
     // Save the tab currently represented by the DOM. During an async restore,
@@ -2754,6 +2759,11 @@ async function restoreActiveRunState(tabId = currentTabId) {
         data: { status: runUi.status, finalContent: runUi.finalContent },
       });
     }
+    // Terminal snapshots may already be fully acknowledged, so no replayed
+    // run_complete event remains to clear the shared activity strip. Make the
+    // destination tab's idle state authoritative even in that case.
+    hideActivity();
+    syncSendButtonState();
   }
 }
 
