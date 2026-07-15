@@ -8365,6 +8365,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 urls, profile, mseBytes, mseSavedFiles, mseSaveError, mseSaveCode,
                 completedCount: completedFromStats,
                 completedVideoCount,
+                requestedTarget: ${JSON.stringify(opts.target)},
                 pageUrl: location.href,
               });
               const videoResultRequired = ${JSON.stringify(opts.target)} === 'video';

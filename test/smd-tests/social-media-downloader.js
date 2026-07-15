@@ -1154,6 +1154,7 @@ window.SocialMediaDownloader = (() => {
     mseSaveCode = null,
     completedCount = 0,
     completedVideoCount = null,
+    requestedTarget = 'auto',
     pageUrl = (typeof location !== 'undefined' ? location.href : ''),
   } = {}) => {
     let parsed = null;
@@ -1172,7 +1173,10 @@ window.SocialMediaDownloader = (() => {
     // YouTube watch / shorts pages — a saved thumbnail or OG image does not
     // satisfy a video request. Only suppress the fallback after an actual
     // video stream (including a verified muxed MSE file) completed.
-    if (profile === 'youtube') {
+    const youtubeVideoRequested = requestedTarget === 'auto'
+      || requestedTarget === 'media'
+      || requestedTarget === 'video';
+    if (profile === 'youtube' && youtubeVideoRequested) {
       const isWatch = /\/(?:watch|shorts)/i.test(path);
       if (isWatch && completedVideos === 0) {
         return {

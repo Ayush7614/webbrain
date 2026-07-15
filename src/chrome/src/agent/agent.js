@@ -10046,6 +10046,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 urls, profile, mseBytes, mseSavedFiles, mseSaveError, mseSaveCode,
                 completedCount: completedFromStats,
                 completedVideoCount,
+                requestedTarget: runOpts.target,
                 pageUrl: location.href,
               });
               const videoResultRequired = runOpts.target === 'video';
