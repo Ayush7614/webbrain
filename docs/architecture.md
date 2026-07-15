@@ -235,6 +235,56 @@ or trusted conversation context, never because page/document/tool content asks
 for it. Strict-secret instructions are appended after loaded skill prose so they
 continue to override OTP disclosure guidance.
 
+#### How a skill is selected
+
+There is no separate keyword matcher, URL router, embedding search, or local
+classifier for ordinary skill selection. The active LLM makes the semantic
+routing decision from the user's request and trusted conversation context using
+the small catalog embedded in the `load_skill` tool definition.
+
+The runtime flow is:
+
+1. At the start of a user turn, clear the tab's in-memory active-skill set.
+2. Filter enabled skills by provider tier and conversation mode. Compact yields
+   no catalog; Ask includes only skills that explicitly declare `ask`; Dev
+   includes skills that declare either `dev` or `act`.
+3. Give the model `load_skill` with an exact `skill_id` enum plus each eligible
+   skill's name and summary. Do not include full skill prose or skill tools yet.
+4. The model may load zero, one, or several skills. The runtime rejects an ID
+   that is not enabled or not eligible in the current mode/tier. Re-loading an
+   active ID succeeds without duplicating it.
+5. After a successful load, rebuild the system message with that skill's full
+   prompt-stripped prose. On the next model iteration, also rebuild the tool list
+   from active skills, applying tool mode, tier, and site-adapter filters.
+6. At turn completion, remove active IDs and rebuild the stored system message
+   without skill prose. The prior `load_skill` call remains in conversation
+   history, so a follow-up can choose to load the skill again.
+
+Trusted recommended actions are the deterministic exception. Before the first
+model call, `_preactivateRecommendedActionSkill()` looks up the skill that owns
+the action's trusted `firstTool` or `tool` and activates that skill. For example,
+the media-download recommendation preactivates FreeSkillz because it owns
+`download_public_media`; the YouTube-summary recommendation does the same for
+`read_youtube_transcript`.
+
+| User intent | Expected skill | Catalog modes | Notes |
+| --- | --- | --- | --- |
+| Find, read, copy, or enter a code visible in browser email/message content | OTP / verification-code helper | Ask, Act, Dev | Prompt-only; after loading it guides existing page tools. |
+| Create and use a temporary mailbox for an unimportant signup | Disposable email (Mail.tm) | Act, Dev | Not shown to Ask. It may overlap with OTP during a verification flow, so both can be loaded. |
+| Read a YouTube transcript, fetch a blocked NYTimes article, or resolve/download supported public media | FreeSkillz.xyz | Ask, Act, Dev | Ask can load the skill but still cannot see its Act-only `download_public_media` tool. |
+| Look up weather or a short forecast | Open-Meteo weather | Ask, Act, Dev | Read-only tools remain subject to their manifest filters. |
+| Find books, ISBNs, authors, or publication data | Open Library | Ask, Act, Dev | Read-only tools remain subject to their manifest filters. |
+| Upload one non-sensitive file to a short-lived public link | Temporary file share (Litterbox) | Act, Dev | Not shown to Ask; the skill uses existing browser upload tools. |
+
+The runtime enforces catalog membership, mode/tier eligibility, active-skill
+tool ownership, and tool filters. It cannot independently determine *why* the
+model requested a valid skill ID. The rule against activation from page, email,
+document, or tool-result instructions is therefore a model-policy boundary,
+reinforced by WebBrain's untrusted-content wrappers and the loader description,
+not a deterministic intent classifier. Routing quality also depends on concise,
+distinct summaries; a broad skill such as FreeSkillz deliberately loads one
+instruction bundle for several related capabilities.
+
 The optional metadata format is a separate prompt-stripped fence:
 
 ````markdown
