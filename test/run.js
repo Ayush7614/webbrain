@@ -9648,6 +9648,55 @@ test('sidepanel queues target-tab updates and suppresses non-target updates duri
   }
 });
 
+test('sidepanel clears shared activity while restoring an idle destination tab', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const switchMatch = panel.match(/async function switchToTab\(newTabId\) \{([\s\S]*?)\n\}/);
+    assert.ok(switchMatch, `${label}: switchToTab body missing`);
+    const switchBody = switchMatch[1];
+    const transitionIdx = switchBody.indexOf('tabSwitchTransitionId = newTabId;');
+    const hideIdx = switchBody.indexOf('hideActivity();', transitionIdx);
+    const firstAwaitIdx = switchBody.indexOf('await flushRenderedTabChat();');
+    const replayIdx = switchBody.indexOf('drainQueuedAgentUpdatesForTab(newTabId);');
+    assert.notEqual(hideIdx, -1, `${label}: tab switches should clear the outgoing activity strip`);
+    assert.notEqual(firstAwaitIdx, -1, `${label}: tab-switch async restore boundary missing`);
+    assert.notEqual(replayIdx, -1, `${label}: queued destination updates should still replay`);
+    assert.equal(transitionIdx < hideIdx && hideIdx < firstAwaitIdx, true, `${label}: outgoing activity must clear before async tab restore can yield`);
+    assert.equal(hideIdx < replayIdx, true, `${label}: queued destination updates must replay after the transient reset`);
+
+    const restoreStart = panel.indexOf('async function restoreActiveRunState(tabId = currentTabId)');
+    const restoreEnd = panel.indexOf('\nfunction conversationHasUserMessages()', restoreStart);
+    assert.notEqual(restoreStart, -1, `${label}: active-run restore helper missing`);
+    assert.notEqual(restoreEnd, -1, `${label}: active-run restore helper boundary missing`);
+    const restoreBody = panel.slice(restoreStart, restoreEnd);
+    const runningIdx = restoreBody.indexOf('if (state?.running) {');
+    const idleIdx = restoreBody.indexOf('} else {', runningIdx);
+    const runningBody = restoreBody.slice(runningIdx, idleIdx);
+    const idleBody = restoreBody.slice(idleIdx);
+    const clearProcessingIdx = idleBody.indexOf('setTabProcessing(numericTabId, false);');
+    const idleHideIdx = idleBody.indexOf('hideActivity();');
+    const syncComposerIdx = idleBody.indexOf('syncSendButtonState();');
+    assert.match(runningBody, /showActivity\(t\('sp\.activity\.thinking'\)\);/, `${label}: a running destination should restore its activity strip`);
+    assert.notEqual(clearProcessingIdx, -1, `${label}: idle restore should clear destination processing state`);
+    assert.notEqual(idleHideIdx, -1, `${label}: idle restore should hide stale activity even when terminal replay is already acknowledged`);
+    assert.notEqual(syncComposerIdx, -1, `${label}: idle restore should resync composer controls`);
+    assert.equal(clearProcessingIdx < idleHideIdx && idleHideIdx < syncComposerIdx, true, `${label}: idle activity and composer state should settle after processing is cleared`);
+
+    const drainHelperStart = panel.indexOf('function drainQueuedAgentUpdatesForTab(tabId)');
+    const drainHelperEnd = panel.indexOf('\nasync function settleScheduledRun', drainHelperStart);
+    const drainHelperBody = panel.slice(drainHelperStart, drainHelperEnd);
+    assert.match(drainHelperBody, /replay\.forEach\(\(msg\) => handleAgentUpdateMessage\(msg\)\);/, `${label}: queued destination updates should re-enter the normal renderer`);
+    const updateHandlerStart = panel.indexOf('function handleAgentUpdateMessage(msg)');
+    const thinkingStart = panel.indexOf("case 'thinking':", updateHandlerStart);
+    const textStart = panel.indexOf("case 'text':", thinkingStart);
+    const thinkingBody = panel.slice(thinkingStart, textStart);
+    assert.match(thinkingBody, /showActivity\(/, `${label}: a queued thinking update should be able to show activity again after reset`);
+  }
+});
+
 test('sidepanel hydrates restored history ids before fallback records', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
