@@ -1004,6 +1004,7 @@ const TAB_CHAT_PREFIX = 'tabChat:';
 const tabChatOperations = new Map();
 const tabInputDrafts = new Map();
 const queuedComposerMessagesByTab = new Map();
+const composerHistoryNavigationByTab = new Map();
 let queuedComposerMessageSeq = 0;
 
 function enqueueTabChatOperation(tabId, fn) {
@@ -1190,6 +1191,7 @@ function setQueuedComposerMessages(tabId, messages) {
   if (!Number.isFinite(numericTabId)) return;
   if (messages.length) {
     queuedComposerMessagesByTab.set(numericTabId, messages);
+    resetComposerHistoryNavigation(numericTabId);
   } else {
     queuedComposerMessagesByTab.delete(numericTabId);
   }
@@ -1294,6 +1296,7 @@ function editQueuedComposerMessage(tabId, queueId) {
   if (!sameTabId(currentTabId, tabId)) return;
   const item = removeQueuedComposerMessage(tabId, queueId);
   if (!item) return;
+  resetComposerHistoryNavigation(tabId);
   inputEl.value = item.text;
   saveInputDraftForTab(tabId, item.text);
   autoResizeInput();
@@ -1306,12 +1309,167 @@ function editQueuedComposerMessage(tabId, queueId) {
 function editLastQueuedComposerMessageForCurrentTab() {
   if (!inputEl || currentTabId == null) return false;
   const atStart = inputEl.selectionStart === 0 && inputEl.selectionEnd === 0;
-  if (inputEl.value.trim() || !atStart) return false;
+  if (inputEl.value !== '' || !atStart) return false;
   const queue = getQueuedComposerMessages(currentTabId);
   const item = queue[queue.length - 1];
   if (!item) return false;
   editQueuedComposerMessage(currentTabId, item.id);
   return true;
+}
+
+function resetComposerHistoryNavigation(tabId = currentTabId) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return;
+  composerHistoryNavigationByTab.delete(numericTabId);
+}
+
+function getComposerHistoryTextFromMessage(messageEl) {
+  const protectedText = messageEl.dataset.composerHistoryText;
+  if (typeof protectedText === 'string') return protectedText;
+
+  const displayText = String(messageEl.querySelector('.message-text')?.textContent || '');
+  // Older saved selection bubbles predate the protected recall payload. Their
+  // display text no longer contains the untrusted-content boundary, so omit
+  // those ambiguous entries rather than resend page text as a trusted prompt.
+  const isLegacySelectionDisplay = messageEl.dataset.composerHistoryVerbatim !== 'true'
+    && /(?:^|\n\n)Selected text:\n/.test(displayText);
+  return isLegacySelectionDisplay ? '' : displayText;
+}
+
+function getComposerHistoryEntriesForCurrentTab() {
+  if (!messagesEl || !sameTabId(currentTabId, renderedTabId)) return [];
+  return Array.from(messagesEl.querySelectorAll(':scope > .message.user'))
+    .map(getComposerHistoryTextFromMessage)
+    .filter((text) => text.trim());
+}
+
+const COMPOSER_MIRROR_STYLE_PROPERTIES = [
+  'direction',
+  'fontFamily',
+  'fontSize',
+  'fontStyle',
+  'fontVariant',
+  'fontWeight',
+  'letterSpacing',
+  'lineHeight',
+  'overflowWrap',
+  'paddingBottom',
+  'paddingLeft',
+  'paddingRight',
+  'paddingTop',
+  'tabSize',
+  'textAlign',
+  'textIndent',
+  'textTransform',
+  'whiteSpace',
+  'wordBreak',
+  'wordSpacing',
+];
+
+function measureComposerCaretTop(position, computedStyle) {
+  const mirror = document.createElement('div');
+  for (const property of COMPOSER_MIRROR_STYLE_PROPERTIES) {
+    mirror.style[property] = computedStyle[property];
+  }
+  mirror.style.position = 'fixed';
+  mirror.style.left = '-100000px';
+  mirror.style.top = '0';
+  mirror.style.boxSizing = 'border-box';
+  mirror.style.width = `${inputEl.clientWidth}px`;
+  mirror.style.height = 'auto';
+  mirror.style.minHeight = '0';
+  mirror.style.maxHeight = 'none';
+  mirror.style.margin = '0';
+  mirror.style.border = '0';
+  mirror.style.overflow = 'hidden';
+  mirror.style.visibility = 'hidden';
+  mirror.style.pointerEvents = 'none';
+  mirror.textContent = inputEl.value.slice(0, position);
+
+  const marker = document.createElement('span');
+  marker.textContent = inputEl.value.slice(position) || '\u200b';
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const top = marker.offsetTop;
+  mirror.remove();
+  return top;
+}
+
+function getComposerCaretRowBoundary() {
+  if (!inputEl || inputEl.selectionStart !== inputEl.selectionEnd || inputEl.clientWidth <= 0) {
+    return null;
+  }
+  const computedStyle = getComputedStyle(inputEl);
+  const caretTop = measureComposerCaretTop(inputEl.selectionStart, computedStyle);
+  const firstTop = measureComposerCaretTop(0, computedStyle);
+  const lastTop = measureComposerCaretTop(inputEl.value.length, computedStyle);
+  const parsedLineHeight = Number.parseFloat(computedStyle.lineHeight);
+  const parsedFontSize = Number.parseFloat(computedStyle.fontSize);
+  const lineHeight = Number.isFinite(parsedLineHeight)
+    ? parsedLineHeight
+    : (Number.isFinite(parsedFontSize) ? parsedFontSize * 1.4 : 16);
+  const tolerance = Math.max(1, lineHeight / 3);
+  return {
+    atFirstRow: Math.abs(caretTop - firstTop) < tolerance,
+    atLastRow: Math.abs(caretTop - lastTop) < tolerance,
+  };
+}
+
+function applyComposerHistoryText(tabId, text) {
+  inputEl.value = text;
+  saveInputDraftForTab(tabId, text);
+  autoResizeInput();
+  updateSlashCommandAutocomplete();
+  syncSendButtonState();
+  inputEl.focus();
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+}
+
+function navigateComposerHistory(direction) {
+  if (!inputEl || currentTabId == null || !sameTabId(currentTabId, renderedTabId)) return false;
+  const numericTabId = Number(currentTabId);
+  if (!Number.isFinite(numericTabId)) return false;
+  if (getQueuedComposerMessages(numericTabId).length) {
+    resetComposerHistoryNavigation(numericTabId);
+    return false;
+  }
+
+  let state = composerHistoryNavigationByTab.get(numericTabId);
+  if (!state) {
+    if (direction !== -1 || inputEl.value !== '') return false;
+    const entries = getComposerHistoryEntriesForCurrentTab();
+    if (!entries.length) return false;
+    state = { entries, index: entries.length };
+    composerHistoryNavigationByTab.set(numericTabId, state);
+  } else {
+    const expectedText = state.entries[state.index] ?? '';
+    if (inputEl.value !== expectedText) {
+      resetComposerHistoryNavigation(numericTabId);
+      return false;
+    }
+  }
+
+  const boundary = getComposerCaretRowBoundary();
+  if (!boundary) return false;
+  if (direction === -1) {
+    if (!boundary.atFirstRow) return false;
+    if (state.index === 0) return true;
+    state.index -= 1;
+    applyComposerHistoryText(numericTabId, state.entries[state.index]);
+    return true;
+  }
+  if (direction === 1) {
+    if (!boundary.atLastRow || state.index >= state.entries.length) return false;
+    if (state.index === state.entries.length - 1) {
+      resetComposerHistoryNavigation(numericTabId);
+      applyComposerHistoryText(numericTabId, '');
+      return true;
+    }
+    state.index += 1;
+    applyComposerHistoryText(numericTabId, state.entries[state.index]);
+    return true;
+  }
+  return false;
 }
 
 function deleteQueuedComposerMessage(tabId, queueId) {
@@ -1327,9 +1485,10 @@ function clearQueuedComposerMessagesForTab(tabId) {
 
 function drainQueuedComposerMessageForCurrentTab() {
   if (isProcessing || currentTabId == null || renderedTabId !== currentTabId) return false;
-  if (inputEl.value.trim()) return false;
+  if (inputEl.value !== '') return false;
   const item = shiftQueuedComposerMessage(currentTabId);
   if (!item) return false;
+  resetComposerHistoryNavigation(currentTabId);
   inputEl.value = item.text;
   autoResizeInput();
   updateSlashCommandAutocomplete();
@@ -1342,6 +1501,7 @@ function drainQueuedComposerMessageForCurrentTab() {
 
 async function renderClearedConversationForTab(tabId) {
   clearCachedTabChat(tabId);
+  resetComposerHistoryNavigation(tabId);
   saveInputDraftForTab(tabId, '');
   clearPendingAttachmentsForTab(tabId);
   clearQueuedComposerMessagesForTab(tabId);
@@ -3624,6 +3784,7 @@ function applySlashCommandCompletion(index = slashCommandSelectedIndex) {
   if (!match || !inputEl) return false;
   const before = inputEl.value.slice(0, match.completionStart);
   const after = inputEl.value.slice(match.completionEnd);
+  resetComposerHistoryNavigation(currentTabId);
   inputEl.value = `${before}${match.value} ${after}`;
   const cursor = before.length + match.value.length + 1;
   inputEl.setSelectionRange(cursor, cursor);
@@ -3637,6 +3798,7 @@ function applySlashCommandCompletion(index = slashCommandSelectedIndex) {
 function activateSlashCommandBaseAction(index = slashCommandSelectedIndex) {
   const match = slashCommandMatches[index];
   if (match?.kind !== 'base-action' || !inputEl) return false;
+  resetComposerHistoryNavigation(currentTabId);
   inputEl.value = inputEl.value.trimEnd();
   hideSlashCommandAutocomplete();
   autoResizeInput();
@@ -3694,6 +3856,7 @@ function handleSlashCommandKeydown(e) {
 }
 
 function handleInput() {
+  resetComposerHistoryNavigation(currentTabId);
   autoResizeInput();
   updateSlashCommandAutocomplete();
   syncSendButtonState();
@@ -4195,6 +4358,7 @@ async function sendMessage(extraChatParams = {}) {
   }
   if (isProcessing) {
     if (isOutOfBandSlashDraft(text)) {
+      resetComposerHistoryNavigation(tabId);
       saveInputDraftForTab(tabId, '');
       hideSlashCommandAutocomplete();
       inputEl.value = '';
@@ -4220,6 +4384,7 @@ async function sendMessage(extraChatParams = {}) {
   const apiMutationsAllowedForSend = retryOptions
     ? !!retryOptions.apiMutationsAllowed
     : isApiMutationsAllowedForTab(tabId) || /^\/allow-api\b/i.test(text);
+  resetComposerHistoryNavigation(tabId);
   saveInputDraftForTab(tabId, '');
   hideSlashCommandAutocomplete();
 
@@ -5713,7 +5878,16 @@ function addMessage(role, content, options = {}) {
   if (role === 'user') {
     // Selection/context-menu prompts include model-only untrusted wrappers;
     // show a clean version in the bubble while still sending the full prompt.
-    textEl.textContent = formatSelectionPromptForDisplay(content);
+    const userText = String(content || '');
+    const displayText = formatSelectionPromptForDisplay(userText);
+    textEl.textContent = displayText;
+    if (displayText === userText) {
+      msgEl.dataset.composerHistoryVerbatim = 'true';
+    } else {
+      // Keep the model-facing boundary intact when the bubble is recalled.
+      // Dataset assignment is inert and survives messagesEl.innerHTML restore.
+      msgEl.dataset.composerHistoryText = userText;
+    }
   } else if (role === 'system') {
     if (isSystemHtml(content)) textEl.innerHTML = content.__systemHtml;
     else textEl.textContent = content || '';
@@ -6815,9 +6989,20 @@ queuedMessagesEl?.addEventListener('click', (e) => {
 
 inputEl.addEventListener('keydown', (e) => {
   if (handleSlashCommandKeydown(e)) return;
-  if (e.key === 'ArrowUp' && editLastQueuedComposerMessageForCurrentTab()) {
-    e.preventDefault();
-    return;
+  const isPlainArrow = !e.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+  if (isPlainArrow) {
+    if (e.key === 'ArrowUp' && editLastQueuedComposerMessageForCurrentTab()) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'ArrowUp' && navigateComposerHistory(-1)) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'ArrowDown' && navigateComposerHistory(1)) {
+      e.preventDefault();
+      return;
+    }
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();

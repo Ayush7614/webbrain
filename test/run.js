@@ -11426,18 +11426,18 @@ test('sidepanel queued composer messages expose edit and delete controls', () =>
     assert.match(panel, /function enqueueQueuedComposerMessage\(tabId, text\) \{[\s\S]*?queue\.push\(\{[\s\S]*?text: queuedText,[\s\S]*?inputEl\.value = '';[\s\S]*?autoResizeInput\(\);[\s\S]*?syncSendButtonState\(\);[\s\S]*?return true;[\s\S]*?\}/, `${label}: busy drafts should be queued, clear the composer, and reset its height`);
     assert.match(panel, /function sameTabId\(a, b\) \{\s*return a != null && b != null && String\(a\) === String\(b\);\s*\}/, `${label}: queued-message tab checks should tolerate equivalent tab id types`);
     assert.match(panel, /function editQueuedComposerMessage\(tabId, queueId\) \{[\s\S]*?!sameTabId\(currentTabId, tabId\)[\s\S]*?removeQueuedComposerMessage\(tabId, queueId\);[\s\S]*?inputEl\.value = item\.text;[\s\S]*?inputEl\.setSelectionRange\(inputEl\.value\.length, inputEl\.value\.length\);[\s\S]*?\}/, `${label}: queued message edit should guard the tab and move text back into the composer`);
-    assert.match(panel, /function editLastQueuedComposerMessageForCurrentTab\(\) \{[\s\S]*?const atStart = inputEl\.selectionStart === 0 && inputEl\.selectionEnd === 0;[\s\S]*?if \(inputEl\.value\.trim\(\) \|\| !atStart\) return false;[\s\S]*?const item = queue\[queue\.length - 1\];[\s\S]*?editQueuedComposerMessage\(currentTabId, item\.id\);[\s\S]*?return true;[\s\S]*?\}/, `${label}: ArrowUp edit should only pull the latest queued message into an empty composer at the start`);
+    assert.match(panel, /function editLastQueuedComposerMessageForCurrentTab\(\) \{[\s\S]*?const atStart = inputEl\.selectionStart === 0 && inputEl\.selectionEnd === 0;[\s\S]*?if \(inputEl\.value !== '' \|\| !atStart\) return false;[\s\S]*?const item = queue\[queue\.length - 1\];[\s\S]*?editQueuedComposerMessage\(currentTabId, item\.id\);[\s\S]*?return true;[\s\S]*?\}/, `${label}: ArrowUp edit should only pull the latest queued message into an exactly empty composer at the start`);
     assert.match(panel, /function deleteQueuedComposerMessage\(tabId, queueId\) \{[\s\S]*?removeQueuedComposerMessage\(tabId, queueId\);[\s\S]*?\}/, `${label}: queued message delete should remove the queued item`);
     assert.match(panel, /queued-message-edit/, `${label}: queued item should render an edit button`);
     assert.match(panel, /queued-message-delete/, `${label}: queued item should render a delete button`);
     assert.match(panel, /queuedMessagesEl\?\.addEventListener\('click', \(e\) => \{[\s\S]*?e\.target\.closest\('button\[data-queue-action\]\[data-queue-id\]'\);[\s\S]*?editQueuedComposerMessage\(currentTabId, queueId\);[\s\S]*?\}\);/, `${label}: queued edit button clicks should call the edit helper`);
-    assert.match(panel, /inputEl\.addEventListener\('keydown', \(e\) => \{[\s\S]*?if \(handleSlashCommandKeydown\(e\)\) return;[\s\S]*?if \(e\.key === 'ArrowUp' && editLastQueuedComposerMessageForCurrentTab\(\)\) \{[\s\S]*?e\.preventDefault\(\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?if \(e\.key === 'Enter' && !e\.shiftKey\)/, `${label}: ArrowUp should edit queued messages before Enter handling`);
+    assert.match(panel, /inputEl\.addEventListener\('keydown', \(e\) => \{[\s\S]*?if \(handleSlashCommandKeydown\(e\)\) return;[\s\S]*?const isPlainArrow = !e\.isComposing[\s\S]*?if \(e\.key === 'ArrowUp' && editLastQueuedComposerMessageForCurrentTab\(\)\) \{[\s\S]*?e\.preventDefault\(\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?if \(e\.key === 'Enter' && !e\.shiftKey\)/, `${label}: plain ArrowUp should edit queued messages before history and Enter handling`);
     const drainStart = panel.indexOf('function drainQueuedComposerMessageForCurrentTab()');
     const drainEnd = panel.indexOf('function renderClearedConversationForTab', drainStart);
     assert.notEqual(drainStart, -1, `${label}: queued composer drain helper should exist`);
     assert.notEqual(drainEnd, -1, `${label}: queued composer drain helper boundary should exist`);
     const drainBody = panel.slice(drainStart, drainEnd);
-    const draftGuardIdx = drainBody.indexOf('if (inputEl.value.trim()) return false;');
+    const draftGuardIdx = drainBody.indexOf("if (inputEl.value !== '') return false;");
     const queueShiftIdx = drainBody.indexOf('const item = shiftQueuedComposerMessage(currentTabId);');
     assert.notEqual(draftGuardIdx, -1, `${label}: queued composer drain should preserve newly typed drafts`);
     assert.notEqual(queueShiftIdx, -1, `${label}: queued composer drain should shift the next queued message`);
@@ -11457,6 +11457,66 @@ test('sidepanel queued composer messages expose edit and delete controls', () =>
     assert.match(css, /\.queued-message-action/, `${label}: queued message controls should be styled`);
     assert.match(locale, /'sp\.queue\.edit': 'Edit queued message'/, `${label}: queued edit label should have an English fallback`);
     assert.match(locale, /'sp\.queue\.delete': 'Delete queued message'/, `${label}: queued delete label should have an English fallback`);
+  }
+});
+
+test('sidepanel composer history navigation is queue-aware and draft-safe', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+
+    assert.match(panel, /const composerHistoryNavigationByTab = new Map\(\);/, `${label}: composer history navigation should be tracked per tab`);
+    assert.match(
+      panel,
+      /function getComposerHistoryEntriesForCurrentTab\(\) \{[\s\S]*?sameTabId\(currentTabId, renderedTabId\)[\s\S]*?querySelectorAll\(':scope > \.message\.user'\)[\s\S]*?map\(getComposerHistoryTextFromMessage\)[\s\S]*?filter\(\(text\) => text\.trim\(\)\);[\s\S]*?\}/,
+      `${label}: history recall should read only non-empty user bubbles from the rendered conversation`,
+    );
+    assert.match(
+      panel,
+      /function getComposerHistoryTextFromMessage\(messageEl\) \{[\s\S]*?dataset\.composerHistoryText[\s\S]*?if \(typeof protectedText === 'string'\) return protectedText;[\s\S]*?querySelector\('\.message-text'\)\?\.textContent[\s\S]*?dataset\.composerHistoryVerbatim !== 'true'[\s\S]*?isLegacySelectionDisplay \? '' : displayText;[\s\S]*?\}/,
+      `${label}: history recall should prefer the protected model-facing payload and omit ambiguous legacy selection bubbles`,
+    );
+    assert.match(
+      panel,
+      /if \(role === 'user'\) \{[\s\S]*?const userText = String\(content \|\| ''\);[\s\S]*?const displayText = formatSelectionPromptForDisplay\(userText\);[\s\S]*?if \(displayText === userText\) \{[\s\S]*?dataset\.composerHistoryVerbatim = 'true';[\s\S]*?\} else \{[\s\S]*?dataset\.composerHistoryText = userText;[\s\S]*?\}/,
+      `${label}: rendered user bubbles should persist either a verbatim marker or their protected recall payload across DOM restores`,
+    );
+    assert.match(
+      panel,
+      /function getComposerCaretRowBoundary\(\) \{[\s\S]*?inputEl\.selectionStart !== inputEl\.selectionEnd[\s\S]*?measureComposerCaretTop\(inputEl\.selectionStart, computedStyle\)[\s\S]*?measureComposerCaretTop\(0, computedStyle\)[\s\S]*?measureComposerCaretTop\(inputEl\.value\.length, computedStyle\)[\s\S]*?atFirstRow:[\s\S]*?atLastRow:[\s\S]*?\}/,
+      `${label}: history recall should measure first and last rendered rows and reject active selections`,
+    );
+
+    const navigationStart = panel.indexOf('function navigateComposerHistory(direction)');
+    const navigationEnd = panel.indexOf('function deleteQueuedComposerMessage', navigationStart);
+    assert.notEqual(navigationStart, -1, `${label}: composer history navigation helper missing`);
+    assert.notEqual(navigationEnd, -1, `${label}: composer history navigation helper boundary missing`);
+    const navigation = panel.slice(navigationStart, navigationEnd);
+    assert.match(navigation, /!sameTabId\(currentTabId, renderedTabId\)/, `${label}: history navigation should stay scoped to the rendered tab`);
+    assert.match(navigation, /getQueuedComposerMessages\(numericTabId\)\.length[\s\S]*?return false;/, `${label}: queued messages should block sent-history navigation`);
+    assert.match(navigation, /if \(direction !== -1 \|\| inputEl\.value !== ''\) return false;/, `${label}: only ArrowUp from an exactly empty composer should start history navigation`);
+    assert.match(navigation, /if \(inputEl\.value !== expectedText\) \{[\s\S]*?resetComposerHistoryNavigation\(numericTabId\);[\s\S]*?return false;/, `${label}: changed recalled text should stop navigation instead of being overwritten`);
+    assert.match(navigation, /if \(state\.index === 0\) return true;[\s\S]*?state\.index -= 1;/, `${label}: ArrowUp should stop at the oldest entry without wrapping`);
+    assert.match(navigation, /if \(state\.index === state\.entries\.length - 1\) \{[\s\S]*?applyComposerHistoryText\(numericTabId, ''\);[\s\S]*?return true;/, `${label}: ArrowDown past the newest entry should restore the empty composer`);
+    assert.match(panel, /function handleInput\(\) \{\s*resetComposerHistoryNavigation\(currentTabId\);/, `${label}: editing recalled text should reset navigation state`);
+    assert.match(panel, /function applySlashCommandCompletion[\s\S]*?resetComposerHistoryNavigation\(currentTabId\);[\s\S]*?inputEl\.value =/, `${label}: slash completion should replace history navigation state explicitly`);
+
+    const keydownStart = panel.indexOf("inputEl.addEventListener('keydown', (e) => {");
+    const keydownEnd = panel.indexOf("inputEl.addEventListener('input', handleInput);", keydownStart);
+    assert.notEqual(keydownStart, -1, `${label}: composer keydown handler missing`);
+    assert.notEqual(keydownEnd, -1, `${label}: composer keydown handler boundary missing`);
+    const keydown = panel.slice(keydownStart, keydownEnd);
+    const slashIdx = keydown.indexOf('handleSlashCommandKeydown(e)');
+    const queueIdx = keydown.indexOf('editLastQueuedComposerMessageForCurrentTab()');
+    const historyUpIdx = keydown.indexOf('navigateComposerHistory(-1)');
+    const historyDownIdx = keydown.indexOf('navigateComposerHistory(1)');
+    const enterIdx = keydown.indexOf("e.key === 'Enter'");
+    assert.ok(slashIdx >= 0 && slashIdx < queueIdx, `${label}: slash autocomplete should keep priority over queued and sent history`);
+    assert.ok(queueIdx < historyUpIdx, `${label}: queued-message editing should keep priority over sent history`);
+    assert.ok(historyUpIdx < historyDownIdx && historyDownIdx < enterIdx, `${label}: history arrows should run before Enter handling`);
+    assert.match(keydown, /const isPlainArrow = !e\.isComposing && !e\.altKey && !e\.ctrlKey && !e\.metaKey && !e\.shiftKey;/, `${label}: modified arrows and IME composition should retain native behavior`);
   }
 });
 
