@@ -585,8 +585,13 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
         const payload = trimmed.slice(6);
         if (payload === '[DONE]') {
-          yield { type: 'done', content: '', responseItems: [] };
-          return;
+          // Responses must finish with response.completed so we can retain
+          // the complete output Items used for encrypted reasoning replay.
+          // A bare legacy sentinel is therefore an incomplete stream, not a
+          // successful empty response.
+          throw this._responsesIncompleteError({
+            incomplete_details: { reason: 'missing_response_completed' },
+          }, { stream: true });
         }
         try {
           const event = JSON.parse(payload);
@@ -636,7 +641,12 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
         }
       }
     }
-    yield { type: 'done', content: '', responseItems: [] };
+    // A clean transport EOF is still a failure when no terminal Responses
+    // event arrived. Treating it as done would persist partial text and lose
+    // any function-call/reasoning Items that only arrive on completion.
+    throw this._responsesIncompleteError({
+      incomplete_details: { reason: 'missing_response_completed' },
+    }, { stream: true });
   }
 
   async chat(messages, options = {}) {

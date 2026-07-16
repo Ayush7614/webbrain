@@ -47,6 +47,7 @@ import { publicMediaUrlNeedsExplicitTarget } from './public-media-url.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
 import { buildTrustedRuntimeContext, stripTrustedRuntimeContext } from './runtime-context.js';
+import { firefoxHostPermissionFailure, firefoxRestrictedDomainFailure } from '../firefox-restricted-domains.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -627,6 +628,12 @@ export class Agent {
   }
 
   _loopCallKey(name, args, result) {
+    if (result?.nonRetryableScope) {
+      // Definitive platform/permission failures keep one identity across
+      // tools and URL variants, so changing fetch strategies cannot evade
+      // the stop condition.
+      return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
+    }
     // URL-family tools (fetch_url, research_url, …) bucket by resource
     // identity so the agent can't escape loop detection by fetching the
     // same logical file via 8 different API endpoints. See loop-bucket.js.
@@ -1424,6 +1431,16 @@ export class Agent {
 
   _checkLoop(tabId, toolName, toolArgs, toolResult) {
     const { buf, key } = this._recordCall(tabId, toolName, toolArgs, toolResult);
+    if (toolResult?.nonRetryable) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 2) {
+        this._clearLoopState(tabId);
+        return {
+          kind: 'stop',
+          message: toolResult.stopMessage || `Stopped: ${toolName} hit the same non-retryable failure twice. Retrying or switching to an equivalent tool will not make progress.`,
+        };
+      }
+    }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
       // Healthy run — reset nudges only after a sustained streak.
@@ -1434,6 +1451,19 @@ export class Agent {
         this.healthyCallsSinceLoop.delete(tabId);
       }
       return { kind: 'none' };
+    }
+    const method = String(toolArgs?.method || 'GET').toUpperCase();
+    if (
+      loop.type === 'repeat' &&
+      URL_FAMILY_TOOLS.has(toolName) &&
+      method === 'GET' &&
+      this._isToolResultErroredForLoop(toolName, toolArgs, toolResult)
+    ) {
+      this._clearLoopState(tabId);
+      return {
+        kind: 'stop',
+        message: `Stopped: ${loop.name} failed three times for the same read-only resource. Repeating it or changing URL variants will not make progress. Please give a different instruction or inspect the page manually.`,
+      };
     }
     this.healthyCallsSinceLoop.delete(tabId);
     const nudges = (this.loopNudges.get(tabId) || 0) + 1;
@@ -7710,6 +7740,62 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
   }
 
+  async _waitForRestrictedTabLoad(tabId, args = {}, failure = {}) {
+    const timeoutMs = Math.min(Math.max(Number(args.timeout) || 10000, 0), 30000);
+    const startedAt = Date.now();
+    let tab = null;
+    do {
+      try { tab = await browser.tabs.get(tabId); } catch {}
+      if (tab?.status === 'complete') {
+        return {
+          success: true,
+          stable: true,
+          method: 'tab_load_status',
+          elapsedMs: Date.now() - startedAt,
+          restrictedDomain: failure.restrictedDomain || null,
+          warning: 'Firefox blocks DOM and in-page network instrumentation on this protected page, so wait_for_stable can only verify that the browser tab finished loading. Use screenshot for a read-only visual inspection; page interaction requires the user.',
+        };
+      }
+      if (Date.now() - startedAt >= timeoutMs) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (true);
+    return {
+      success: false,
+      stable: false,
+      timedOut: true,
+      method: 'tab_load_status',
+      elapsedMs: Date.now() - startedAt,
+      restrictedDomain: failure.restrictedDomain || null,
+      error: 'The protected Firefox tab did not finish loading before the timeout. Do not retry DOM/page tools; wait for the visible tab manually or stop.',
+    };
+  }
+
+  async _restrictedDomainScreenshotFallback(tabId, sourceTool, requestedUrl, failure) {
+    if (!failure || failure.errorCode !== 'firefox_restricted_domain') return failure;
+    let tab = null;
+    try { tab = await browser.tabs.get(tabId); } catch {}
+    const targetUrl = requestedUrl || failure.url || tab?.url || '';
+    if (!tab?.active || !targetUrl || this._normalizeUrl(tab.url) !== this._normalizeUrl(targetUrl)) {
+      return failure;
+    }
+
+    const screenshot = await this.executeTool(tabId, 'screenshot', {});
+    if (screenshot?.success) {
+      return {
+        ...screenshot,
+        redirectedFrom: sourceTool,
+        restrictedDomain: failure.restrictedDomain,
+        warning: `Firefox blocks extension DOM/network access on ${failure.restrictedDomain}. WebBrain kept the run on the active tab and used a screenshot for read-only visual inspection instead. Do not retry ${sourceTool}, open a duplicate tab, or attempt page interaction.`,
+      };
+    }
+    return {
+      ...failure,
+      recoveryTool: null,
+      screenshotFallbackError: screenshot?.error || 'Screenshot fallback failed.',
+      hint: 'A screenshot fallback was attempted but no vision-capable path was available. Leave the page open for manual use; do not retry with another tab, page tool, or fetch tool.',
+    };
+  }
+
   async executeTool(tabId, name, args, onUpdate = null) {
     if (name === 'load_skill') {
       return this._loadSkillForRun(tabId, args || {});
@@ -7931,7 +8017,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
 
     if (name === 'new_tab') {
-      const createProps = { url: args.url };
+      // Runs stay pinned to their source tab. Keep reference/helper tabs in
+      // the background so the browser does not switch the user to a tab the
+      // agent cannot subsequently control.
+      const createProps = { url: args.url, active: false };
       let sourceTab = null;
       try {
         sourceTab = await browser.tabs.get(tabId);
@@ -7954,6 +8043,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         success: true,
         tabId: tab.id,
         url: args.url,
+        active: false,
+        retargeted: false,
+        note: 'Opened in the background. The current run remains on its original tab; new_tab does not grant site access or retarget later tools.',
         groupId: groupId >= 0 ? groupId : null,
       };
     }
@@ -8189,13 +8281,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return skillEndpointRedirect;
     }
     if (name === 'fetch_url') {
-      return await fetchUrl(args.url, args, { tabId });
+      const result = await fetchUrl(args.url, args, { tabId });
+      return await this._restrictedDomainScreenshotFallback(tabId, name, args.url, result);
     }
     if (name === 'read_page_source') {
-      return await readPageSource(args.url, args, { tabId });
+      const result = await readPageSource(args.url, args, { tabId });
+      return await this._restrictedDomainScreenshotFallback(tabId, name, result?.url || args.url, result);
     }
     if (name === 'research_url') {
-      return await researchUrl(args.url, { ...args, sourceTabId: tabId });
+      const result = await researchUrl(args.url, { ...args, sourceTabId: tabId });
+      return await this._restrictedDomainScreenshotFallback(tabId, name, args.url, result);
     }
     if (name === 'list_downloads') {
       return await listDownloads(args);
@@ -9044,6 +9139,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     try {
       const tabForPdfCheck = await browser.tabs.get(tabId);
       const pageUrl = tabForPdfCheck?.url || '';
+      const restrictedFailure = firefoxRestrictedDomainFailure(pageUrl);
+      if (restrictedFailure) {
+        if (name === 'wait_for_stable') {
+          return await this._waitForRestrictedTabLoad(tabId, args, restrictedFailure);
+        }
+        if (['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data'].includes(name)) {
+          return await this._restrictedDomainScreenshotFallback(tabId, name, pageUrl, restrictedFailure);
+        }
+        return restrictedFailure;
+      }
       // _isPdfTab does sync URL-pattern match + credentialed HEAD
       // fallback so PDFs served from extension-less paths (e.g.
       // `/download?id=42` with `Content-Type: application/pdf`) are
@@ -9097,6 +9202,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         this._annotateCredentialField(name, response);
         return response;
       } catch (e2) {
+        let pageUrl = '';
+        try { pageUrl = (await browser.tabs.get(tabId))?.url || ''; } catch {}
+        const accessFailure = firefoxHostPermissionFailure(pageUrl, e2.message);
+        if (accessFailure) return accessFailure;
         return { error: `Failed to communicate with page: ${e2.message}` };
       }
     }

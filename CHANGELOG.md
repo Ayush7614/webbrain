@@ -4,6 +4,17 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [24.0.1] - 2026-07-16
+
+### Fixed
+- Kept agent-created reference tabs in the background so Chrome and Firefox runs remain visibly attached to their original tab.
+- Detected Firefox-protected Mozilla domains before blocked DOM or network reads, used one active-tab screenshot fallback where possible, and stopped equivalent non-retryable attempts instead of looping.
+- Treated Responses streams that end without `response.completed` as incomplete instead of persisting partial output as a successful turn.
+- Preserved unsaved custom request-body JSON drafts across provider search, filtering, and card re-renders, including temporarily invalid JSON while editing.
+
+### Tests
+- Added regression coverage for background tab ownership, Firefox restricted-domain handling, bounded read retries, premature Responses stream termination, and compatibility JSON draft persistence.
+
 ## [24.0.0] - 2026-07-16
 
 ### Added
