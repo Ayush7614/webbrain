@@ -1441,6 +1441,30 @@ test('matches www.github.com', () => {
   assert.equal(a?.name, 'github');
 });
 
+test('matches Mozilla Add-ons Developer Hub and guides WebBrain version submission', () => {
+  const sourceUrl = 'https://addons.mozilla.org/en-US/developers/addon/webbrain/versions/submit/6358210/source';
+  const chromeAdapter = getActiveAdapter(sourceUrl);
+  const firefoxAdapter = getActiveAdapterFx(sourceUrl);
+
+  assert.equal(chromeAdapter?.name, 'mozilla-addons-developer');
+  assert.equal(firefoxAdapter?.name, 'mozilla-addons-developer');
+  assert.equal(firefoxAdapter?.notes, chromeAdapter?.notes);
+  assert.equal(getActiveAdapter('https://addons.mozilla.org/de/developers/addon/webbrain/versions/submit/1/source')?.name, 'mozilla-addons-developer');
+  assert.equal(getActiveAdapter('https://addons.mozilla.org/developers/addons')?.name, 'mozilla-addons-developer');
+  assert.notEqual(getActiveAdapter('https://addons.mozilla.org/en-US/firefox/addon/webbrain/moz-addon-ratings/')?.name, 'mozilla-addons-developer');
+  assert.notEqual(getActiveAdapter('https://addons.mozilla.org.evil.example/en-US/developers/')?.name, 'mozilla-addons-developer');
+
+  assert.match(chromeAdapter?.notes || '', /Upload New Version/);
+  assert.match(chromeAdapter?.notes || '', /duplicate add-on ID/i);
+  assert.match(chromeAdapter?.notes || '', /Release Notes.*Notes to Reviewer.*optional/s);
+  assert.match(chromeAdapter?.notes || '', /Leave both empty unless the user explicitly asks/i);
+  assert.match(chromeAdapter?.notes || '', /release_notes\.\.\..*approval_notes.*verify_form/s);
+  assert.match(chromeAdapter?.notes || '', /\/addon\/webbrain\/versions\/submit\/<id>\/source/);
+  assert.match(chromeAdapter?.notes || '', /answer "No".*Do You Need to Submit Source Code/s);
+  assert.match(chromeAdapter?.notes || '', /You do not need to submit Source Code/);
+  assert.match(chromeAdapter?.notes || '', /re-read the accessibility tree.*current ref_id/s);
+});
+
 test('matches gmail.com under mail.google.com', () => {
   const a = getActiveAdapter('https://mail.google.com/mail/u/0/#inbox');
   assert.equal(a?.name, 'gmail');
