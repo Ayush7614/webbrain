@@ -198,8 +198,11 @@ const { tracesToMarkdown: tracesToMarkdownFx } = await import(
 const { validateFetchUrl, registrableDomain, filenameFromContentDisposition: filenameFromContentDispositionCh, fetchUrl: fetchUrlCh, downloadFiles: downloadFilesCh, executeHttpSkillTool: executeHttpSkillToolCh } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/network/network-tools.js').replace(/\\/g, '/')
 );
-const { validateFetchUrl: validateFetchUrlFx, registrableDomain: registrableDomainFx, filenameFromContentDisposition: filenameFromContentDispositionFx, fetchUrl: fetchUrlFx, downloadFiles: downloadFilesFx, executeHttpSkillTool: executeHttpSkillToolFx } = await import(
+const { validateFetchUrl: validateFetchUrlFx, registrableDomain: registrableDomainFx, filenameFromContentDisposition: filenameFromContentDispositionFx, fetchUrl: fetchUrlFx, readPageSource: readPageSourceFx, researchUrl: researchUrlFx, downloadFiles: downloadFilesFx, executeHttpSkillTool: executeHttpSkillToolFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/network/network-tools.js').replace(/\\/g, '/')
+);
+const { firefoxRestrictedDomainForUrl, firefoxRestrictedDomainFailure, firefoxHostPermissionFailure } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/firefox-restricted-domains.js').replace(/\\/g, '/')
 );
 
 // markdown-link.js is pure JS with no DOM / chrome.* deps.
@@ -708,6 +711,9 @@ class LoopDetectorShim {
     return URL_FAMILY_TOOLS.has(name) && Number.isFinite(status) && status >= 400;
   }
   _loopCallKey(name, args, result) {
+    if (result?.nonRetryableScope) {
+      return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
+    }
     // Mirror agent.js: URL-family tools bucket by resource identity so
     // the agent can't escape loop detection by fetching the same file
     // via 8 different API endpoints. Falls back to exact JSON for other
@@ -745,6 +751,10 @@ class LoopDetectorShim {
   }
   _checkLoop(tabId, name, args, result) {
     const { buf, key } = this._recordCall(tabId, name, args, result);
+    if (result?.nonRetryable) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 2) return { kind: 'stop' };
+    }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
       const healthy = (this.healthyCallsSinceLoop.get(tabId) || 0) + 1;
@@ -754,6 +764,15 @@ class LoopDetectorShim {
         this.healthyCallsSinceLoop.delete(tabId);
       }
       return { kind: 'none' };
+    }
+    const method = String(args?.method || 'GET').toUpperCase();
+    if (
+      loop.type === 'repeat' &&
+      URL_FAMILY_TOOLS.has(name) &&
+      method === 'GET' &&
+      this._isToolResultErroredForLoop(name, args, result)
+    ) {
+      return { kind: 'stop' };
     }
     this.healthyCallsSinceLoop.delete(tabId);
     const nudges = (this.loopNudges.get(tabId) || 0) + 1;
@@ -1694,6 +1713,22 @@ test('routes AWS console tasks through the specific CloudShell adapter', () => {
   assert.equal(getActiveAdapter('https://console.aws.amazon.com.evil.example/cloudshell/home'), null);
 });
 
+test('adapter hostname matchers reject trusted domains embedded in paths', () => {
+  const cases = [
+    ['stackoverflow', 'https://meta.stackoverflow.com/questions/1', 'https://evil.example/foo.stackoverflow.com/questions/1'],
+    ['stackoverflow', 'https://math.stackexchange.com/questions/1', 'https://evil.example/foo.stackexchange.com/questions/1'],
+    ['medium', 'https://engineering.medium.com/example', 'https://evil.example/foo.medium.com/example'],
+    ['aws', 'https://us-east-1.console.aws.amazon.com/ec2/home', 'https://evil.example/us-east-1.console.aws.amazon.com/ec2/home'],
+  ];
+
+  for (const [name, trustedUrl, pathSpoofUrl] of cases) {
+    assert.equal(getActiveAdapter(trustedUrl)?.name, name, `chrome did not match ${trustedUrl}`);
+    assert.equal(getActiveAdapterFx(trustedUrl)?.name, name, `firefox did not match ${trustedUrl}`);
+    assert.notEqual(getActiveAdapter(pathSpoofUrl)?.name, name, `chrome trusted ${pathSpoofUrl}`);
+    assert.notEqual(getActiveAdapterFx(pathSpoofUrl)?.name, name, `firefox trusted ${pathSpoofUrl}`);
+  }
+});
+
 test('matches mastodon profile and interaction URLs on any host', () => {
   const urls = [
     'https://mastoturk.org/@discon@types.pl',
@@ -2073,6 +2108,39 @@ test('three identical errored calls also trigger nudge', () => {
   assert.equal(result.kind, 'nudge');
 });
 
+test('three failed read-only URL calls stop instead of issuing eight nudges', () => {
+  const d = new LoopDetectorShim();
+  const tab = 31;
+  const args = { url: 'https://example.com/api/items' };
+  d._checkLoop(tab, 'fetch_url', args, { success: false, error: 'network failed' });
+  d._checkLoop(tab, 'fetch_url', args, { success: false, error: 'network failed' });
+  const result = d._checkLoop(tab, 'fetch_url', args, { success: false, error: 'network failed' });
+  assert.equal(result.kind, 'stop');
+});
+
+test('failed mutating URL calls retain the ordinary nudge threshold', () => {
+  const d = new LoopDetectorShim();
+  const tab = 32;
+  const args = { url: 'https://example.com/api/items', method: 'POST' };
+  d._checkLoop(tab, 'fetch_url', args, { success: false, status: 422 });
+  d._checkLoop(tab, 'fetch_url', args, { success: false, status: 422 });
+  const result = d._checkLoop(tab, 'fetch_url', args, { success: false, status: 422 });
+  assert.equal(result.kind, 'nudge');
+});
+
+test('a second equivalent non-retryable failure stops across tools and URL variants', () => {
+  const d = new LoopDetectorShim();
+  const tab = 34;
+  const failure = {
+    success: false,
+    nonRetryable: true,
+    nonRetryableScope: 'firefox-host-access:addons.mozilla.org',
+    error: 'Firefox protects this domain.',
+  };
+  assert.equal(d._checkLoop(tab, 'fetch_url', { url: 'https://addons.mozilla.org/en-US/developers/' }, failure).kind, 'none');
+  assert.equal(d._checkLoop(tab, 'research_url', { url: 'https://addons.mozilla.org/en-US/firefox/' }, failure).kind, 'stop');
+});
+
 test('three identical no-progress clicks also trigger nudge', () => {
   const d = new LoopDetectorShim();
   const tab = 33;
@@ -2148,6 +2216,54 @@ test('stale repeated fetch_url entries do not stop after switching tools', () =>
 
   const pivot = d._checkLoop(tab, 'click_ax', { ref_id: 'ref_157' }, { success: true });
   assert.equal(pivot.kind, 'none');
+});
+
+test('new_tab stays in the background and explicitly preserves run ownership', () => {
+  for (const browserName of ['chrome', 'firefox']) {
+    const agentSource = fs.readFileSync(path.join(ROOT, `src/${browserName}/src/agent/agent.js`), 'utf8');
+    const start = agentSource.indexOf("if (name === 'new_tab')");
+    const end = agentSource.indexOf("if (name === 'screenshot')", start);
+    const body = agentSource.slice(start, end);
+    assert.match(body, /const createProps = \{ url: args\.url, active: false \}/, `${browserName}: helper tab must not steal focus`);
+    assert.match(body, /retargeted: false/, `${browserName}: result must expose the run boundary`);
+    assert.match(body, /new_tab does not grant site access or retarget later tools/, `${browserName}: model must receive the boundary note`);
+
+    const toolsSource = fs.readFileSync(path.join(ROOT, `src/${browserName}/src/agent/tools.js`), 'utf8');
+    assert.match(toolsSource, /background browser tab for user reference[\s\S]*?does not activate the tab, retarget the current run, or grant access/, `${browserName}: tool schema must describe background-only behavior`);
+  }
+});
+
+test('Firefox protected active-tab reads can fall back to one screenshot', async () => {
+  const previousBrowser = globalThis.browser;
+  const tabId = 341;
+  const url = 'https://addons.mozilla.org/en-US/developers/';
+  let screenshotCalls = 0;
+  try {
+    globalThis.browser = {
+      tabs: {
+        get: async id => ({ id, active: true, status: 'complete', url }),
+      },
+    };
+    const agent = new AgentFx({});
+    agent.executeTool = async (_tabId, name) => {
+      assert.equal(name, 'screenshot');
+      screenshotCalls++;
+      return { success: true, method: 'vision_describe', description: 'Developer dashboard' };
+    };
+    const failure = firefoxRestrictedDomainFailure(url);
+    const result = await agent._restrictedDomainScreenshotFallback(tabId, 'read_page', url, failure);
+    assert.equal(result.success, true);
+    assert.equal(result.redirectedFrom, 'read_page');
+    assert.equal(result.restrictedDomain, 'addons.mozilla.org');
+    assert.equal(screenshotCalls, 1);
+
+    const waited = await agent._waitForRestrictedTabLoad(tabId, { timeout: 50 }, failure);
+    assert.equal(waited.success, true);
+    assert.equal(waited.method, 'tab_load_status');
+  } finally {
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
+  }
 });
 
 test('nudge counter resets after a sustained healthy streak', () => {
@@ -3443,6 +3559,54 @@ test('invalid URL strings are rejected', () => {
   expectReject('not a url');
   expectReject('://no-scheme');
   expectReject('http://');
+});
+
+test('Firefox standard protected domains are matched exactly', () => {
+  assert.equal(firefoxRestrictedDomainForUrl('https://addons.mozilla.org/en-US/developers/'), 'addons.mozilla.org');
+  assert.equal(firefoxRestrictedDomainForUrl('https://accounts.firefox.com/signin'), 'accounts.firefox.com');
+  assert.equal(firefoxRestrictedDomainForUrl('https://addons.mozilla.org.evil.example/'), null);
+  assert.equal(firefoxRestrictedDomainForUrl('https://example.com/'), null);
+  assert.equal(firefoxRestrictedDomainForUrl('not a url'), null);
+});
+
+test('Firefox protected-domain failures are definitive and screenshot-aware', () => {
+  const result = firefoxRestrictedDomainFailure('https://addons.mozilla.org/en-US/developers/');
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, 'firefox_restricted_domain');
+  assert.equal(result.nonRetryable, true);
+  assert.equal(result.nonRetryableScope, 'firefox-host-access:addons.mozilla.org');
+  assert.equal(result.recoveryTool, 'screenshot');
+  assert.match(result.error, /Opening the same URL in another tab.*will not grant access/s);
+
+  const permission = firefoxHostPermissionFailure(
+    'https://enterprise.example/dashboard',
+    'Missing host permission for the tab',
+  );
+  assert.equal(permission.errorCode, 'firefox_host_access_denied');
+  assert.equal(permission.nonRetryableScope, 'firefox-host-access:enterprise.example');
+  assert.equal(firefoxHostPermissionFailure('https://example.com/', 'tab closed'), null);
+});
+
+test('Firefox network readers reject protected domains before network or tab work', async () => {
+  const previousFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    throw new Error('fetch should not run');
+  };
+  try {
+    for (const result of [
+      await fetchUrlFx('https://addons.mozilla.org/en-US/developers/'),
+      await readPageSourceFx('https://addons.mozilla.org/en-US/developers/'),
+      await researchUrlFx('https://addons.mozilla.org/en-US/developers/'),
+    ]) {
+      assert.equal(result.errorCode, 'firefox_restricted_domain');
+      assert.equal(result.nonRetryable, true);
+    }
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test('firefox port validator agrees with chrome on a sample of cases', () => {
@@ -10438,6 +10602,13 @@ test('settings exposes collapsed compatibility controls only for compatible prov
     assert.match(settings, /data-key="extraBody" data-type="json"/, `${label}: custom body textarea should be typed as JSON`);
     assert.match(settings, /parseProviderExtraBodyJson\(input\.value\)/, `${label}: Save and Test should reject invalid JSON before updating the provider`);
     assert.match(settings, /textarea\[data-provider/, `${label}: provider save should include the JSON textarea`);
+    assert.match(settings, /const providerCompatibilityJsonDrafts = new Map\(\)/, `${label}: raw compatibility JSON drafts need separate UI state`);
+    assert.match(
+      settings,
+      /if \(input\.dataset\.type === 'json'\) \{[\s\S]*?providerCompatibilityJsonDrafts\.set\(id, input\.value\);[\s\S]*?parseProviderExtraBodyJson\(input\.value\)/,
+      `${label}: invalid or partial JSON should survive provider-card re-renders`,
+    );
+    assert.match(settings, /providerCompatibilityJsonDrafts\.delete\(id\);[\s\S]*?Object\.assign\(providersData\[id\], config\)/, `${label}: successful saves should clear the raw JSON draft`);
     assert.match(html, /\.provider-compatibility \{/, `${label}: compatibility disclosure styling missing`);
     assert.match(html, /textarea\[aria-invalid="true"\]/, `${label}: invalid JSON needs a visible error state`);
 
@@ -16920,6 +17091,45 @@ test('official GPT-5.6 treats incomplete Responses as hard failures', async () =
       assert.equal(chunks[0]?.content, 'partial');
       assert.equal(chunks[1]?.type, 'usage');
       assert.equal(chunks.some((chunk) => chunk.type === 'done'), false);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('official GPT-5.6 rejects premature Responses EOF and bare DONE sentinels', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const Provider of [OpenAIProviderCh, OpenAIProviderFx]) {
+      const provider = new Provider({
+        category: 'cloud',
+        providerName: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5.6-terra',
+      });
+      for (const sse of [
+        'data: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+        'data: [DONE]\n\n',
+      ]) {
+        globalThis.fetch = async () => new Response(sse, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+        const chunks = [];
+        let thrown = null;
+        try {
+          for await (const chunk of provider.chatStream([{ role: 'user', content: 'hello' }])) {
+            chunks.push(chunk);
+          }
+        } catch (error) {
+          thrown = error;
+        }
+        assert.ok(thrown, 'a Responses stream without response.completed must fail');
+        assert.match(thrown.message, /incomplete \(missing_response_completed\)/);
+        assert.equal(thrown.incomplete, true);
+        assert.equal(thrown.isResponsesStreamError, true);
+        assert.equal(chunks.some((chunk) => chunk.type === 'done'), false);
+      }
     }
   } finally {
     globalThis.fetch = originalFetch;

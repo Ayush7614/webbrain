@@ -652,6 +652,12 @@ export class Agent {
   }
 
   _loopCallKey(name, args, result) {
+    if (result?.nonRetryableScope) {
+      // Definitive platform/permission failures keep one identity across
+      // tools and URL variants, so changing fetch strategies cannot evade
+      // the stop condition.
+      return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
+    }
     // URL-family tools (fetch_url, research_url, …) bucket by resource
     // identity so the agent can't escape loop detection by fetching the
     // same logical file via 8 different API endpoints. See loop-bucket.js.
@@ -1628,6 +1634,16 @@ export class Agent {
    */
   _checkLoop(tabId, toolName, toolArgs, toolResult) {
     const { buf, key } = this._recordCall(tabId, toolName, toolArgs, toolResult);
+    if (toolResult?.nonRetryable) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 2) {
+        this._clearLoopState(tabId);
+        return {
+          kind: 'stop',
+          message: toolResult.stopMessage || `Stopped: ${toolName} hit the same non-retryable failure twice. Retrying or switching to an equivalent tool will not make progress.`,
+        };
+      }
+    }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
       // Healthy, non-looping call. We don't reset the nudge counter
@@ -1641,6 +1657,20 @@ export class Agent {
         this.healthyCallsSinceLoop.delete(tabId);
       }
       return { kind: 'none' };
+    }
+
+    const method = String(toolArgs?.method || 'GET').toUpperCase();
+    if (
+      loop.type === 'repeat' &&
+      URL_FAMILY_TOOLS.has(toolName) &&
+      method === 'GET' &&
+      this._isToolResultErroredForLoop(toolName, toolArgs, toolResult)
+    ) {
+      this._clearLoopState(tabId);
+      return {
+        kind: 'stop',
+        message: `Stopped: ${loop.name} failed three times for the same read-only resource. Repeating it or changing URL variants will not make progress. Please give a different instruction or inspect the page manually.`,
+      };
     }
 
     // Any new loop detection resets the healthy-streak counter.
@@ -9189,7 +9219,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
 
     if (name === 'new_tab') {
-      const createProps = { url: args.url };
+      // Runs stay pinned to their source tab. Keep reference/helper tabs in
+      // the background so the browser does not switch the user to a tab the
+      // agent cannot subsequently control.
+      const createProps = { url: args.url, active: false };
       let sourceTab = null;
       try {
         sourceTab = await chrome.tabs.get(tabId);
@@ -9219,7 +9252,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         });
       } catch { /* not critical to the tool's success */ }
       const groupId = await this._addToWebBrainGroup(sourceTab, tab.id);
-      return { success: true, tabId: tab.id, url: args.url, groupId: groupId >= 0 ? groupId : null };
+      return {
+        success: true,
+        tabId: tab.id,
+        url: args.url,
+        active: false,
+        retargeted: false,
+        note: 'Opened in the background. The current run remains on its original tab; new_tab does not grant site access or retarget later tools.',
+        groupId: groupId >= 0 ? groupId : null,
+      };
     }
 
     if (name === 'screenshot') {

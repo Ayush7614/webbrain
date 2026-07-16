@@ -266,6 +266,10 @@ if (languageSelect) {
 }
 
 let providersData = {};
+// Unsaved custom-body text must survive provider-card/filter/search renders,
+// including temporarily invalid JSON while the user is still editing it.
+// Keep the raw UI draft separate from the last valid provider config.
+const providerCompatibilityJsonDrafts = new Map();
 let activeProviderId = '';
 let providerActivationRequestId = 0;
 let requestedActiveProviderId = '';
@@ -1709,7 +1713,9 @@ function refreshProviderCompatibilitySummary(id) {
 function renderProviderCompatibilitySettings(id, config) {
   if (!supportsProviderCompatibilitySettings(id, config)) return '';
   const compat = normalizeProviderCompatibility(config);
-  const extraBody = providerExtraBodyText(config.extraBody);
+  const extraBody = providerCompatibilityJsonDrafts.has(id)
+    ? providerCompatibilityJsonDrafts.get(id)
+    : providerExtraBodyText(config.extraBody);
   const options = (items, current) => items.map(([value, label]) => (
     `<option value="${value}"${value === current ? ' selected' : ''}>${escapeHtml(label)}</option>`
   )).join('');
@@ -2239,7 +2245,12 @@ function renderProviders() {
   });
   document.querySelectorAll('.provider-compatibility select[data-provider], .provider-compatibility textarea[data-provider]').forEach((input) => {
     const eventName = input.tagName === 'TEXTAREA' ? 'input' : 'change';
-    input.addEventListener(eventName, () => refreshProviderCompatibilitySummary(input.dataset.provider));
+    input.addEventListener(eventName, () => {
+      if (input.tagName === 'TEXTAREA') {
+        providerCompatibilityJsonDrafts.set(input.dataset.provider, input.value);
+      }
+      refreshProviderCompatibilitySummary(input.dataset.provider);
+    });
   });
   document.querySelectorAll('input[data-key="model"], input[data-key="baseUrl"]').forEach((input) => {
     input.addEventListener('input', () => refreshProviderCompatibilitySummary(input.dataset.provider));
@@ -2250,9 +2261,15 @@ function renderProviders() {
       const details = button.closest('.provider-compatibility');
       details?.querySelectorAll('select[data-provider]').forEach((select) => { select.value = 'auto'; });
       const textarea = details?.querySelector('textarea[data-type="json"]');
-      if (textarea) textarea.value = '';
+      if (textarea) {
+        textarea.value = '';
+        providerCompatibilityJsonDrafts.set(id, '');
+      }
       refreshProviderCompatibilitySummary(id);
     });
+  });
+  document.querySelectorAll('.provider-compatibility[data-provider-id]').forEach((details) => {
+    refreshProviderCompatibilitySummary(details.dataset.providerId);
   });
   document.querySelectorAll('.loaded-model-dialog').forEach(dialog => {
     dialog.addEventListener('click', (event) => {
@@ -2534,6 +2551,7 @@ async function saveProvider(id, { showFlash = true, markConfigured = true } = {}
     if (showFlash) setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
     throw e;
   }
+  providerCompatibilityJsonDrafts.delete(id);
   if (providersData[id]) {
     Object.assign(providersData[id], config);
     if (markConfigured) providersData[id].configured = id !== 'webbrain_cloud';
@@ -2596,6 +2614,7 @@ function syncInputsIntoProvidersData() {
     // mergeProviderRequestBody). Invalid draft JSON is left unchanged so a
     // partial edit does not corrupt the last-known-good object.
     if (input.dataset.type === 'json') {
+      providerCompatibilityJsonDrafts.set(id, input.value);
       try {
         setProviderConfigValue(providersData[id], key, parseProviderExtraBodyJson(input.value));
       } catch {

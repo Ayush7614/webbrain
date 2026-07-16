@@ -135,9 +135,9 @@ Only implementations that call the shared helpers (`_mapMessages`, `_addConfigur
 
 ### OpenAI-compatible provider ids (examples)
 
-**Local / self-hosted:** WebBrain Cloud, Ollama, LM Studio, Jan, vLLM, SGLang, LocalAI, llama.cpp  
+**Local / self-hosted:** WebBrain Cloud, Ollama, LM Studio, Jan, vLLM, SGLang, LocalAI, llama.cpp
 
-**Cloud (OpenAI-compatible HTTP):** OpenAI, Gemini (compat endpoint), Cloudflare, Mistral, DeepSeek, xAI, NVIDIA, Groq, MiniMax, Alibaba/Qwen, Together, OpenRouter, Hugging Face, Fireworks, Azure OpenAI  
+**Cloud (OpenAI-compatible HTTP):** OpenAI, Gemini (compat endpoint), Cloudflare, Mistral, DeepSeek, xAI, NVIDIA, Groq, MiniMax, Alibaba/Qwen, Together, OpenRouter, Hugging Face, Fireworks, Azure OpenAI
 
 Custom OpenAI base-URL providers you add also get the same path.
 
@@ -162,9 +162,9 @@ Chrome and Firefox stay mirrored except for platform fetch helpers.
 
 ## What v24 is *not*
 
-- Not a new set of browser tools or a change to Ask vs Act safety defaults  
-- Not “enable GPT-5.6 by allowlist only”—you could already type model ids; v24 is about **correct wire format + usability**  
-- Not full native Anthropic/Bedrock compatibility knobs  
+- Not a new set of browser tools or a change to Ask vs Act safety defaults
+- Not “enable GPT-5.6 by allowlist only”—you could already type model ids; v24 is about **correct wire format + usability**
+- Not full native Anthropic/Bedrock compatibility knobs
 - Not a guarantee that every third-party “OpenAI-compatible” server implements every optional field—you still configure per endpoint
 
 ---

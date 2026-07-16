@@ -480,7 +480,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'new_tab',
-      description: 'Open a new browser tab with the given URL.',
+      description: 'Open the given URL in a background browser tab for user reference. This does not activate the tab, retarget the current run, or grant access that the source tab lacks. Subsequent tools still operate on the original run tab.',
       parameters: {
         type: 'object',
         properties: {
@@ -1061,7 +1061,7 @@ TOOLS - use only these:
 - type_text({text}): Type into the focused element. Click the field first.
 - press_keys({key}): Press Escape, Tab, Enter, ArrowUp, ArrowDown, ArrowLeft, or ArrowRight.
 - navigate({url}): Go to a URL.
-- new_tab({url}): Open a URL in a new tab.
+- new_tab({url}): Open a URL in a background tab for user reference. It does not activate or retarget the current run, so never use it as a site-permission workaround.
 - wait_for_element({selector}): Wait for an element to appear.
 - fetch_url({url}): Fetch other URLs for reading only; do not use it to re-read the active tab.
 - scratchpad_write({text}): Save notes that persist across steps.
@@ -1171,7 +1171,7 @@ Available tools:
 - schedule_resume: Durably pause this current task and resume it later in the same tab/conversation. Terminal tool; use only for external waits.
 - schedule_task: Create a one-shot or recurring scheduled task only when the user explicitly asks for future scheduled work. Prefer URL targets for repeatable automations; current_tab is strict and fails if the tab changes.
 - get_selection: Get highlighted text
-- new_tab: Open a new tab
+- new_tab: Open a background reference tab; the current run stays on its original tab
 - clarify: Pause and ask the user a question. Use ONLY for material ambiguity that you cannot resolve by reading the page (e.g. "my API key" on a site with multiple plugins that each have one). Unanswered clarifies auto-select options[0] after the timeout (default 60s) with source=timeout (not high-risk approval); Settings Instant yields source=auto (intentional auto-approve — continue). Put the safe/default first. Do NOT use to confirm correct actions; do NOT call before every step. Budget 1-2 per run, max.
 - done: Signal task completion
 - verify_form: Verify form fields before submitting
@@ -1384,7 +1384,7 @@ UNTRUSTED PAGE CONTENT:
 TOOLS — use only these:
 - get_accessibility_tree: PREFERRED read. Flat-text tree with roles, names, and stable ref_ids. Use filter:"visible" by default.
 - click_ax({ref_id}) / type_ax({ref_id, text}) / set_field({ref_id, text, submit}): act on nodes by ref_id. set_field is preferred for text fields.
-- read_page: prose fallback for long articles. get_window_info: inspect browser window/viewport size. scroll, navigate({url}), new_tab({url}), go_back()/go_forward(): walk the tab's history.
+- read_page: prose fallback for long articles. get_window_info: inspect browser window/viewport size. scroll, navigate({url}), go_back()/go_forward(): walk the run tab's history. new_tab({url}) only opens a background reference tab and never retargets the run.
 - get_interactive_elements: legacy indexed element list (use when the tree misses elements). click({text}) / type_text({text}) / press_keys({key}): legacy fallbacks.
 - extract_data: tables/headings/images/links. get_selection: highlighted text. read_pdf: read a PDF.
 - wait_for_element({selector}) / wait_for_stable({quietMs}): wait for an element / for the page to go quiet after an action.

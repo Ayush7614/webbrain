@@ -1,3 +1,5 @@
+import { firefoxRestrictedDomainFailure } from '../firefox-restricted-domains.js';
+
 /**
  * Network & download tools for the WebBrain agent (Firefox).
  *
@@ -1624,6 +1626,8 @@ export async function readPageSource(url, opts = {}, ctx = {}) {
     } catch {}
   }
   if (!targetUrl) return { success: false, error: 'read_page_source: no url provided and could not read the active tab URL.' };
+  const restricted = firefoxRestrictedDomainFailure(targetUrl);
+  if (restricted) return restricted;
 
   const allowLocal = getAllowLocalNetwork();
   const v = validateFetchUrl(targetUrl, { allowLocalNetwork: allowLocal });
@@ -1734,6 +1738,8 @@ export async function readPageSource(url, opts = {}, ctx = {}) {
  */
 export async function fetchUrl(url, opts = {}, ctx = {}) {
   if (!url) return { success: false, error: 'url is required' };
+  const restricted = firefoxRestrictedDomainFailure(url);
+  if (restricted) return restricted;
   const replay = apiReplayOptionsForFetch(url, opts, ctx);
   if (!replay.ok) return { success: false, error: replay.error };
   opts = replay.opts;
@@ -1844,6 +1850,8 @@ export async function fetchUrl(url, opts = {}, ctx = {}) {
 
 export async function researchUrl(url, opts = {}) {
   if (!url) return { success: false, error: 'url is required' };
+  const restricted = firefoxRestrictedDomainFailure(url);
+  if (restricted) return restricted;
   const timeoutMs = Math.min(opts.timeout || 8000, 30000);
   let createdTab = null;
   try {
