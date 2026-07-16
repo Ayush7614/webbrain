@@ -4,6 +4,22 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [24.0.0] - 2026-07-16
+
+### Added
+- First-class **GPT-5.6** support for official OpenAI: default model `gpt-5.6-terra`, UI suggestions for Terra / Sol / Luna, and a **1,050,000**-token context window for the `gpt-5.6*` family.
+- Official OpenAI GPT-5.6 routes through the **Responses API** (`/v1/responses`) with encrypted reasoning replay (`response_items`), function-call conversion, streaming, and usage normalization. Older models and custom/proxy base URLs stay on Chat Completions.
+- **Advanced model compatibility** settings on every provider card: preset (Auto / OpenAI / Qwen / DeepSeek / OpenRouter / Custom), reasoning effort, system vs developer role, max-token field, and safe custom request-body JSON.
+- Shared `provider-compatibility.js` layer (Chrome + Firefox) that maps roles, token fields, reasoning knobs, and merges protected extra body fields for OpenAI-compatible, Azure OpenAI, and llama.cpp request builders.
+- Documented the release in `WHATS_NEW_IN_V24.md` at the repository root.
+
+### Changed
+- OpenAI-compatible request building is centralized so compatibility presets apply consistently without mutating stored chat history.
+- OpenAI default cost metadata migrates safely when upgrading from earlier shipped defaults.
+
+### Tests
+- Added / retained coverage for Responses routing, reasoning replay, streaming, provider-compatibility merges, GPT-5.6 context windows, and default-model migration.
+
 ## [23.3.6] - 2026-07-15
 
 ### Added
