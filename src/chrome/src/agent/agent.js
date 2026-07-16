@@ -882,8 +882,8 @@ export class Agent {
     return { kind: 'none' };
   }
 
-  _checkDeliveryObservationStreak(tabId, name) {
-    if (!this.constructor.DELIVERY_OBSERVATION_TOOLS.has(name)) {
+  _checkDeliveryObservationStreak(tabId, name, args = {}) {
+    if (!this.constructor.DELIVERY_OBSERVATION_TOOLS.has(name) || isNetworkMutation(name, args)) {
       this.deliveryObservationStreaks.delete(tabId);
       return { kind: 'none' };
     }
@@ -2564,7 +2564,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       const axReadCheck = this._checkAccessibilityReadLoop(tabId, fnName, fnArgs, toolResult);
       const scrollCheck = this._checkNoProgressScroll(tabId, fnName, fnArgs, toolResult);
-      const deliveryCheck = this._checkDeliveryObservationStreak(tabId, fnName);
+      const deliveryCheck = this._checkDeliveryObservationStreak(tabId, fnName, fnArgs);
 
       // Combine: stop > nudge > none.
       let effectiveKind = 'none';
