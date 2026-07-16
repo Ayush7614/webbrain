@@ -26,10 +26,16 @@ import {
   USER_MEMORY_MAX_PROMPT_CHARS_KEY,
   normalizeUserMemoryMaxPromptChars,
 } from '../agent/user-memory.js';
+import {
+  detectedCompatibilityPreset,
+  normalizeProviderCompatibility,
+  parseProviderExtraBodyJson,
+  shouldUseOpenAIResponsesApi,
+} from '../providers/provider-compatibility.js';
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '23.3.10';
+const EXT_VERSION = '24.0.0';
 
 const providersContainer = document.getElementById('providers');
 const displaySettings = document.getElementById('display-settings');
@@ -1609,6 +1615,154 @@ function providerInputValue(input) {
   return input.value;
 }
 
+function setProviderConfigValue(config, path, value) {
+  const keys = String(path || '').split('.').filter(Boolean);
+  if (!keys.length) return;
+  let target = config;
+  for (const key of keys.slice(0, -1)) {
+    if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) target[key] = {};
+    target = target[key];
+  }
+  target[keys.at(-1)] = value;
+}
+
+function supportsProviderCompatibilitySettings(id, config = {}) {
+  return id !== 'webbrain_cloud' && ['openai', 'llamacpp', 'azure_openai'].includes(config.type);
+}
+
+function providerExtraBodyText(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0) return '';
+  try { return JSON.stringify(value, null, 2); } catch { return ''; }
+}
+
+function prettyCompatibilityValue(value) {
+  const key = `st.providers.compat.value.${value}`;
+  const translated = t(key);
+  return translated === key ? (value || '') : translated;
+}
+
+function automaticTokenField(config) {
+  if (shouldUseOpenAIResponsesApi(config)) return 'max_output_tokens';
+  const model = String(config.model || '').toLowerCase();
+  const isNewOfficialContract = config.type === 'openai'
+    && config.category !== 'local'
+    && config.providerName !== 'lmstudio'
+    && /^(gpt-5|gpt-4\.1|o1|o3|o4)/.test(model);
+  return isNewOfficialContract ? 'max_completion_tokens' : 'max_tokens';
+}
+
+function compatibilitySummary(config) {
+  const compat = normalizeProviderCompatibility(config);
+  const detected = detectedCompatibilityPreset(config);
+  const preset = compat.preset === 'auto'
+    ? t('st.providers.compat.auto_detected', { preset: prettyCompatibilityValue(detected) })
+    : prettyCompatibilityValue(compat.preset);
+  const reasoning = compat.reasoningEffort === 'auto'
+    ? t('st.providers.compat.provider_default')
+    : prettyCompatibilityValue(compat.reasoningEffort);
+  const role = compat.systemPromptRole === 'auto'
+    ? prettyCompatibilityValue('system')
+    : prettyCompatibilityValue(compat.systemPromptRole);
+  const tokens = compat.maxTokensField === 'auto' ? automaticTokenField(config) : compat.maxTokensField;
+  const extraCount = config.extraBody && typeof config.extraBody === 'object' && !Array.isArray(config.extraBody)
+    ? Object.keys(config.extraBody).length
+    : 0;
+  const extra = extraCount
+    ? t(extraCount === 1 ? 'st.providers.compat.summary_extra' : 'st.providers.compat.summary_extra_plural', { count: extraCount })
+    : '';
+  return t('st.providers.compat.summary', { preset, reasoning, role, tokens, extra });
+}
+
+function currentProviderCompatibilityConfig(id) {
+  const source = providersData[id] || {};
+  const config = { ...source, compat: { ...(source.compat || {}) } };
+  document.querySelectorAll(`.provider-compatibility [data-provider="${id}"]`).forEach((input) => {
+    if (input.dataset.type === 'json') {
+      try { config.extraBody = parseProviderExtraBodyJson(input.value); } catch { config.extraBody = {}; }
+      return;
+    }
+    setProviderConfigValue(config, input.dataset.key, providerInputValue(input));
+  });
+  const modelInput = document.querySelector(`input[data-provider="${id}"][data-key="model"]`);
+  const baseUrlInput = document.querySelector(`input[data-provider="${id}"][data-key="baseUrl"]`);
+  if (modelInput) config.model = modelInput.value;
+  if (baseUrlInput) config.baseUrl = baseUrlInput.value;
+  return config;
+}
+
+function refreshProviderCompatibilitySummary(id) {
+  const details = document.querySelector(`.provider-compatibility[data-provider-id="${id}"]`);
+  if (!details) return;
+  const textarea = details.querySelector('textarea[data-type="json"]');
+  const validation = details.querySelector('.provider-compatibility-validation');
+  let error = '';
+  if (textarea) {
+    try { parseProviderExtraBodyJson(textarea.value); } catch (e) { error = e.message; }
+    textarea.setAttribute('aria-invalid', error ? 'true' : 'false');
+  }
+  if (validation) validation.textContent = error;
+  const summary = details.querySelector('.provider-compatibility-summary');
+  if (summary) summary.textContent = compatibilitySummary(currentProviderCompatibilityConfig(id));
+}
+
+function renderProviderCompatibilitySettings(id, config) {
+  if (!supportsProviderCompatibilitySettings(id, config)) return '';
+  const compat = normalizeProviderCompatibility(config);
+  const extraBody = providerExtraBodyText(config.extraBody);
+  const options = (items, current) => items.map(([value, label]) => (
+    `<option value="${value}"${value === current ? ' selected' : ''}>${escapeHtml(label)}</option>`
+  )).join('');
+  const valueLabel = (value) => prettyCompatibilityValue(value);
+  return `
+    <details class="provider-compatibility" data-provider-id="${id}">
+      <summary>
+        <span class="provider-compatibility-title">${escapeHtml(t('st.providers.compat.title'))}</span>
+        <span class="provider-compatibility-summary">${escapeHtml(compatibilitySummary(config))}</span>
+      </summary>
+      <div class="provider-compatibility-body">
+        <p>${escapeHtml(t('st.providers.compat.blurb'))}</p>
+        <div class="provider-compatibility-grid">
+          <div class="field">
+            <label>${escapeHtml(t('st.providers.compat.preset'))}</label>
+            <select data-provider="${id}" data-key="compat.preset" data-type="select">
+              ${options([['auto', valueLabel('auto')], ['openai', valueLabel('openai')], ['qwen', valueLabel('qwen')], ['deepseek', valueLabel('deepseek')], ['openrouter', valueLabel('openrouter')], ['custom', valueLabel('custom')]], compat.preset)}
+            </select>
+          </div>
+          <div class="field">
+            <label>${escapeHtml(t('st.providers.compat.reasoning'))}</label>
+            <select data-provider="${id}" data-key="compat.reasoningEffort" data-type="select">
+              ${options([['auto', valueLabel('auto')], ['off', valueLabel('off')], ['minimal', valueLabel('minimal')], ['low', valueLabel('low')], ['medium', valueLabel('medium')], ['high', valueLabel('high')], ['xhigh', valueLabel('xhigh')], ['max', valueLabel('max')]], compat.reasoningEffort)}
+            </select>
+          </div>
+          <div class="field">
+            <label>${escapeHtml(t('st.providers.compat.system_role'))}</label>
+            <select data-provider="${id}" data-key="compat.systemPromptRole" data-type="select">
+              ${options([['auto', valueLabel('auto')], ['system', valueLabel('system')], ['developer', valueLabel('developer')]], compat.systemPromptRole)}
+            </select>
+          </div>
+          <div class="field">
+            <label>${escapeHtml(t('st.providers.compat.token_field'))}</label>
+            <select data-provider="${id}" data-key="compat.maxTokensField" data-type="select">
+              ${options([['auto', valueLabel('auto')], ['max_tokens', 'max_tokens'], ['max_completion_tokens', 'max_completion_tokens']], compat.maxTokensField)}
+            </select>
+          </div>
+        </div>
+        <div class="field provider-compatibility-json">
+          <label>${escapeHtml(t('st.providers.compat.extra_body'))}</label>
+          <textarea data-provider="${id}" data-key="extraBody" data-type="json" spellcheck="false"
+                    aria-invalid="false" placeholder="${escapeHtml(t('st.providers.compat.extra_body_placeholder'))}">${escapeHtml(extraBody)}</textarea>
+          <div class="provider-compatibility-help">${escapeHtml(t('st.providers.compat.extra_body_help'))}</div>
+        </div>
+        <div class="provider-compatibility-footer">
+          <button type="button" class="btn-secondary btn-reset-compatibility" data-provider="${id}">${escapeHtml(t('st.providers.compat.reset'))}</button>
+          <span class="provider-compatibility-validation" role="status"></span>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 // Effective tier for the dropdown's initial value — same precedence as the
 // provider getter: cloud is forced full; an explicit promptTier wins; the
 // legacy useCompactPrompt boolean maps to compact; otherwise local → mid.
@@ -1639,6 +1793,9 @@ function providerSearchTextForEntry(id, config, fieldDefs) {
     config.model,
     config.baseUrl,
     fieldText,
+    supportsProviderCompatibilitySettings(id, config)
+      ? 'advanced model compatibility reasoning thinking system developer max tokens custom request body json'
+      : '',
   ].filter(Boolean).join(' '));
 }
 
@@ -2018,10 +2175,12 @@ function renderProviders() {
            ${t('st.providers.webbrain_data_use.body', { privacyLink, subscribeLink, accountLink })}
          </div>`;
     }
+    const compatibilitySettings = renderProviderCompatibilitySettings(id, config);
 
     const body = `
       ${fieldsHTML}
       ${providerNote}
+      ${compatibilitySettings}
       <div class="btn-row">
         <button class="btn-primary btn-save" data-provider="${id}">${escapeHtml(t('st.providers.save'))}</button>
         <button class="btn-secondary btn-test" data-provider="${id}">${escapeHtml(t('st.providers.test'))}</button>
@@ -2075,6 +2234,24 @@ function renderProviders() {
         input.style.display = 'none';
         input.value = sel.value;
       }
+      refreshProviderCompatibilitySummary(providerId);
+    });
+  });
+  document.querySelectorAll('.provider-compatibility select[data-provider], .provider-compatibility textarea[data-provider]').forEach((input) => {
+    const eventName = input.tagName === 'TEXTAREA' ? 'input' : 'change';
+    input.addEventListener(eventName, () => refreshProviderCompatibilitySummary(input.dataset.provider));
+  });
+  document.querySelectorAll('input[data-key="model"], input[data-key="baseUrl"]').forEach((input) => {
+    input.addEventListener('input', () => refreshProviderCompatibilitySummary(input.dataset.provider));
+  });
+  document.querySelectorAll('.btn-reset-compatibility').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.provider;
+      const details = button.closest('.provider-compatibility');
+      details?.querySelectorAll('select[data-provider]').forEach((select) => { select.value = 'auto'; });
+      const textarea = details?.querySelector('textarea[data-type="json"]');
+      if (textarea) textarea.value = '';
+      refreshProviderCompatibilitySummary(id);
     });
   });
   document.querySelectorAll('.loaded-model-dialog').forEach(dialog => {
@@ -2342,13 +2519,16 @@ function setProviderTestResult(id, className, message, color) {
 }
 
 async function saveProvider(id, { showFlash = true, markConfigured = true } = {}) {
-  const inputs = document.querySelectorAll(`input[data-provider="${id}"], select[data-provider="${id}"]`);
+  const inputs = document.querySelectorAll(`input[data-provider="${id}"], select[data-provider="${id}"], textarea[data-provider="${id}"]`);
   const config = {};
-  inputs.forEach(input => {
-    config[input.dataset.key] = providerInputValue(input);
-  });
 
   try {
+    inputs.forEach(input => {
+      const value = input.dataset.type === 'json'
+        ? parseProviderExtraBodyJson(input.value)
+        : providerInputValue(input);
+      setProviderConfigValue(config, input.dataset.key, value);
+    });
     await sendToBackground('update_provider', { providerId: id, config, markConfigured });
   } catch (e) {
     if (showFlash) setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
@@ -2408,11 +2588,22 @@ async function testProvider(id) {
 }
 
 function syncInputsIntoProvidersData() {
-  document.querySelectorAll('input[data-provider], select[data-provider]').forEach((input) => {
+  document.querySelectorAll('input[data-provider], select[data-provider], textarea[data-provider]').forEach((input) => {
     const id = input.dataset.provider;
     const key = input.dataset.key;
     if (!id || !key || !providersData[id]) return;
-    providersData[id][key] = providerInputValue(input);
+    // Keep extraBody as a parsed object in memory (matches saveProvider and
+    // mergeProviderRequestBody). Invalid draft JSON is left unchanged so a
+    // partial edit does not corrupt the last-known-good object.
+    if (input.dataset.type === 'json') {
+      try {
+        setProviderConfigValue(providersData[id], key, parseProviderExtraBodyJson(input.value));
+      } catch {
+        /* keep previous value */
+      }
+      return;
+    }
+    setProviderConfigValue(providersData[id], key, providerInputValue(input));
   });
 }
 

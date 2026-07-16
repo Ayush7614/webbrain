@@ -1,5 +1,6 @@
 import { BaseLLMProvider } from './base.js';
 import { fetchWithFallback } from './fetch-with-fallback.js';
+import { shouldUseOpenAIResponsesApi } from './provider-compatibility.js';
 
 const OPENAI_RESPONSES_MIN_MAX_OUTPUT_TOKENS = 16;
 
@@ -85,12 +86,10 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
   }
 
   _addMaxTokens(body, options) {
-    const max = options.maxTokens ?? 4096;
-    if (this._isNewOpenAIContract()) {
-      body.max_completion_tokens = max;
-    } else {
-      body.max_tokens = max;
-    }
+    // Prefer configured max-token field when set; otherwise preserve the
+    // existing OpenAI new-contract vs legacy default.
+    const fallback = this._isNewOpenAIContract() ? 'max_completion_tokens' : 'max_tokens';
+    this._addConfiguredMaxTokens(body, options, fallback);
   }
 
   _addTemperature(body, options) {
@@ -189,10 +188,12 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
    * no guarantee that the proxy implements /v1/responses.
    */
   _usesResponsesApi() {
-    if (String(this.config.providerName || '').toLowerCase() !== 'openai') return false;
-    const model = String(this.model || '').trim().toLowerCase();
-    if (!/^gpt-5\.6(?:$|-(?:sol|terra|luna)(?:$|-))/.test(model)) return false;
-    return this._isOfficialOpenAIBaseUrl();
+    return shouldUseOpenAIResponsesApi({
+      ...this.config,
+      providerName: this.config.providerName || this.name,
+      baseUrl: this.baseUrl,
+      model: this.model,
+    });
   }
 
   _isOfficialOpenAIBaseUrl() {
@@ -210,12 +211,38 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     return `${this.baseUrl.replace(/\/+$/, '')}/responses`;
   }
 
+  /**
+   * Shared Chat Completions body builder (also used by unit tests).
+   * Applies system→developer role mapping, configured max-token field,
+   * compatibility presets, and safe extraBody merge.
+   */
+  _buildChatCompletionsBody(messages, options = {}, stream = false) {
+    let body = {
+      model: this.model,
+      messages: this._chatMessages(messages),
+      stream,
+    };
+    this._addTemperature(body, options);
+    this._addMaxTokens(body, options);
+    if (this._shouldSendTools(messages, options)) {
+      body.tools = options.tools;
+      body.tool_choice = options.toolChoice || 'auto';
+    }
+    body = this._mergeConfiguredRequestBody(body, options);
+    this._addWebBrainCloudContext(body, options);
+    if (stream) this._addStreamUsageOptions(body);
+    return body;
+  }
+
   _chatMessages(messages) {
-    return (Array.isArray(messages) ? messages : []).map((message) => {
+    // Strip Responses-only replay payload before Chat Completions, then apply
+    // provider compatibility role mapping (e.g. system → developer).
+    const stripped = (Array.isArray(messages) ? messages : []).map((message) => {
       if (!message || !Object.hasOwn(message, 'response_items')) return message;
       const { response_items: _responseItems, ...chatMessage } = message;
       return chatMessage;
     });
+    return this._mapMessages(stripped);
   }
 
   _responsesContent(content) {
@@ -244,7 +271,9 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
 
   _responsesInput(messages) {
     const input = [];
-    for (const message of Array.isArray(messages) ? messages : []) {
+    // Role mapping applies to plain chat turns; exact response_items replay
+    // is left untouched so encrypted reasoning state stays intact.
+    for (const message of this._mapMessages(Array.isArray(messages) ? messages : [])) {
       // These are the exact output Items returned by a prior stateless
       // Responses call. Replaying them preserves encrypted reasoning state,
       // which OpenAI requires when a reasoning turn emitted function calls.
@@ -319,7 +348,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
   }
 
   _responsesBody(messages, options, stream) {
-    const body = {
+    let body = {
       model: this.model,
       input: this._responsesInput(messages),
       stream,
@@ -329,35 +358,67 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
       // Keep reasoning enabled. `none` would recreate the workaround the
       // Responses migration is specifically intended to avoid.
       reasoning: {
-        effort: options.reasoningEffort || this.config.reasoningEffort || 'medium',
+        effort: options.reasoningEffort || this.config.reasoningEffort || this.config.compat?.reasoningEffort || 'medium',
       },
     };
+    if (body.reasoning.effort === 'auto' || body.reasoning.effort === 'off') {
+      body.reasoning.effort = body.reasoning.effort === 'off' ? 'none' : 'medium';
+    }
 
     if (this._shouldSendTools(messages, options)) {
       body.tools = this._responsesTools(options.tools);
       body.tool_choice = this._responsesToolChoice(options.toolChoice);
     }
 
-    const extra = options.extraBody;
-    if (extra && typeof extra === 'object') {
-      if (typeof extra.reasoning_effort === 'string') {
-        body.reasoning = { effort: extra.reasoning_effort };
-      } else if (extra.reasoning && typeof extra.reasoning === 'object') {
-        body.reasoning = { ...body.reasoning, ...extra.reasoning };
-      }
-      if (extra.response_format?.type === 'json_schema' && extra.response_format.json_schema) {
-        const schema = extra.response_format.json_schema;
-        body.text = {
-          format: {
-            type: 'json_schema',
-            name: schema.name,
-            schema: schema.schema,
-            strict: schema.strict === true,
-          },
-        };
-      }
+    // Merge configured compatibility extras (and safe extraBody) after the
+    // base Responses shape. Reserved keys like model/input/stream/tools are
+    // filtered out by mergeProviderRequestBody.
+    body = this._mergeConfiguredRequestBody(body, options);
+
+    // Normalize Chat Completions-style reasoning_effort if a preset emitted it.
+    if (typeof body.reasoning_effort === 'string') {
+      body.reasoning = { ...(body.reasoning || {}), effort: body.reasoning_effort };
+      delete body.reasoning_effort;
     }
+
+    // Re-assert Responses contract fields that custom/extra JSON must not
+    // silently disable (stateless multi-turn reasoning replay).
+    body.store = false;
+    const include = Array.isArray(body.include) ? body.include.filter((item) => typeof item === 'string') : [];
+    if (!include.includes('reasoning.encrypted_content')) {
+      include.push('reasoning.encrypted_content');
+    }
+    body.include = include;
+    if (!body.reasoning || typeof body.reasoning !== 'object' || Array.isArray(body.reasoning)) {
+      body.reasoning = { effort: 'medium' };
+    } else if (!body.reasoning.effort) {
+      body.reasoning.effort = 'medium';
+    }
+
+    // Convert Chat Completions-style response_format (from config or per-call
+    // extras) into Responses text.format, then strip the legacy key so both
+    // are never sent together.
+    const responseFormat = (body.response_format && typeof body.response_format === 'object')
+      ? body.response_format
+      : (options.extraBody && typeof options.extraBody === 'object' ? options.extraBody.response_format : null);
+    if (responseFormat?.type === 'json_schema' && responseFormat.json_schema) {
+      const schema = responseFormat.json_schema;
+      body.text = {
+        format: {
+          type: 'json_schema',
+          name: schema.name,
+          schema: schema.schema,
+          strict: schema.strict === true,
+        },
+      };
+    }
+    delete body.response_format;
     return body;
+  }
+
+  // Aliases used by provider-compatibility regression tests.
+  _buildResponsesBody(messages, options = {}, stream = false) {
+    return this._responsesBody(messages, options, stream);
   }
 
   _normalizeResponsesUsage(usage) {
@@ -396,7 +457,38 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     };
   }
 
+  _responsesIncompleteReason(response) {
+    return response?.incomplete_details?.reason
+      || response?.status_details?.reason
+      || response?.error?.code
+      || null;
+  }
+
+  _responsesIncompleteError(response, { stream = false } = {}) {
+    const reason = this._responsesIncompleteReason(response) || 'incomplete';
+    const detail = response?.error?.message || response?.incomplete_details?.message || '';
+    const prefix = stream ? 'Responses stream incomplete' : 'Responses incomplete';
+    const message = detail
+      ? `${prefix} (${reason}): ${detail}`
+      : `${prefix} (${reason}).`;
+    const error = new Error(message);
+    error.isResponsesStreamError = !!stream;
+    error.incomplete = true;
+    error.incompleteReason = reason;
+    return error;
+  }
+
   _responsesResult(data) {
+    // Official Responses can return HTTP 200 with status incomplete/failed
+    // (max_output_tokens, content filter, etc.). Treat those as hard errors so
+    // truncated answers are not persisted as successful turns.
+    if (data?.status === 'incomplete') {
+      throw this._responsesIncompleteError(data, { stream: false });
+    }
+    if (data?.status === 'failed') {
+      const message = data?.error?.message || 'Responses request failed.';
+      throw new Error(message);
+    }
     const output = Array.isArray(data?.output) ? data.output : [];
     const toolCalls = output
       .map((item, index) => this._responseToolCall(item, index))
@@ -414,6 +506,11 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
       responseItems: output,
       raw: data,
     };
+  }
+
+  // Alias used by provider-compatibility regression tests.
+  _parseResponsesData(data) {
+    return this._responsesResult(data);
   }
 
   async _chatResponses(messages, options) {
@@ -510,7 +607,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
               const call = this._responseToolCall(event.item, index);
               if (call) yield { type: 'tool_call', content: [call] };
             }
-          } else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+          } else if (event.type === 'response.completed') {
             const response = event.response || {};
             const remaining = finalToolCalls(response);
             if (remaining.length) yield { type: 'tool_call', content: remaining };
@@ -519,6 +616,14 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
             }
             yield { type: 'done', content: '', responseItems: response.output || [] };
             return;
+          } else if (event.type === 'response.incomplete') {
+            // Incomplete is terminal (token limit / filter / etc.). Surface it
+            // instead of yielding a normal done that the agent treats as success.
+            const response = event.response || {};
+            if (response.usage) {
+              yield { type: 'usage', usage: this._normalizeResponsesUsage(response.usage) };
+            }
+            throw this._responsesIncompleteError(response, { stream: true });
           } else if (event.type === 'response.failed' || event.type === 'error') {
             const message = event.response?.error?.message || event.error?.message || event.message || 'Responses stream failed.';
             const streamError = new Error(message);
@@ -538,24 +643,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     if (this._usesResponsesApi()) {
       return this._chatResponses(messages, options);
     }
-    const body = {
-      model: this.model,
-      messages: this._chatMessages(messages),
-      stream: false,
-    };
-    this._addTemperature(body, options);
-    this._addMaxTokens(body, options);
-
-    if (this._shouldSendTools(messages, options)) {
-      body.tools = options.tools;
-      body.tool_choice = options.toolChoice || 'auto';
-    }
-
-    if (options.extraBody && typeof options.extraBody === 'object') {
-      Object.assign(body, options.extraBody);
-    }
-    this._addWebBrainCloudContext(body, options);
-
+    const body = this._buildChatCompletionsBody(messages, options, false);
     const url = `${this.baseUrl}/chat/completions`;
     let res;
     try {
@@ -595,25 +683,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
       yield* this._chatResponsesStream(messages, options);
       return;
     }
-    const body = {
-      model: this.model,
-      messages: this._chatMessages(messages),
-      stream: true,
-    };
-    this._addTemperature(body, options);
-    this._addMaxTokens(body, options);
-
-    if (this._shouldSendTools(messages, options)) {
-      body.tools = options.tools;
-      body.tool_choice = options.toolChoice || 'auto';
-    }
-
-    if (options.extraBody && typeof options.extraBody === 'object') {
-      Object.assign(body, options.extraBody);
-    }
-    this._addWebBrainCloudContext(body, options);
-    this._addStreamUsageOptions(body);
-
+    const body = this._buildChatCompletionsBody(messages, options, true);
     const streamUrl = `${this.baseUrl}/chat/completions`;
     let res;
     try {

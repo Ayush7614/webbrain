@@ -1,4 +1,9 @@
 import { inferContextWindow } from './context-windows.js';
+import {
+  addConfiguredMaxTokens,
+  mapProviderMessages,
+  mergeProviderRequestBody,
+} from './provider-compatibility.js';
 
 /**
  * Base LLM Provider — all providers implement this interface.
@@ -81,6 +86,18 @@ export class BaseLLMProvider {
    */
   get useCompactPrompt() {
     return !!this.config.useCompactPrompt;
+  }
+
+  _mapMessages(messages) {
+    return mapProviderMessages(messages, this.config);
+  }
+
+  _addConfiguredMaxTokens(body, options, fallback = 'max_tokens') {
+    return addConfiguredMaxTokens(body, options.maxTokens ?? 4096, this.config, fallback);
+  }
+
+  _mergeConfiguredRequestBody(body, options = {}) {
+    return mergeProviderRequestBody(body, this.config, options.extraBody);
   }
 
   /**

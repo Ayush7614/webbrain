@@ -60,7 +60,7 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
   }
 
   _addMaxTokens(body, options) {
-    body.max_tokens = options.maxTokens ?? 4096;
+    this._addConfiguredMaxTokens(body, options, 'max_tokens');
   }
 
   _addTemperature(body, options) {
@@ -86,17 +86,21 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
     body.stream_options = { ...streamOptions, include_usage: true };
   }
 
-  async chat(messages, options = {}) {
-    const body = { messages, stream: false };
+  _buildRequestBody(messages, options = {}, stream = false) {
+    let body = { messages: this._mapMessages(messages), stream };
     this._addTemperature(body, options);
     this._addMaxTokens(body, options);
     if (this._shouldSendTools(messages, options)) {
       body.tools = options.tools;
       body.tool_choice = options.toolChoice || 'auto';
     }
-    if (options.extraBody && typeof options.extraBody === 'object') {
-      Object.assign(body, options.extraBody);
-    }
+    body = this._mergeConfiguredRequestBody(body, options);
+    if (stream) this._addStreamUsageOptions(body);
+    return body;
+  }
+
+  async chat(messages, options = {}) {
+    const body = this._buildRequestBody(messages, options, false);
 
     const url = this._chatUrl();
     let res;
@@ -126,17 +130,7 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
   }
 
   async *chatStream(messages, options = {}) {
-    const body = { messages, stream: true };
-    this._addTemperature(body, options);
-    this._addMaxTokens(body, options);
-    if (this._shouldSendTools(messages, options)) {
-      body.tools = options.tools;
-      body.tool_choice = options.toolChoice || 'auto';
-    }
-    if (options.extraBody && typeof options.extraBody === 'object') {
-      Object.assign(body, options.extraBody);
-    }
-    this._addStreamUsageOptions(body);
+    const body = this._buildRequestBody(messages, options, true);
 
     const url = this._chatUrl();
     let res;
@@ -182,4 +176,3 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
     yield { type: 'done', content: '' };
   }
 }
-

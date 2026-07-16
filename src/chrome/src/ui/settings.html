@@ -385,6 +385,103 @@
       border-radius: var(--radius);
     }
 
+    .provider-compatibility {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .provider-compatibility summary {
+      display: grid;
+      grid-template-columns: minmax(180px, auto) minmax(0, 1fr);
+      align-items: center;
+      gap: 12px;
+      padding: 11px 28px 11px 0;
+      color: var(--text2);
+      cursor: pointer;
+      list-style: none;
+      position: relative;
+      user-select: none;
+    }
+    .provider-compatibility summary::-webkit-details-marker { display: none; }
+    .provider-compatibility summary::after {
+      content: '+';
+      position: absolute;
+      right: 4px;
+      color: var(--text2);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 15px;
+    }
+    .provider-compatibility[open] summary::after { content: '−'; }
+    .provider-compatibility summary:hover,
+    .provider-compatibility[open] summary { color: var(--text); }
+    .provider-compatibility-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.45px;
+      text-transform: uppercase;
+    }
+    .provider-compatibility-summary {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text2);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10px;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .provider-compatibility-body {
+      padding: 14px;
+      margin-bottom: 12px;
+      background: rgba(108,99,255,0.055);
+      border: 1px solid rgba(108,99,255,0.16);
+      border-radius: 8px;
+    }
+    .provider-compatibility-body > p {
+      margin: 0 0 12px;
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .provider-compatibility-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0 12px;
+    }
+    .provider-compatibility-json textarea {
+      min-height: 116px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      tab-size: 2;
+    }
+    .provider-compatibility-json textarea[aria-invalid="true"] {
+      border-color: var(--danger, #e66);
+      box-shadow: 0 0 0 1px rgba(238,102,102,0.18);
+    }
+    .provider-compatibility-help {
+      margin-top: 5px;
+      color: var(--text2);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+    .provider-compatibility-footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 32px;
+    }
+    .provider-compatibility-validation {
+      color: var(--danger, #e66);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    @media (max-width: 600px) {
+      .provider-compatibility summary { grid-template-columns: 1fr; gap: 3px; }
+      .provider-compatibility-summary { text-align: left; }
+      .provider-compatibility-grid { grid-template-columns: 1fr; }
+      .provider-compatibility-footer { align-items: flex-start; flex-direction: column; }
+    }
+
     .field { margin-bottom: 10px; }
     .field label {
       display: block;
