@@ -113,7 +113,7 @@ export function buildContextMenuPrompt(selectionText) {
 const CONTEXT_MENU_PENDING_PREFIX = 'contextMenuPrompt:';
 
 /**
- * @param {() => (chrome.storage.StorageArea | browser.storage.StorageArea | null)} getStore
+ * @param {() => (browser.storage.StorageArea | null)} getStore
  */
 export function createContextMenuStorage(getStore) {
   const pending = new Map();

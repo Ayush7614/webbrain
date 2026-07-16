@@ -11,11 +11,11 @@ npx playwright install chromium
 
 ## 1. Unit — `npm test`
 
-`test/run.js`. Pure-JS tests of loop detection + adapter routing. No browser, no network. Already green (32 passed as of v4.0.1).
+`test/run.js`. Pure-JS tests covering loop detection, adapter routing, provider parity, permission gates, tool classifications, planner logic, skills, slash commands, credential fields, and context management. No browser, no network. Run `node test/run.js`.
 
 ## 2. Fixtures — `npm run test:fixtures`
 
-`test/fixtures/`. Playwright loads local HTML files that reproduce the exact failure modes v4.0.1's overlay defenses fix:
+`test/fixtures/`. Playwright loads local HTML files that reproduce failure modes for overlay defenses and interaction patterns:
 
 - `modal-scoping.html` — dialog with "Create" over a background that also has "Create" + "Publish release". Verifies `_findTopmostModal()` scopes the text resolver, so `click({text:"Create"})` picks the dialog's button and `click({text:"Publish release"})` returns a scoped no-match.
 - `occlusion.html` — target button covered by a transparent overlay with higher z-index. Verifies the post-click `elementFromPoint` hit-test refuses with `{occluded:true}`, and that coord clicks correctly bypass the check.

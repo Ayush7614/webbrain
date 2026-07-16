@@ -1,6 +1,6 @@
 # WebBrain Architecture
 
-> Version 18.0.0
+> Version 24.0.1
 
 ## Overview
 

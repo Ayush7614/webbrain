@@ -35,7 +35,7 @@
 - **Multi-Provider LLM** — Supports local and cloud models:
   - **WebBrain Cloud 1.0** (cloud, default) — Built-in managed cloud option; no local setup required
   - **llama.cpp** (local) — No API key needed. Also **Ollama**, **LM Studio**, **Jan**, **vLLM**, **SGLang**, and **LocalAI**
-  - **OpenAI** (GPT-5.5, etc.)
+  - **OpenAI** (GPT-5.6, etc.)
   - **Anthropic Claude** (native API)
   - **Google Gemini**, **Mistral AI**, **DeepSeek**, **xAI Grok**, **Groq**
   - **MiniMax**, **Alibaba Cloud (Qwen)**
@@ -135,7 +135,7 @@ Click the gear icon or go to the extension's Options page to configure:
 **Display Settings:**
 - Verbose Mode — Show full tool call JSON (off by default)
 - Auto-screenshot — Provide visual context when DOM/page reads are insufficient
-- Max Agent Steps — Configurable step limit (5-200, default 60)
+- Max Agent Steps — Configurable step limit (5-200, default 130)
 - Plan before Act — Optionally generate and review a structured Act-mode plan before browser tools run (try mode by default; explicit off is preserved)
 
 **Profile and Memory:**
@@ -384,9 +384,9 @@ See [CHANGELOG.md](./CHANGELOG.md) for the full version history. Recent highligh
 
 ## Adding a New Provider
 
-1. Create a new class extending `BaseLLMProvider` in `src/providers/`
+1. Create a new class extending `BaseLLMProvider` in `src/chrome/src/providers/` (and mirror to `src/firefox/src/providers/`)
 2. Implement `chat()` and optionally `chatStream()`
-3. Register it in `src/providers/manager.js`
+3. Register it in `src/chrome/src/providers/manager.js` (and mirror to `src/firefox/src/providers/manager.js`)
 
 All providers normalize to a common response format:
 ```js
