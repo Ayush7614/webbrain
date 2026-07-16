@@ -618,6 +618,12 @@ export class Agent {
     return result;
   }
 
+  _withResponseItems(message, responseItems) {
+    return Array.isArray(responseItems) && responseItems.length
+      ? { ...message, response_items: responseItems }
+      : message;
+  }
+
   /**
    * Toggle the per-tab API-mutation allowlist. Called by background.js
    * when the sidebar reports the user typed /allow-api.
@@ -12906,14 +12912,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
 
       if (result.toolCalls && result.toolCalls.length > 0) {
-        messages.push({
+        messages.push(this._withResponseItems({
           role: 'assistant',
           content: result.content || null,
           tool_calls: result.toolCalls,
-          ...(Array.isArray(result.responseItems) && result.responseItems.length
-            ? { response_items: result.responseItems }
-            : {}),
-        });
+        }, result.responseItems));
 
         const batchResult = await this._executeToolBatch(
           tabId, result.toolCalls, messages, onUpdate, provider, result.content, allowedToolNames, steps
@@ -12951,7 +12954,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (this._isActionMode(mode) && this._isCompressionPlaceholderResponse(result.content)) {
         if (!compressionPlaceholderRecoveryAttempted) {
           compressionPlaceholderRecoveryAttempted = true;
-          messages.push({ role: 'assistant', content: result.content });
+          messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems));
           messages.push({
             role: 'user',
             content: '[System nudge: your previous response was a context-compression placeholder, not a real final answer or tool call. Continue the active browser task with tool calls. Do not output "[compressed]".]',
@@ -13002,7 +13005,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // Genuine final answer — emit and exit.
       const progressFinalBlock = this._plainFinalProgressBlock(tabId);
       if (progressFinalBlock) {
-        messages.push({ role: 'assistant', content: result.content });
+        messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems));
         messages.push({ role: 'user', content: progressFinalBlock });
         onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
         this._persist(tabId);
@@ -13011,7 +13014,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       finalResponse = result.costAllowanceMessage
         ? `${result.content}\n\n${result.costAllowanceMessage}`
         : result.content;
-      messages.push({ role: 'assistant', content: finalResponse });
+      messages.push(this._withResponseItems({ role: 'assistant', content: finalResponse }, result.responseItems));
       onUpdate('text', { content: finalResponse });
       break;
     }
@@ -13280,12 +13283,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           }
           const toolCalls = Object.values(toolCallsAccumulator);
           this._logDebug({ type: 'llm_stream_response', step: steps, content: fullText, toolCalls });
-          messages.push({
+          messages.push(this._withResponseItems({
             role: 'assistant',
             content: fullText || null,
             tool_calls: toolCalls,
-            ...(responseItems ? { response_items: responseItems } : {}),
-          });
+          }, responseItems));
 
           const batchResult = await this._executeToolBatch(
             tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps
@@ -13334,7 +13336,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (this._isActionMode(mode) && this._isCompressionPlaceholderResponse(fullText)) {
           if (!compressionPlaceholderRecoveryAttempted) {
             compressionPlaceholderRecoveryAttempted = true;
-            messages.push({ role: 'assistant', content: fullText });
+            messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems));
             messages.push({
               role: 'user',
               content: '[System nudge: your previous response was a context-compression placeholder, not a real final answer or tool call. Continue the active browser task with tool calls. Do not output "[compressed]".]',
@@ -13359,7 +13361,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         compressionPlaceholderRecoveryAttempted = false;
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
         if (progressFinalBlock) {
-          messages.push({ role: 'assistant', content: fullText });
+          messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems));
           messages.push({ role: 'user', content: progressFinalBlock });
           onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
           this._persist(tabId);
@@ -13369,7 +13371,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           onUpdate('text_delta', { content: `\n\n${costStopMessage}` });
           fullText = `${fullText}\n\n${costStopMessage}`;
         }
-        messages.push({ role: 'assistant', content: fullText });
+        messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems));
         this._persist(tabId);
         return finish(fullText);
 

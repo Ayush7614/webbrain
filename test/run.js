@@ -16201,8 +16201,13 @@ test('GPT-5.6 Responses streaming preserves refusal text', async () => {
 test('Agent tool loops preserve Responses reasoning items on both execution paths', () => {
   for (const prefix of ['src/chrome', 'src/firefox']) {
     const source = fs.readFileSync(path.join(ROOT, prefix, 'src/agent/agent.js'), 'utf8');
-    assert.match(source, /Array\.isArray\(result\.responseItems\).*response_items: result\.responseItems/s, `${prefix}: non-stream tool loop should retain response Items`);
-    assert.match(source, /chunk\.responseItems.*response_items: responseItems/s, `${prefix}: stream tool loop should retain response Items`);
+    assert.match(source, /_withResponseItems\(message, responseItems\)[\s\S]*response_items: responseItems/, `${prefix}: assistant helper should retain Responses output Items`);
+    assert.match(source, /content: result\.content \|\| null,[\s\S]*tool_calls: result\.toolCalls,[\s\S]*}, result\.responseItems\)/, `${prefix}: non-stream tool loop should retain response Items`);
+    assert.match(source, /content: result\.content \}, result\.responseItems\)[\s\S]*messages\.push\(\{ role: 'user', content: progressFinalBlock \}/, `${prefix}: non-stream progress continuations should retain response Items`);
+    assert.match(source, /content: finalResponse \}, result\.responseItems\)/, `${prefix}: non-stream final answers should retain response Items`);
+    assert.match(source, /chunk\.responseItems[\s\S]*content: fullText \|\| null,[\s\S]*tool_calls: toolCalls,[\s\S]*}, responseItems\)/, `${prefix}: stream tool loop should retain response Items`);
+    assert.match(source, /content: fullText \}, responseItems\)[\s\S]*messages\.push\(\{ role: 'user', content: progressFinalBlock \}/, `${prefix}: stream progress continuations should retain response Items`);
+    assert.match(source, /content: fullText \}, responseItems\)[\s\S]*return finish\(fullText\)/, `${prefix}: stream final answers should retain response Items`);
     assert.match(source, /if \(msg\.response_items\) totalChars \+= JSON\.stringify\(msg\.response_items\)\.length/, `${prefix}: context budgeting should include encrypted reasoning Items`);
   }
 });
