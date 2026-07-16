@@ -6,14 +6,21 @@ This changelog was generated from the repository Git history and release tags. V
 
 ## [24.0.1] - 2026-07-16
 
+### Added
+- Added hidden trailing `/record [--save-as <filename>]` and `/screenshot [--save-as <filename>]` prompt suffixes. Recording now wraps a Chrome run and saves automatically; screenshot capture saves timestamped or custom-named before/after PNGs in Chrome and Firefox. The suffixes remain intentionally absent from `/help` and autocomplete.
+
 ### Fixed
 - Kept agent-created reference tabs in the background so Chrome and Firefox runs remain visibly attached to their original tab.
 - Detected Firefox-protected Mozilla domains before blocked DOM or network reads, used one active-tab screenshot fallback where possible, and stopped equivalent non-retryable attempts instead of looping.
 - Treated Responses streams that end without `response.completed` as incomplete instead of persisting partial output as a successful turn.
 - Preserved unsaved custom request-body JSON drafts across provider search, filtering, and card re-renders, including temporarily invalid JSON while editing.
+- Re-activate the originating run tab before the after screenshot when a run opens another tab.
+- Restored Mozilla Add-ons developer adapter matching after the hostname-hardening matcher rename.
+- Rebuilt the Chrome, Edge, and Firefox 24.0.1 archives from the final source tree.
 
 ### Tests
 - Added regression coverage for background tab ownership, Firefox restricted-domain handling, bounded read retries, premature Responses stream termination, and compatibility JSON draft persistence.
+- Added mirrored parser, filename sanitization, lifecycle ordering, Downloads saving, Chrome recorder identity, and Firefox unsupported-recording coverage for hidden run capture.
 
 ## [24.0.0] - 2026-07-16
 

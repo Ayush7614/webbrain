@@ -12,6 +12,7 @@ import { createContextMenuPromptHandler } from './context-menu-prompts.js';
 import { formatSelectionPromptForDisplay } from '../context-menu-storage.js';
 import { deleteChatHistoryRecord, saveChatHistoryRecord } from './chat-history-store.js';
 import { claimRunError } from './run-error-dedupe.js';
+import { RUN_CAPTURE_START_ERROR_PREFIX } from '../run-capture.js';
 import {
   STORAGE_KEY as STORE_REVIEW_STORAGE_KEY,
   recordSuccessfulTask,
@@ -583,6 +584,74 @@ function buildSlashCommandDetailHtml(command) {
     lines.push(`&nbsp;&nbsp;<code>${escapeHtml(value)}</code> — ${escapeHtml(t(option.descriptionKey))}`);
   }
   return lines.join('<br>');
+}
+
+// Hidden run-capture suffixes. These deliberately stay out of SLASH_COMMANDS,
+// autocomplete, and /help: they modify a normal prompt instead of acting as
+// standalone commands. Examples:
+//   Update the checkout form /record
+//   Test the menu /screenshot --save-as menu-test.png
+function parseTrailingRunCaptureDirective(value) {
+  const text = String(value || '').trim();
+  const match = /(?:^|[ \t\r\n])(\/record|\/screenshot)(?:[ \t]+(--save-as)(?:[ \t]+([^\r\n]+))?)?[ \t]*$/i.exec(text);
+  if (!match) return null;
+
+  const prompt = text.slice(0, match.index).trimEnd();
+  // Preserve the existing standalone /record and /screenshot behavior.
+  if (!prompt) return null;
+
+  const kind = match[1].slice(1).toLowerCase();
+  if (!match[2]) return { kind, prompt, saveAs: null };
+
+  const rawSaveAs = String(match[3] || '').trim();
+  if (!rawSaveAs) return { kind, prompt, saveAs: null, error: 'missing-save-as' };
+
+  const quote = rawSaveAs[0];
+  let saveAs = rawSaveAs;
+  if (quote === '"' || quote === "'") {
+    if (rawSaveAs.length < 2 || rawSaveAs.at(-1) !== quote) {
+      return { kind, prompt, saveAs: null, error: 'invalid-save-as' };
+    }
+    saveAs = rawSaveAs.slice(1, -1).trim();
+  }
+  if (!saveAs) return { kind, prompt, saveAs: null, error: 'missing-save-as' };
+  return { kind, prompt, saveAs };
+}
+
+function trailingRunCaptureUsage(kind) {
+  return `/${kind === 'record' ? 'record' : 'screenshot'} [--save-as <filename>]`;
+}
+
+function sanitizeRunCaptureSaveAs(value) {
+  const filename = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .split(/[\\/]/)
+    .pop()
+    .trim()
+    .replace(/[<>:"|?*]/g, '-')
+    .replace(/[. ]+$/g, '');
+  if (!filename || filename === '.' || filename === '..') return '';
+  return filename.slice(0, 180);
+}
+
+function runCaptureTimestamp(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, '-').replace(/T/, '_').slice(0, 19);
+}
+
+function buildRunScreenshotFilenames(saveAs, date = new Date()) {
+  const requested = sanitizeRunCaptureSaveAs(saveAs);
+  const stem = (requested.replace(/\.png$/i, '') || `webbrain-run-${runCaptureTimestamp(date)}`).slice(0, 170);
+  return {
+    before: `${stem}-before.png`,
+    after: `${stem}-after.png`,
+  };
+}
+
+function buildRunRecordingFilename(saveAs) {
+  const requested = sanitizeRunCaptureSaveAs(saveAs);
+  if (!requested) return null;
+  const stem = requested.replace(/\.webm$/i, '').replace(/[. ]+$/g, '') || 'webbrain-recording';
+  return `${stem.slice(0, 175)}.webm`;
 }
 
 function showSlashInvocationError(invocation) {
@@ -4285,6 +4354,15 @@ function modeForMessageText(text) {
   return agentMode;
 }
 
+function reportTrailingRunCaptureError(directive, error, tabId) {
+  if (currentTabId !== tabId || renderedTabId !== tabId) return;
+  const message = error?.message || String(error || 'unknown error');
+  const html = directive?.kind === 'record'
+    ? tSystemHtml('sp.record.error', { error: message })
+    : tSystemHtml('sp.screenshot.error', { msg: message });
+  addPersistentSlashMessage(systemHtml(html));
+}
+
 async function startFullScreenRecording(tabId = currentTabId, recordOptions = {}) {
   try {
     const prep = await sendToBackground('prepare_recording_host');
@@ -4344,6 +4422,7 @@ async function sendMessage(extraChatParams = {}) {
   stopListening();
   let text = inputEl.value.trim();
   if (!text) return;
+  const submittedText = text;
   const tabId = currentTabId;
   const requestId = createRunRequestId(tabId);
   text = normalizeScreenshotCommandText(text);
@@ -4379,6 +4458,17 @@ async function sendMessage(extraChatParams = {}) {
       return false;
     }
     return enqueueQueuedComposerMessage(tabId, text);
+  }
+  let runCaptureDirective = null;
+  if (!retryOptions) {
+    runCaptureDirective = parseTrailingRunCaptureDirective(text);
+    if (runCaptureDirective?.error) {
+      showComposerToast(t('sp.slash.invalid_usage', {
+        usage: trailingRunCaptureUsage(runCaptureDirective.kind),
+      }), { duration: 5000 });
+      return false;
+    }
+    if (runCaptureDirective) text = runCaptureDirective.prompt;
   }
   const modeForSend = retryOptions?.mode || modeOverride || modeForMessageText(text);
   const apiMutationsAllowedForSend = retryOptions
@@ -4433,6 +4523,7 @@ async function sendMessage(extraChatParams = {}) {
     return false;
   }
 
+  let userEl = null;
   let assistantEl = null;
   const attachmentsForSend = retryOptions
     ? (Array.isArray(retryOptions.attachments) ? retryOptions.attachments.slice() : [])
@@ -4452,7 +4543,7 @@ async function sendMessage(extraChatParams = {}) {
       clearPendingAttachmentsForTab(tabId);
       renderAttachmentPreviews();
     }
-    addMessage('user', text);
+    userEl = addMessage('user', text);
     showActivity(t('sp.activity.thinking'));
     assistantEl = addMessage('assistant', '');
     assistantEl.dataset.runRequestId = requestId;
@@ -4465,6 +4556,7 @@ async function sendMessage(extraChatParams = {}) {
   localRunRequestIds.set(tabId, requestId);
 
   let accepted = false;
+  let captureStartFailed = false;
   let completedSuccessfully = false;
   let promptEligibleCompletion = false;
   try {
@@ -4474,6 +4566,12 @@ async function sendMessage(extraChatParams = {}) {
       text,
       mode: modeForSend,
       apiMutationsAllowed: apiMutationsAllowedForSend,
+      ...(runCaptureDirective ? {
+        runCapture: {
+          kind: runCaptureDirective.kind,
+          saveAs: runCaptureDirective.saveAs,
+        },
+      } : {}),
       ...(attachmentsForSend.length ? { attachments: attachmentsForSend } : {}),
       ...chatExtraParams,
     });
@@ -4497,20 +4595,17 @@ async function sendMessage(extraChatParams = {}) {
     // assistant answer). We optimistically cleared the chips on send, so
     // re-add them here — otherwise "switch providers and try again" is
     // impossible without re-picking every file.
-    if (attachmentsForSend.length && currentTabId === tabId
+    if (attachmentsForSend.length
         && res?.updates?.some(u => u?.type === 'attachment_rejected')) {
-      const pending = getPendingAttachmentsForTab(tabId);
-      pending.unshift(...attachmentsForSend.filter(att => !pending.includes(att)));
+      restorePendingAttachmentsForTab(tabId, attachmentsForSend);
       // Restore the prompt only if the user hasn't started typing a new one
       // while the rejected turn was in flight.
-      if (!inputEl.value.trim()) {
+      if (currentTabId === tabId && !inputEl.value.trim()) {
         inputEl.value = text;
         saveInputDraftForTab(tabId, text);
         autoResizeInput();
         updateSlashCommandAutocomplete();
       }
-      renderAttachmentPreviews();
-      syncSendButtonState();
     }
 
     if (renderToCurrentTab && currentTabId === tabId && isTabAbortRequested(tabId)) {
@@ -4532,7 +4627,25 @@ async function sendMessage(extraChatParams = {}) {
       }
     }
   } catch (e) {
-    if (renderToCurrentTab && currentTabId === tabId && !isTabAbortRequested(tabId)) {
+    captureStartFailed = !!runCaptureDirective
+      && String(e?.message || '').startsWith(RUN_CAPTURE_START_ERROR_PREFIX);
+    if (captureStartFailed) {
+      const message = String(e?.message || '').slice(RUN_CAPTURE_START_ERROR_PREFIX.length);
+      reportTrailingRunCaptureError(runCaptureDirective, new Error(message), tabId);
+      restorePendingAttachmentsForTab(tabId, attachmentsForSend);
+      if (renderToCurrentTab && currentTabId === tabId) {
+        userEl?.remove();
+        assistantEl?.remove();
+        if (currentAssistantEl === assistantEl) currentAssistantEl = null;
+        if (!inputEl.value.trim()) {
+          inputEl.value = submittedText;
+          saveInputDraftForTab(tabId, submittedText);
+          autoResizeInput();
+          updateSlashCommandAutocomplete();
+        }
+        syncSendButtonState();
+      }
+    } else if (renderToCurrentTab && currentTabId === tabId && !isTabAbortRequested(tabId)) {
       renderAgentErrorUpdate({ message: e.message }, tabId, requestId);
     }
   } finally {
@@ -4557,7 +4670,7 @@ async function sendMessage(extraChatParams = {}) {
     if (renderToCurrentTab && currentTabId === tabId) scrollToBottom();
     if (renderToCurrentTab && renderedTabId === tabId) await flushRenderedTabChat();
     if (renderToCurrentTab && renderedTabId === tabId) await flushChatHistorySnapshot(tabId, { refreshTabInfo: true });
-    if (renderToCurrentTab && !wasAborted) {
+    if (renderToCurrentTab && !wasAborted && !captureStartFailed) {
       notifyCompletion({
         success: currentTabId === tabId && completedSuccessfully,
         storeReviewSuccess: currentTabId === tabId && promptEligibleCompletion,
@@ -4905,6 +5018,26 @@ function handleAgentUpdateMessage(msg) {
         }
       }
       scrollToBottom();
+      break;
+
+    case 'run_capture_warning':
+      if (data?.kind === 'record' && data?.message) {
+        addPersistentSlashMessage(systemHtml(tSystemHtml('sp.record.mic_unavailable', {
+          error: data.message,
+        })));
+      }
+      break;
+
+    case 'run_capture_complete':
+      if (data?.kind === 'screenshot' && Array.isArray(data.filenames)) {
+        showComposerToast(t('sp.record.saved', {
+          filename: data.filenames.join(', '),
+        }), { duration: 6000 });
+      }
+      break;
+
+    case 'run_capture_error':
+      reportTrailingRunCaptureError({ kind: data?.kind }, new Error(data?.message || 'unknown error'), eventTabId);
       break;
 
     case 'error':
@@ -6849,6 +6982,18 @@ function clearPendingAttachmentsForTab(tabId) {
   if (numericTabId == null) return;
   pendingAttachmentsByTab.delete(numericTabId);
   bumpAttachmentGeneration(numericTabId);
+  if (normalizeAttachmentTabId() === numericTabId) {
+    renderAttachmentPreviews();
+    syncSendButtonState();
+  }
+}
+
+function restorePendingAttachmentsForTab(tabId, attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return;
+  const numericTabId = normalizeAttachmentTabId(tabId);
+  if (numericTabId == null) return;
+  const pending = getPendingAttachmentsForTab(numericTabId);
+  pending.unshift(...attachments.filter(att => !pending.includes(att)));
   if (normalizeAttachmentTabId() === numericTabId) {
     renderAttachmentPreviews();
     syncSendButtonState();

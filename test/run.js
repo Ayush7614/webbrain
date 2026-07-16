@@ -9,7 +9,7 @@
 
 import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
 
@@ -24,10 +24,14 @@ function loadSlashCommandRuntime(panelRel) {
   assert.notEqual(start, -1, `${panelRel}: slash command metadata missing`);
   assert.notEqual(end, -1, `${panelRel}: slash parser boundary missing`);
   const block = source.slice(start, end);
-  return Function('escapeHtml', 't', `${block}\nreturn { SLASH_COMMANDS, SLASH_HELP_OPTION, slashCommandOptions, slashCommandIsDiscoverable, slashOptionIsDiscoverable, slashOptionIsAvailable, findSlashCommand, parseSlashInvocation, slashInvocationIsOutOfBand, buildSlashCommandHelpHtml, buildSlashCommandDetailHtml };`)(
+  return Function('escapeHtml', 't', `${block}\nreturn { SLASH_COMMANDS, SLASH_HELP_OPTION, slashCommandOptions, slashCommandIsDiscoverable, slashOptionIsDiscoverable, slashOptionIsAvailable, findSlashCommand, parseSlashInvocation, slashInvocationIsOutOfBand, buildSlashCommandHelpHtml, buildSlashCommandDetailHtml, parseTrailingRunCaptureDirective, trailingRunCaptureUsage, sanitizeRunCaptureSaveAs, buildRunScreenshotFilenames, buildRunRecordingFilename };`)(
     (value) => String(value),
     (key) => key,
   );
+}
+
+async function loadRunCaptureRuntime(runCaptureRel) {
+  return import(pathToFileURL(path.join(ROOT, runCaptureRel)).href);
 }
 
 function loadSlashAutocompleteRuntime(panelRel) {
@@ -8826,6 +8830,162 @@ test('canonical slash parser handles flags, values, casing, termination, and har
     assert.match(panel, /if \(match\?\.kind === 'base-action'\) \{[\s\S]*?e\.preventDefault\(\);[\s\S]*?return activateSlashCommandBaseAction\(\);/, `${label}: Enter should run the selected base-action row`);
     assert.match(panel, /if \(e\.key === 'Enter'\) \{[\s\S]*?const match = slashCommandMatches\[slashCommandSelectedIndex\];[\s\S]*?match\?\.kind === 'option'[\s\S]*?applySlashCommandCompletion\(\)/, `${label}: Enter should accept an option suggestion before submitting the parent command`);
   }
+});
+
+test('hidden trailing run-capture suffixes wrap normal prompts without entering slash help', () => {
+  for (const [label, panelRel, backgroundRel, captureRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/src/background.js', 'src/chrome/src/run-capture.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/src/background.js', 'src/firefox/src/run-capture.js'],
+  ]) {
+    const runtime = loadSlashCommandRuntime(panelRel);
+
+    assert.deepEqual(
+      runtime.parseTrailingRunCaptureDirective('Update the checkout form /record'),
+      { kind: 'record', prompt: 'Update the checkout form', saveAs: null },
+      `${label}: /record suffix should be stripped from a normal prompt`,
+    );
+    assert.deepEqual(
+      runtime.parseTrailingRunCaptureDirective('Test the menu\n/screenshot --save-as "menu state.png"'),
+      { kind: 'screenshot', prompt: 'Test the menu', saveAs: 'menu state.png' },
+      `${label}: quoted screenshot filename should be parsed`,
+    );
+    assert.deepEqual(
+      runtime.parseTrailingRunCaptureDirective('/act fix it /record --SAVE-AS ../demo.webm'),
+      { kind: 'record', prompt: '/act fix it', saveAs: '../demo.webm' },
+      `${label}: suffix parsing should preserve a leading mode command and parse flags case-insensitively`,
+    );
+    assert.equal(runtime.parseTrailingRunCaptureDirective('/record'), null, `${label}: standalone /record must keep its existing behavior`);
+    assert.equal(runtime.parseTrailingRunCaptureDirective('/screenshot'), null, `${label}: standalone /screenshot must keep its existing behavior`);
+    assert.equal(runtime.parseTrailingRunCaptureDirective('Explain /record --unknown'), null, `${label}: invalid prose-like suffixes must remain normal prompt text`);
+    assert.equal(runtime.parseTrailingRunCaptureDirective('Do it /recording'), null, `${label}: longer slash words must not match /record`);
+    assert.equal(runtime.parseTrailingRunCaptureDirective('Do it /record --save-as').error, 'missing-save-as', `${label}: missing recording filename should fail locally`);
+    assert.equal(runtime.parseTrailingRunCaptureDirective('Do it /screenshot --save-as "unterminated.png').error, 'invalid-save-as', `${label}: unmatched filename quotes should fail locally`);
+
+    assert.equal(runtime.buildRunRecordingFilename('../demo.webm'), 'demo.webm', `${label}: recording save-as should be basename-only`);
+    assert.deepEqual(
+      runtime.buildRunScreenshotFilenames('../menu state.png', new Date('2026-07-16T12:34:56Z')),
+      { before: 'menu state-before.png', after: 'menu state-after.png' },
+      `${label}: screenshot save-as should generate paired before/after names`,
+    );
+    assert.deepEqual(
+      runtime.buildRunScreenshotFilenames(null, new Date('2026-07-16T12:34:56Z')),
+      {
+        before: 'webbrain-run-2026-07-16_12-34-56-before.png',
+        after: 'webbrain-run-2026-07-16_12-34-56-after.png',
+      },
+      `${label}: unnamed screenshots should receive a shared timestamp`,
+    );
+    assert.doesNotMatch(runtime.buildSlashCommandHelpHtml(), /--save-as/, `${label}: hidden suffix flag must stay out of /help`);
+
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const sendMatch = panel.match(/async function sendMessage\(extraChatParams(?: = \{\})?\) \{[\s\S]*?\n  return accepted;\n\}/);
+    assert.ok(sendMatch, `${label}: sendMessage missing`);
+    const sendBody = sendMatch[0];
+    const parseIdx = sendBody.indexOf('parseTrailingRunCaptureDirective(text)');
+    const chatIdx = sendBody.indexOf("sendToBackground('chat'");
+    assert.ok(parseIdx >= 0 && chatIdx > parseIdx, `${label}: capture suffix should be parsed before chat dispatch`);
+    assert.match(sendBody, /runCapture: \{[\s\S]*?kind: runCaptureDirective\.kind,[\s\S]*?saveAs: runCaptureDirective\.saveAs/, `${label}: chat dispatch should transfer capture ownership to background`);
+    assert.doesNotMatch(sendBody, /startTrailingRunCapture|finishTrailingRunCapture/, `${label}: side panel lifecycle must not own capture start or finalization`);
+
+    const background = fs.readFileSync(path.join(ROOT, backgroundRel), 'utf8');
+    const chatMatch = background.match(/case 'chat': \{[\s\S]*?\n    \}\n\n    case 'chat_stream':/);
+    assert.ok(chatMatch, `${label}: background chat handler missing`);
+    const chatBody = chatMatch[0];
+    const startIdx = chatBody.indexOf('runCaptureController.start(msg.runCapture, tabId)');
+    const agentIdx = chatBody.indexOf('agent.processMessage(');
+    const finishIdx = chatBody.indexOf('runCaptureController.finish(runCaptureState, tabId)');
+    assert.ok(startIdx >= 0 && agentIdx > startIdx, `${label}: background should start capture before the agent run`);
+    assert.ok(finishIdx > agentIdx && chatBody.slice(chatBody.indexOf('} finally {')).includes('runCaptureController.finish'), `${label}: background finally should finalize capture after the agent run`);
+
+    const capture = fs.readFileSync(path.join(ROOT, captureRel), 'utf8');
+    assert.match(capture, /api\.downloads\.download\(\{[\s\S]*?filename,[\s\S]*?conflictAction: 'uniquify'/, `${label}: background-owned screenshots should save through Downloads`);
+  }
+
+  const background = fs.readFileSync(path.join(ROOT, 'src/chrome/src/background.js'), 'utf8');
+  const firefoxBackground = fs.readFileSync(path.join(ROOT, 'src/firefox/src/background.js'), 'utf8');
+  const capture = fs.readFileSync(path.join(ROOT, 'src/chrome/src/run-capture.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src/chrome/src/recorder/host.js'), 'utf8');
+  assert.match(capture, /startRecording\(tabId, \{[\s\S]*?filename: buildRunRecordingFilename\(directive\.saveAs\)/, 'chrome: trailing /record should pass the requested filename to the recorder');
+  assert.match(firefoxBackground, /unsupportedRecordingMessage: 'Tab recording is not supported in Firefox\.'/i, 'firefox: unsupported trailing recording should fail before the run');
+  assert.match(capture, /stopRecording\(\{ expectedRecordingId: state\.recordingId \}\)/, 'chrome: automatic cleanup should scope stop to the recording it started');
+  assert.match(host, /recordingId:[\s\S]*?filename: normalizeRecordingFilename\(options\.filename\)/, 'chrome: recorder state should persist the custom filename and session identity');
+  assert.match(host, /opts\.expectedRecordingId[\s\S]*?reason: 'different-recording'/, 'chrome: run cleanup must not stop a newer recording');
+  assert.match(host, /if \(opts\.expectedRecordingId\) return \{ ok: true, alreadyStopped: true \};[\s\S]*?broadcast\('stopped'/, 'chrome: scoped cleanup after a manual stop should not overwrite the saved recording result');
+  assert.match(host, /const filename = recordingState\.filename \|\| `webbrain-recording-\$\{stamp\}\.webm`;/, 'chrome: custom filename should override only the default timestamped recording name');
+});
+
+test('run screenshot capture reactivates the originating tab before saving', async () => {
+  for (const [label, captureRel] of [
+    ['chrome', 'src/chrome/src/run-capture.js'],
+    ['firefox', 'src/firefox/src/run-capture.js'],
+  ]) {
+    let tab = { id: 42, windowId: 7, active: false };
+    const updates = [];
+    const captures = [];
+    const downloads = [];
+    const api = {
+      tabs: {
+        get: async (tabId) => ({ ...tab, id: tabId }),
+        update: async (tabId, changes) => {
+          updates.push({ tabId, changes });
+          tab = { ...tab, ...changes, id: tabId };
+          return { ...tab };
+        },
+        captureVisibleTab: async (windowId, options) => {
+          captures.push({ windowId, options });
+          return 'data:image/png;base64,capture';
+        },
+      },
+      downloads: {
+        download: async (options) => {
+          downloads.push(options);
+          return 99;
+        },
+      },
+    };
+    const runtime = await loadRunCaptureRuntime(captureRel);
+    const result = await runtime.captureAndSaveRunScreenshot(api, 42, 'run-after.png');
+
+    assert.deepEqual(updates, [{ tabId: 42, changes: { active: true } }], `${label}: inactive run tab should be reactivated`);
+    assert.deepEqual(captures, [{ windowId: 7, options: { format: 'png' } }], `${label}: capture should use the reactivated tab's window`);
+    assert.equal(downloads[0].filename, 'run-after.png', `${label}: after screenshot should be saved under the requested filename`);
+    assert.deepEqual(result, { filename: 'run-after.png', downloadId: 99 });
+  }
+});
+
+test('background run-capture controller owns scoped recording cleanup', async () => {
+  const runtime = await loadRunCaptureRuntime('src/chrome/src/run-capture.js');
+  const starts = [];
+  const stops = [];
+  const controller = runtime.createRunCaptureController({
+    api: {},
+    startRecording: async (tabId, options) => {
+      starts.push({ tabId, options });
+      return { ok: true, state: { recordingId: 'run-recording-1', hasMic: true } };
+    },
+    stopRecording: async (options) => {
+      stops.push(options);
+      return { ok: true, filename: 'checkout.webm' };
+    },
+  });
+
+  const state = await controller.start({ kind: 'record', saveAs: '../checkout.webm' }, 42);
+  assert.equal(state.recordingId, 'run-recording-1');
+  assert.equal(starts[0].options.filename, 'checkout.webm');
+
+  // Finalization is invoked by background.js, not by a side-panel callback.
+  const result = await controller.finish(state, 42);
+  assert.deepEqual(stops, [{ expectedRecordingId: 'run-recording-1' }]);
+  assert.deepEqual(result, { kind: 'record', filename: 'checkout.webm' });
+
+  const firefoxController = runtime.createRunCaptureController({
+    api: {},
+    unsupportedRecordingMessage: 'Tab recording is not supported in Firefox.',
+  });
+  await assert.rejects(
+    firefoxController.start({ kind: 'record', saveAs: null }, 42),
+    new RegExp(`${runtime.RUN_CAPTURE_START_ERROR_PREFIX}Tab recording is not supported in Firefox\\.$`),
+  );
 });
 
 test('slash autocomplete progressively suggests only available unused flags', () => {
@@ -27012,8 +27172,18 @@ test('sidepanel: pending attachments are tab-scoped and send-gated while loading
     assert.ok(source.includes('clearPendingAttachmentsForTab(tabId);'), `${label} should clear pending files with the conversation`);
     assert.match(
       source,
-      /u\?\.type === 'attachment_rejected'\)\)[\s\S]*?pending\.unshift\(\.\.\.attachmentsForSend[\s\S]*?if \(!inputEl\.value\.trim\(\)\) \{[\s\S]*?inputEl\.value = text;[\s\S]*?saveInputDraftForTab\(tabId, text\);[\s\S]*?autoResizeInput\(\);[\s\S]*?updateSlashCommandAutocomplete\(\);[\s\S]*?\}[\s\S]*?renderAttachmentPreviews\(\);[\s\S]*?syncSendButtonState\(\);/,
-      `${label} should restore rejected attachments via the structured update and only restore the prompt over an empty draft`,
+      /function restorePendingAttachmentsForTab\(tabId, attachments\) \{[\s\S]*?pending\.unshift\(\.\.\.attachments\.filter\(att => !pending\.includes\(att\)\)\);[\s\S]*?normalizeAttachmentTabId\(\) === numericTabId[\s\S]*?renderAttachmentPreviews\(\);[\s\S]*?syncSendButtonState\(\);/,
+      `${label} should restore sent attachments to their originating tab without duplicating existing objects`,
+    );
+    assert.match(
+      source,
+      /u\?\.type === 'attachment_rejected'\)\)[\s\S]*?restorePendingAttachmentsForTab\(tabId, attachmentsForSend\);[\s\S]*?if \(currentTabId === tabId && !inputEl\.value\.trim\(\)\) \{[\s\S]*?inputEl\.value = text;[\s\S]*?saveInputDraftForTab\(tabId, text\);/,
+      `${label} should restore rejected attachments even after a tab switch and only overwrite an empty current-tab draft`,
+    );
+    assert.match(
+      source,
+      /if \(captureStartFailed\) \{[\s\S]*?reportTrailingRunCaptureError\([\s\S]*?restorePendingAttachmentsForTab\(tabId, attachmentsForSend\);[\s\S]*?if \(renderToCurrentTab && currentTabId === tabId\) \{/,
+      `${label} should restore attachments before capture-preflight failure UI is scoped to the current tab`,
     );
     assert.ok(
       !/does not support \(\?:image\|document\) attachments/.test(source),

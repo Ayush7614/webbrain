@@ -78,6 +78,13 @@ case-insensitive but token-exact, rejects invalid or retired syntax locally,
 and never forwards an unrecognized slash command to the model. Firefox keeps
 unsupported Chrome-only commands and flags out of discovery while retaining
 enough metadata to return an explicit unsupported error when they are typed.
+Normal prompts also have two intentionally undiscoverable run-capture suffixes:
+trailing `/record [--save-as <filename>]` wraps a Chrome run in tab recording,
+while trailing `/screenshot [--save-as <filename>]` saves before/after viewport
+captures in both browsers. The panel strips the suffix before agent dispatch,
+starts capture before `chat`, and finalizes it from the run's `finally` path.
+If a run activates another tab, the screenshot finalizer reactivates the
+originating run tab before capturing its after state.
 
 ### Background Script (`src/chrome/src/background.js`)
 

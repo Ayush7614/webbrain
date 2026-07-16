@@ -160,6 +160,10 @@ Recording is user-driven from slash commands, not model-callable tools. `/record
 captures the active tab's video + audio + (optionally) microphone into a single
 webm file and shows the red side-panel banner/timer. Add `--transcribe` to
 `/record` or `/record --full-screen` to run Whisper transcription after stop.
+As an intentionally undiscoverable convenience, a normal prompt may end in
+`/record [--save-as <filename>]`; the side panel strips that suffix, starts the
+tab recording before dispatch, and automatically stops it from the run cleanup
+path. `--save-as` supplies the Downloads filename (with `.webm` normalized).
 `/record --full-screen` opens Chrome's screen/window picker from the offscreen
 recorder context through `getDisplayMedia()`, records without showing the WebBrain
 recording banner, and can be stopped by double Escape on WebBrain or browser
@@ -198,7 +202,7 @@ offscreen/recorder.js
                                   → on stop, Blob → dataURL → background
 
 background.js (on recorder-stop)
-      ├─ chrome.downloads.download(dataURL → webbrain-recording-<ts>.webm)
+      ├─ chrome.downloads.download(dataURL → requested name or webbrain-recording-<ts>.webm)
       └─ if transcribeAfter → runTranscription()
               ├─ providerManager.providers → pick first OpenAI-compatible
               │   (openai → whisper-1, groq → whisper-large-v3, …)

@@ -36,6 +36,19 @@ export const MAX_RECORDING_MS = 2 * 60 * 60 * 1000; // 2 hours
 let recordingSafetyTimeout = null;
 let recordingStateReady = null;
 
+function normalizeRecordingFilename(value) {
+  const filename = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .split(/[\\/]/)
+    .pop()
+    .trim()
+    .replace(/[<>:"|?*]/g, '-')
+    .replace(/[. ]+$/g, '');
+  if (!filename || filename === '.' || filename === '..') return null;
+  const stem = filename.replace(/\.webm$/i, '').replace(/[. ]+$/g, '') || 'webbrain-recording';
+  return `${stem.slice(0, 175)}.webm`;
+}
+
 let providerManagerRef = null;
 
 export function setProviderManager(pm) {
@@ -236,7 +249,7 @@ async function reconcileStaleRecordingState({ finalizeInactiveSession = false, b
  *   • source      "tab" or "display"
  *   • tabId       source tab for tab capture, optional origin tab for display
  *   • streamId    tabCapture stream id; only used for source:"tab"
- *   • options     video/audio/mic/transcribe/showBanner/mimeType
+ *   • options     video/audio/mic/transcribe/showBanner/mimeType/filename
  */
 async function startRecordingSession({ source, tabId = null, streamId = null, options = {} }) {
   await ensureRecordingStateLoaded();
@@ -312,6 +325,8 @@ async function startRecordingSession({ source, tabId = null, streamId = null, op
   const startedAt = Date.now();
   recordingState = {
     active: true,
+    recordingId: globalThis.crypto?.randomUUID?.()
+      || `${startedAt}-${Math.random().toString(36).slice(2, 10)}`,
     source,
     tabId,
     startedAt,
@@ -323,6 +338,7 @@ async function startRecordingSession({ source, tabId = null, streamId = null, op
     captureAudioError: recResult.captureAudioError || null,
     transcribeAfter: !!options.transcribeAfter,
     showBanner: source === 'tab' ? options.showBanner !== false : options.showBanner === true,
+    filename: normalizeRecordingFilename(options.filename),
   };
   saveRecordingState();
   scheduleRecordingSafetyWatchdog(recordingState);
@@ -365,7 +381,16 @@ async function stopRecordingForSafetyCap({ beforeFinalizeRecording = null } = {}
 
 export async function stopTabRecording(opts = {}) {
   await ensureRecordingStateLoaded();
+  if (opts.expectedRecordingId
+      && recordingState.active
+      && recordingState.recordingId !== opts.expectedRecordingId) {
+    return { ok: true, skipped: true, reason: 'different-recording' };
+  }
   if (!recordingState.active) {
+    // Scoped run cleanup may arrive after the user already stopped and saved
+    // this recording. Do not rebroadcast an empty stopped result: that would
+    // overwrite the panel's useful filename/transcript state.
+    if (opts.expectedRecordingId) return { ok: true, alreadyStopped: true };
     // Nothing active. Still broadcast 'stopped' so any sidepanel showing a
     // stale banner clears it, and report success — the user's goal (no active
     // recording) is already met. This is benign (no failure to surface), so
@@ -404,7 +429,7 @@ export async function stopTabRecording(opts = {}) {
     .replace(/[:.]/g, '-')
     .replace(/T/, '_')
     .slice(0, 19);
-  const filename = `webbrain-recording-${stamp}.webm`;
+  const filename = recordingState.filename || `webbrain-recording-${stamp}.webm`;
   let downloadId = null;
   let saveError = null;
   try {

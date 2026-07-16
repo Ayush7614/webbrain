@@ -338,6 +338,19 @@ WebBrain accepts slash commands as the first thing on a line in the input box. T
 | `/dev` | Switch to Dev mode before sending |
 | `/plan` | Switch to Ask mode with planning intent |
 
+Advanced run-capture suffixes are intentionally omitted from `/help` and
+autocomplete. Append `/record [--save-as <filename>]` to the end of a normal
+prompt to start recording the current tab immediately before the run, then stop
+and save the WebM when that run settles (Chrome only). Append
+`/screenshot [--save-as <filename>]` to save viewport screenshots immediately
+before and after the run (Chrome and Firefox). For example,
+`Test the checkout /screenshot --save-as checkout.png` saves
+`checkout-before.png` and `checkout-after.png`; without `--save-as`, WebBrain
+uses timestamped filenames. If the run opens another tab, WebBrain reactivates
+the originating run tab before saving the after screenshot. If the recording
+or initial screenshot cannot be started and saved, the run is not sent.
+Standalone `/record` and `/screenshot` keep their existing behavior.
+
 The default UI-first rule exists because API actions are invisible (you don't see what's being sent), often require separate auth tokens you may not have configured, and can have a much larger blast radius than a visible mis-click. Only use `/allow-api` when you've decided you want that tradeoff for a specific job.
 
 ## Keyboard Shortcuts
