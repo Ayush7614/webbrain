@@ -4,6 +4,11 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [24.1.0] - 2026-07-16
+
+### Changed
+- import/export configs
+
 ## [24.0.2] - 2026-07-16
 
 ### Added
