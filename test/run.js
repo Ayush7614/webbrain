@@ -2454,6 +2454,43 @@ test('no-progress scroll enforcement is wired into both agent loops', () => {
   }
 });
 
+test('delivery checkpoints nudge long observation streaks and reset after action or cleanup', () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    const tab = label === 'chrome' ? 87 : 88;
+    assert.equal(agent._checkDeliveryObservationStreak(tab, 'read_page').kind, 'none');
+    assert.equal(agent._checkDeliveryObservationStreak(tab, 'scroll').kind, 'none');
+    assert.equal(agent._checkDeliveryObservationStreak(tab, 'get_accessibility_tree').kind, 'none');
+    const firstCheckpoint = agent._checkDeliveryObservationStreak(tab, 'wait_for_stable');
+    assert.equal(firstCheckpoint.kind, 'nudge', `${label}: fourth observation should warn`);
+    assert.match(firstCheckpoint.warning, /deliver useful partial results/i);
+    assert.doesNotMatch(firstCheckpoint.warning, /outcome:/i, `${label}: checkpoint must stay valid for Ask and compact done schemas`);
+
+    assert.equal(agent._checkDeliveryObservationStreak(tab, 'click_ax').kind, 'none');
+    assert.equal(agent.deliveryObservationStreaks.has(tab), false, `${label}: a state-changing action should reset the streak`);
+    for (let i = 0; i < 3; i++) {
+      assert.equal(agent._checkDeliveryObservationStreak(tab, 'research_url').kind, 'none');
+    }
+    assert.equal(agent._checkDeliveryObservationStreak(tab, 'fetch_url', { method: 'POST' }).kind, 'none', `${label}: mutating fetches must not trigger a delivery checkpoint`);
+    assert.equal(agent.deliveryObservationStreaks.has(tab), false, `${label}: a mutating fetch should reset the observation streak`);
+    for (let i = 0; i < 3; i++) {
+      assert.equal(agent._checkDeliveryObservationStreak(tab, 'research_url').kind, 'none');
+    }
+    assert.equal(agent._checkDeliveryObservationStreak(tab, 'fetch_url', { method: 'GET' }).kind, 'nudge', `${label}: a new four-observation streak should warn`);
+    agent._clearLoopState(tab);
+    assert.equal(agent.deliveryObservationStreaks.has(tab), false, `${label}: run cleanup should reset the streak`);
+  }
+});
+
+test('delivery checkpoint enforcement is wired into both agent loops', () => {
+  for (const browserName of ['chrome', 'firefox']) {
+    const source = fs.readFileSync(path.join(ROOT, `src/${browserName}/src/agent/agent.js`), 'utf8');
+    assert.match(source, /const deliveryCheck = this\._checkDeliveryObservationStreak\(tabId, fnName, fnArgs\)/, `${browserName}: evaluate every tool result with its arguments`);
+    assert.match(source, /deliveryCheck\.kind === 'nudge'/, `${browserName}: warning must reach the model`);
+    assert.match(source, /this\.deliveryObservationStreaks\.delete\(tabId\)/, `${browserName}: run cleanup must clear state`);
+  }
+});
+
 test('no-progress scroll stop synthesizes results for the rest of a tool batch', async () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({ getVisionProvider: async () => null });
@@ -5672,6 +5709,19 @@ test('getToolsForMode: strictSecretMode swaps in the strict `done` description',
     const looseNames = loose.map(t => t.function.name).sort();
     const strictNames = strict.map(t => t.function.name).sort();
     assert.deepEqual(looseNames, strictNames);
+  }
+});
+
+test('all prompt tiers avoid volunteering secrets found in page data', () => {
+  for (const [label, prompts] of [
+    ['chrome', [SYSTEM_PROMPT_ASK_CH, SYSTEM_PROMPT_ACT_COMPACT_CH, SYSTEM_PROMPT_ACT_CH, SYSTEM_PROMPT_ACT_MID_CH]],
+    ['firefox', [SYSTEM_PROMPT_ASK_FX, SYSTEM_PROMPT_ACT_COMPACT_FX, SYSTEM_PROMPT_ACT_FX, SYSTEM_PROMPT_ACT_MID_FX]],
+  ]) {
+    for (const prompt of prompts) {
+      assert.match(prompt, /Never volunteer literal passwords/i, `${label}: prompt tier must protect page secrets`);
+      assert.match(prompt, /explicitly asks to see or quote that exact value/i, `${label}: prompt tier must preserve the explicit-request exception`);
+      assert.match(prompt, /\$PASSWORD/, `${label}: prompt tier must teach placeholder use`);
+    }
   }
 });
 
@@ -19467,6 +19517,7 @@ test('agent blocks captured replay mutations until /allow-api when method is omi
       allowedAgent._ensureGateSetting = async () => {};
       allowedAgent._skipPermissionGate = true;
       allowedAgent.setApiMutationsAllowed(tabId, true);
+      allowedAgent.deliveryObservationStreaks.set(tabId, 3);
       const allowedMessages = [];
 
       await allowedAgent._executeToolBatch(
@@ -19484,6 +19535,7 @@ test('agent blocks captured replay mutations until /allow-api when method is omi
       );
 
       assert.equal(seenArgs?.method, 'POST', `${AgentClass.name}: replay method was not resolved before execution`);
+      assert.equal(allowedAgent.deliveryObservationStreaks.has(tabId), false, `${AgentClass.name}: replayed mutation should reset the delivery observation streak`);
       assert.equal(allowedMessages.length, 1, `${AgentClass.name}: allowed replay mutation should produce one tool result`);
       assert.doesNotMatch(allowedMessages[0].content, /requiresApiAllow/, `${AgentClass.name}: replay mutation stayed blocked after /allow-api`);
     }

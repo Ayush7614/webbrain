@@ -160,6 +160,11 @@ export class Agent {
     // repeated dead-end attempts separately so changing the amount or
     // interleaving reads cannot evade the generic loop detector.
     this.noProgressScrolls = new Map();
+    // Productive browsing often mixes reads and scrolling, so exact-call loop
+    // detection cannot tell when the agent already has enough evidence to
+    // answer. Track long observation-only streaks and remind it to deliver a
+    // useful result before exhausting the run.
+    this.deliveryObservationStreaks = new Map();
     // Local screenshot redaction (issue #312). When true, screenshots sent
     // to a Vision endpoint are pixelated over DOM-detected PII regions
     // (form fields + email/phone text) BEFORE leaving the extension. Off by
@@ -721,6 +726,7 @@ export class Agent {
     this.healthyCallsSinceLoop.delete(tabId);
     this.axReadStates.delete(tabId);
     this.noProgressScrolls.delete(tabId);
+    this.deliveryObservationStreaks.delete(tabId);
     this.recentCoordClicks.delete(tabId);
     this.bulkApiMutationClicks.delete(tabId);
     this.bulkApiMutationHints.delete(tabId);
@@ -846,6 +852,22 @@ export class Agent {
       };
     }
     return { kind: 'none' };
+  }
+
+  _checkDeliveryObservationStreak(tabId, name, args = {}) {
+    if (!this.constructor.DELIVERY_OBSERVATION_TOOLS.has(name) || isNetworkMutation(name, args)) {
+      this.deliveryObservationStreaks.delete(tabId);
+      return { kind: 'none' };
+    }
+
+    const count = (this.deliveryObservationStreaks.get(tabId) || 0) + 1;
+    this.deliveryObservationStreaks.set(tabId, count);
+    if (count < 4 || count % 4 !== 0) return { kind: 'none' };
+
+    return {
+      kind: 'nudge',
+      warning: `[DELIVERY CHECKPOINT: You have made ${count} consecutive read, scroll, or wait observations without a state-changing action. Do not keep observing merely to make the answer exhaustive. If the current evidence satisfies the request, call done now. For list or research tasks, deliver useful partial results rather than risk shipping nothing. Continue only when you can name a specific missing fact or control and the next tool will obtain it.]`,
+    };
   }
 
   /**
@@ -1492,6 +1514,7 @@ export class Agent {
 
   static NAV_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward']);
   static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'execute_js']);
+  static DELIVERY_OBSERVATION_TOOLS = new Set(['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'get_selection', 'scroll', 'wait_for_stable', 'wait_for_element', 'read_pdf', 'fetch_url', 'research_url', 'read_downloaded_file', 'iframe_read', 'get_window_info', 'list_downloads', 'progress_read', 'screenshot', 'get_frames', 'get_shadow_dom', 'shadow_dom_query', 'read_youtube_transcript']);
   static NAV_PRONE_TOOLS = new Set(['click', 'click_ax', 'navigate', 'go_back', 'go_forward', 'execute_js', 'iframe_click']);
   static RECOMMENDED_ACTION_FAST_PATH_IDS = new Set(['download-media']);
   static RECOMMENDED_ACTION_FIRST_TOOLS = Object.freeze({
@@ -2170,6 +2193,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       const axReadCheck = this._checkAccessibilityReadLoop(tabId, fnName, fnArgs, toolResult);
       const scrollCheck = this._checkNoProgressScroll(tabId, fnName, fnArgs, toolResult);
+      const deliveryCheck = this._checkDeliveryObservationStreak(tabId, fnName, fnArgs);
 
       let effectiveKind = 'none';
       let nudgeWarning = '';
@@ -2187,7 +2211,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             : axReadCheck.kind === 'stop'
               ? axReadCheck.message
               : loopCheck.message;
-      } else if (loopCheck.kind === 'nudge' || coordCheck.kind === 'nudge' || axReadCheck.kind === 'nudge' || scrollCheck.kind === 'nudge') {
+      } else if (loopCheck.kind === 'nudge' || coordCheck.kind === 'nudge' || axReadCheck.kind === 'nudge' || scrollCheck.kind === 'nudge' || deliveryCheck.kind === 'nudge') {
         effectiveKind = 'nudge';
         nudgeWarning = coordCheck.kind === 'nudge'
           ? this._coordinateClickRecoveryWarning(fnArgs, allowedToolNames)
@@ -2195,6 +2219,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             ? scrollCheck.warning
             : axReadCheck.kind === 'nudge'
               ? axReadCheck.warning
+              : deliveryCheck.kind === 'nudge'
+                ? deliveryCheck.warning
               : loopCheck.warning;
       }
 
