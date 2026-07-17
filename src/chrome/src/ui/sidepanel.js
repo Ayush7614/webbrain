@@ -27,6 +27,7 @@ import {
   buildFeedbackUrl,
   normalizeState as normalizeStoreReviewState,
 } from './store-review-prompt.js';
+import { providerIconUrl } from './provider-icons.js';
 
 // Hydrate the theme from chrome.storage.local (the inline <head> bootstrap
 // only sees localStorage; if the user changes the theme on another device
@@ -47,8 +48,129 @@ if (globalThis.chrome?.storage?.onChanged) {
   });
 }
 
+// ─── First-open pin coachmark ──────────────────────────────────────
+// Chrome exposes the real pin in browser chrome above this document. Point to
+// that control before the regular product onboarding instead of teaching from
+// a non-interactive toolbar illustration on the install page.
+// Failures here must never block product onboarding (see await below).
+const pinCoachmarkDismissed = (async function initPinCoachmark() {
+  let cleanupCoachmark = () => {};
+  try {
+    const stored = await chrome.storage.local.get('pinCoachmarkPending');
+    if (!stored.pinCoachmarkPending) return;
+
+    document.documentElement.dataset.panelSide = 'right';
+    try {
+      const layout = await chrome.sidePanel?.getLayout?.();
+      if (layout?.side === 'left' || layout?.side === 'right') {
+        document.documentElement.dataset.panelSide = layout.side;
+      }
+    } catch {
+      // Older Chromium forks use the normal right-side fallback.
+    }
+
+    const overlay = document.getElementById('pin-coachmark');
+    const doneButton = document.getElementById('pin-coachmark-done');
+    const skipButton = document.getElementById('pin-coachmark-skip');
+    if (!overlay || !doneButton || !skipButton) return;
+
+    applyDOMTranslations(overlay);
+    const backgroundLayers = [
+      document.getElementById('onboarding'),
+      document.getElementById('app'),
+    ].filter(Boolean);
+    const backgroundInertState = backgroundLayers.map((layer) => [layer, layer.inert]);
+    const previouslyFocusedElement = document.activeElement;
+    let cleanedUp = false;
+
+    cleanupCoachmark = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      overlay.classList.add('hidden');
+      for (const [layer, wasInert] of backgroundInertState) {
+        layer.inert = wasInert;
+      }
+      if (previouslyFocusedElement?.isConnected && typeof previouslyFocusedElement.focus === 'function') {
+        previouslyFocusedElement.focus({ preventScroll: true });
+      }
+    };
+
+    for (const layer of backgroundLayers) {
+      layer.inert = true;
+    }
+    overlay.classList.remove('hidden');
+    doneButton.focus({ preventScroll: true });
+
+    await new Promise((resolve) => {
+      let dismissing = false;
+
+      const focusableElements = () => Array.from(overlay.querySelectorAll(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ));
+
+      const finishDismissal = () => {
+        document.removeEventListener('keydown', onKeydown, true);
+        doneButton.removeEventListener('click', dismiss);
+        skipButton.removeEventListener('click', dismiss);
+        cleanupCoachmark();
+        resolve();
+      };
+
+      const dismiss = async () => {
+        if (dismissing) return;
+        dismissing = true;
+        try {
+          await chrome.storage.local.remove('pinCoachmarkPending');
+        } catch {
+          // The panel should still become usable if persistence is unavailable.
+        } finally {
+          finishDismissal();
+        }
+      };
+
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          dismiss();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+
+        const focusable = focusableElements();
+        if (focusable.length === 0) {
+          event.preventDefault();
+          overlay.focus({ preventScroll: true });
+          return;
+        }
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const activeElement = document.activeElement;
+        if (event.shiftKey && (activeElement === first || !overlay.contains(activeElement))) {
+          event.preventDefault();
+          last.focus({ preventScroll: true });
+        } else if (!event.shiftKey && (activeElement === last || !overlay.contains(activeElement))) {
+          event.preventDefault();
+          first.focus({ preventScroll: true });
+        }
+      };
+
+      doneButton.addEventListener('click', dismiss);
+      skipButton.addEventListener('click', dismiss);
+      document.addEventListener('keydown', onKeydown, true);
+    });
+  } catch {
+    // Optional coachmark; storage/API failures should not strand first-run setup.
+  } finally {
+    cleanupCoachmark();
+  }
+})();
+
 // ─── Onboarding (first-launch wizard) ───────────────────────────────
 (async function initOnboarding() {
+  // Coachmark setup errors resolve as no-op so the model/safety wizard still runs.
+  await pinCoachmarkDismissed.catch(() => {});
   const stored = await chrome.storage.local.get('onboardingComplete');
   if (stored.onboardingComplete) return;
 
@@ -68,12 +190,13 @@ if (globalThis.chrome?.storage?.onChanged) {
   const providerStatus = document.getElementById('ob-provider-status');
   const providerList = document.getElementById('ob-provider-list');
   const localModels = document.getElementById('ob-local-models');
-  const localModelSelect = document.getElementById('ob-local-model-select');
+  const localModelList = document.getElementById('ob-local-model-list');
   const totalSteps = steps.length;
   const LOCAL_PROVIDER_ORDER = ['jan', 'lmstudio', 'ollama', 'llamacpp', 'vllm', 'sglang', 'localai'];
   let current = 0;
   let localScanStarted = false;
   let localModelChoices = [];
+  let selectedLocalModelIndex = 0;
   let cloudReady = false;
 
   async function dismissOnboarding() {
@@ -128,14 +251,51 @@ if (globalThis.chrome?.storage?.onChanged) {
   function showLocalChoices(choices) {
     cloudReady = false;
     localModelChoices = choices;
+    selectedLocalModelIndex = 0;
     if (providerBody) providerBody.textContent = t('ob.tokens.local_body');
-    if (localModelSelect) {
-      localModelSelect.innerHTML = '';
+    if (localModelList) {
+      localModelList.replaceChildren();
       choices.forEach((choice, index) => {
-        const opt = document.createElement('option');
-        opt.value = String(index);
-        opt.textContent = `${choice.providerLabel}: ${choice.model}`;
-        localModelSelect.appendChild(opt);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ob-local-model-option';
+        btn.setAttribute('role', 'option');
+        btn.dataset.index = String(index);
+        btn.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
+
+        const iconSrc = providerIconUrl(choice.providerId);
+        if (iconSrc) {
+          const img = document.createElement('img');
+          img.className = 'provider-icon';
+          img.src = iconSrc;
+          img.alt = '';
+          img.width = 18;
+          img.height = 18;
+          img.decoding = 'async';
+          img.draggable = false;
+          btn.appendChild(img);
+        }
+
+        const text = document.createElement('div');
+        text.className = 'ob-local-model-text';
+        const providerEl = document.createElement('div');
+        providerEl.className = 'ob-local-model-provider';
+        providerEl.textContent = choice.providerLabel || choice.providerId;
+        const modelEl = document.createElement('div');
+        modelEl.className = 'ob-local-model-name';
+        modelEl.textContent = choice.model;
+        modelEl.title = choice.model;
+        text.append(providerEl, modelEl);
+        btn.appendChild(text);
+
+        btn.addEventListener('click', () => {
+          selectedLocalModelIndex = index;
+          localModelList.querySelectorAll('.ob-local-model-option').forEach((el) => {
+            el.setAttribute('aria-selected', el.dataset.index === String(index) ? 'true' : 'false');
+          });
+        });
+
+        localModelList.appendChild(btn);
       });
     }
     providerList?.classList.add('hidden');
@@ -287,8 +447,7 @@ if (globalThis.chrome?.storage?.onChanged) {
     }
 
     if (localModelChoices.length > 0) {
-      const selectedIndex = Number(localModelSelect?.value || 0);
-      const choice = localModelChoices[selectedIndex] || localModelChoices[0];
+      const choice = localModelChoices[selectedLocalModelIndex] || localModelChoices[0];
       settingsBtn.disabled = true;
       settingsBtn.textContent = t('ob.btn.enabling');
       setProviderStatus('ob.tokens.enabling');
@@ -299,7 +458,10 @@ if (globalThis.chrome?.storage?.onChanged) {
         });
         await sendToBackground('set_active_provider', { providerId: choice.providerId });
         await loadProviders();
-        if (providerSelect) providerSelect.value = choice.providerId;
+        if (providerSelect) {
+          providerSelect.value = choice.providerId;
+          syncProviderPickerButton();
+        }
         await testConnection({ providerId: choice.providerId });
         dismissOnboarding();
         inputEl?.focus();
@@ -330,8 +492,13 @@ const historyBtn = document.getElementById('btn-history');
 const settingsBtn = document.getElementById('btn-settings');
 const verboseBtn = document.getElementById('btn-verbose');
 const providerSelect = document.getElementById('provider-select');
+const providerPickerBtn = document.getElementById('provider-picker-btn');
+const providerPickerMenu = document.getElementById('provider-picker-menu');
+const providerPickerLabel = document.getElementById('provider-picker-label');
 const MORE_PROVIDERS_OPTION_VALUE = '__more_providers__';
 const statusDot = document.getElementById('status-dot');
+// Short labels for the closed picker button (menu rows keep the longer status text).
+const providerPickerLabelById = new Map();
 const agentActivity = document.getElementById('agent-activity');
 const activityText = document.getElementById('activity-text');
 const modeAskBtn = document.getElementById('btn-mode-ask');
@@ -3549,30 +3716,155 @@ function rebindRestoredMessageControls() {
   rebindSubscribeButtons();
 }
 
+function getProviderPickerOptions() {
+  if (!providerPickerMenu) return [];
+  return Array.from(providerPickerMenu.querySelectorAll('.provider-picker-option'));
+}
+
+function setProviderPickerOpen(open) {
+  if (!providerPickerMenu || !providerPickerBtn) return;
+  providerPickerMenu.classList.toggle('hidden', !open);
+  providerPickerBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    const selected = getProviderPickerOptions().find((btn) => btn.getAttribute('aria-selected') === 'true')
+      || getProviderPickerOptions()[0];
+    // Focus the selected (or first) option so keyboard users can arrow immediately.
+    queueMicrotask(() => selected?.focus());
+  }
+}
+
+function moveProviderPickerFocus(delta) {
+  const options = getProviderPickerOptions();
+  if (!options.length) return;
+  const active = document.activeElement;
+  let idx = options.indexOf(active);
+  if (idx < 0) idx = options.findIndex((btn) => btn.getAttribute('aria-selected') === 'true');
+  if (idx < 0) idx = 0;
+  const next = options[Math.max(0, Math.min(options.length - 1, idx + delta))];
+  next?.focus();
+}
+
+function activateFocusedProviderPickerOption() {
+  const active = document.activeElement;
+  if (active?.classList?.contains('provider-picker-option')) {
+    active.click();
+  }
+}
+
+function syncProviderPickerButton() {
+  if (!providerSelect || !providerPickerLabel) return;
+  const id = providerSelect.value;
+  const shortLabel = providerPickerLabelById.get(id)
+    || providerSelect.selectedOptions?.[0]?.textContent
+    || id
+    || '';
+  providerPickerLabel.textContent = shortLabel;
+  if (providerPickerBtn) {
+    providerPickerBtn.title = providerSelect.selectedOptions?.[0]?.textContent || shortLabel;
+  }
+  if (providerPickerMenu) {
+    providerPickerMenu.querySelectorAll('.provider-picker-option').forEach((btn) => {
+      btn.setAttribute('aria-selected', btn.dataset.value === id ? 'true' : 'false');
+    });
+  }
+}
+
+function appendProviderPickerGroup(label) {
+  if (!providerPickerMenu || !label) return;
+  const el = document.createElement('div');
+  el.className = 'provider-picker-group-label';
+  el.textContent = label;
+  providerPickerMenu.appendChild(el);
+}
+
+function appendProviderPickerOption(id, name, meta) {
+  if (!providerPickerMenu) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'provider-picker-option';
+  btn.setAttribute('role', 'option');
+  btn.dataset.value = id;
+  btn.setAttribute('aria-selected', 'false');
+
+  // Icons only in the open menu — closed header stays text-only so the
+  // WebBrain mark (and other brand chips) don't compete with the chrome.
+  const iconSrc = providerIconUrl(id);
+  if (iconSrc) {
+    const img = document.createElement('img');
+    img.className = 'provider-icon provider-icon-sm';
+    img.src = iconSrc;
+    img.alt = '';
+    img.width = 16;
+    img.height = 16;
+    img.decoding = 'async';
+    img.draggable = false;
+    btn.appendChild(img);
+  }
+
+  const text = document.createElement('span');
+  text.className = 'provider-picker-option-text';
+  text.textContent = name;
+  btn.appendChild(text);
+
+  if (meta) {
+    const metaEl = document.createElement('span');
+    metaEl.className = 'provider-picker-option-meta';
+    metaEl.textContent = meta;
+    btn.appendChild(metaEl);
+  }
+
+  btn.addEventListener('click', () => {
+    setProviderPickerOpen(false);
+    if (!providerSelect || providerSelect.value === id) {
+      // Re-selecting "More providers…" should still open settings.
+      if (id === MORE_PROVIDERS_OPTION_VALUE) {
+        providerSelect.value = id;
+        providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return;
+    }
+    providerSelect.value = id;
+    syncProviderPickerButton();
+    providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+
+  providerPickerMenu.appendChild(btn);
+}
+
 async function loadProviders() {
   try {
     const res = await sendToBackground('get_providers');
     providerSelect.replaceChildren();
+    providerPickerMenu?.replaceChildren();
+    providerPickerLabelById.clear();
 
     const cloudConfig = res.providers.webbrain_cloud || { label: 'WebBrain Cloud' };
+    const cloudLabel = cloudConfig.label || 'WebBrain Cloud';
     const cloudGroup = document.createElement('optgroup');
     cloudGroup.label = t('sp.providers.no_setup_group');
     const cloudOption = document.createElement('option');
     cloudOption.value = 'webbrain_cloud';
-    cloudOption.textContent = `${cloudConfig.label || 'WebBrain Cloud'} — ${t('sp.providers.no_setup')}`;
+    cloudOption.textContent = `${cloudLabel} — ${t('sp.providers.no_setup')}`;
     cloudGroup.appendChild(cloudOption);
     providerSelect.appendChild(cloudGroup);
+    providerPickerLabelById.set('webbrain_cloud', cloudLabel);
+    appendProviderPickerGroup(cloudGroup.label);
+    appendProviderPickerOption('webbrain_cloud', cloudLabel, t('sp.providers.no_setup'));
 
     const configuredEntries = Object.entries(res.providers)
       .filter(([id, config]) => id !== 'webbrain_cloud' && config?.configured === true);
     if (configuredEntries.length) {
       const activeGroup = document.createElement('optgroup');
       activeGroup.label = t('sp.providers.active_group');
+      appendProviderPickerGroup(activeGroup.label);
       for (const [id, config] of configuredEntries) {
+        const name = config.label || id;
         const opt = document.createElement('option');
         opt.value = id;
-        opt.textContent = `${config.label || id} — ${t('sp.providers.active')}`;
+        opt.textContent = `${name} — ${t('sp.providers.active')}`;
         activeGroup.appendChild(opt);
+        providerPickerLabelById.set(id, name);
+        appendProviderPickerOption(id, name, t('sp.providers.active'));
       }
       providerSelect.appendChild(activeGroup);
     }
@@ -3581,10 +3873,12 @@ async function loadProviders() {
     moreOption.value = MORE_PROVIDERS_OPTION_VALUE;
     moreOption.textContent = t('sp.providers.more');
     providerSelect.appendChild(moreOption);
+    appendProviderPickerOption(MORE_PROVIDERS_OPTION_VALUE, t('sp.providers.more'), '');
 
     const selectableProviderIds = new Set(['webbrain_cloud', ...configuredEntries.map(([id]) => id)]);
     selectedProviderId = selectableProviderIds.has(res.active) ? res.active : 'webbrain_cloud';
     providerSelect.value = selectedProviderId;
+    syncProviderPickerButton();
   } catch (e) {
     console.error('Failed to load providers:', e);
   }
@@ -4881,6 +5175,22 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.event === 'started') {
     recordingStartedAt = msg.state?.startedAt || Date.now();
     setRecordingUI(true, msg.state || {});
+  } else if (msg.event === 'saving') {
+    // Capture has stopped; browser is still committing the file to disk.
+    setRecordingUI(false);
+    showRecordingStatus(t('sp.record.saving'));
+  } else if (msg.event === 'saved') {
+    // Prior session finished saving. Host normally blocks concurrent starts, so
+    // this is defensive for a live banner from another path.
+    lastRecordingResult = msg.result || null;
+    if (lastRecordingResult && lastRecordingResult.ok === false) {
+      showRecordingStatus(
+        t('sp.record.error', { error: lastRecordingResult.error || 'unknown' }),
+        { autoHide: 8000 }
+      );
+    } else if (lastRecordingResult?.filename) {
+      showRecordingStatus(t('sp.record.saved', { filename: lastRecordingResult.filename }), { autoHide: 6000 });
+    }
   } else if (msg.event === 'stopped') {
     setRecordingUI(false);
     lastRecordingResult = msg.result || null;
@@ -4913,7 +5223,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // Minimal status strip just below the (now-hidden) recording banner.
-// Carries post-recording notifications: "saved to Downloads", "transcribing…",
+// Carries post-recording notifications: saved path, "transcribing…",
 // "transcript ready" + optional Summarize CTA (Phase 3).
 function showRecordingStatus(text, opts = {}) {
   let el = document.getElementById('recording-status');
@@ -7253,9 +7563,11 @@ providerSelect.addEventListener('change', async () => {
   const providerId = providerSelect.value;
   if (providerId === MORE_PROVIDERS_OPTION_VALUE) {
     providerSelect.value = selectedProviderId;
+    syncProviderPickerButton();
     await openProvidersSettingsPage();
     return;
   }
+  syncProviderPickerButton();
   const requestId = ++providerSelectionRequestId;
   providerTestRequestId += 1;
   try {
@@ -7275,6 +7587,84 @@ providerSelect.addEventListener('change', async () => {
   }
   selectedProviderId = providerId;
   await testConnection({ providerId });
+});
+
+providerPickerBtn?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const open = providerPickerMenu?.classList.contains('hidden') !== false;
+  setProviderPickerOpen(open);
+});
+
+// Open with keyboard from the closed trigger (combobox-ish).
+providerPickerBtn?.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    if (providerPickerMenu?.classList.contains('hidden')) {
+      setProviderPickerOpen(true);
+      if (event.key === 'ArrowUp') {
+        const options = getProviderPickerOptions();
+        options[options.length - 1]?.focus();
+      }
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      setProviderPickerOpen(false);
+    }
+  }
+});
+
+providerPickerMenu?.addEventListener('keydown', (event) => {
+  if (providerPickerMenu.classList.contains('hidden')) return;
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveProviderPickerFocus(1);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveProviderPickerFocus(-1);
+  } else if (event.key === 'Home') {
+    event.preventDefault();
+    getProviderPickerOptions()[0]?.focus();
+  } else if (event.key === 'End') {
+    event.preventDefault();
+    const options = getProviderPickerOptions();
+    options[options.length - 1]?.focus();
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    activateFocusedProviderPickerOption();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    setProviderPickerOpen(false);
+    providerPickerBtn?.focus();
+  } else if (event.key === 'Tab') {
+    // Let Tab move focus out; focusout closes the menu.
+    setProviderPickerOpen(false);
+  }
+});
+
+document.addEventListener('click', (event) => {
+  if (!providerPickerMenu || providerPickerMenu.classList.contains('hidden')) return;
+  const root = document.getElementById('provider-picker');
+  if (root && !root.contains(event.target)) setProviderPickerOpen(false);
+});
+
+document.getElementById('provider-picker')?.addEventListener('focusout', (event) => {
+  if (!providerPickerMenu || providerPickerMenu.classList.contains('hidden')) return;
+  const root = document.getElementById('provider-picker');
+  const next = event.relatedTarget;
+  // relatedTarget is null when focus leaves the document; still close.
+  if (!root) return;
+  if (next && root.contains(next)) return;
+  // Defer so option click (focus move then click) still registers.
+  queueMicrotask(() => {
+    if (!providerPickerMenu || providerPickerMenu.classList.contains('hidden')) return;
+    if (root.contains(document.activeElement)) return;
+    setProviderPickerOpen(false);
+  });
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && providerPickerMenu && !providerPickerMenu.classList.contains('hidden')) {
+    setProviderPickerOpen(false);
+    providerPickerBtn?.focus();
+  }
 });
 
 async function openChatHistoryPage() {

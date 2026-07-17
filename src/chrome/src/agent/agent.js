@@ -46,6 +46,7 @@ import { publicMediaUrlNeedsExplicitTarget } from './public-media-url.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
 import { buildTrustedRuntimeContext, stripTrustedRuntimeContext } from './runtime-context.js';
+import { resolveSavedDownload } from '../download-result.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -3829,6 +3830,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     filename = filename.replace(/\.(jpe?g|webp)$/i, '.png');
     if (!/\.png$/i.test(filename)) filename += '.png';
     const downloadId = await chrome.downloads.download({ url: crop.dataUrl, filename, saveAs: false });
+    const savedDownload = await resolveSavedDownload(chrome, downloadId);
 
     return {
       success: true,
@@ -3840,7 +3842,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       completedCount: 1,
       openedInTabCount: 0,
       failedCount: 0,
-      savedFile: { downloadId, filename, mimeType: crop.mimeType, bytes: crop.bytes },
+      savedFile: { ...savedDownload, mimeType: crop.mimeType, bytes: crop.bytes },
       visibleMedia: {
         rect: located.rect,
         cropSize: { width: crop.width, height: crop.height },
@@ -9463,7 +9465,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const downloadId = await chrome.downloads.download({
               url: dataUrl, filename, saveAs: false,
             });
-            savedFile = { downloadId, filename, mimeType: mime };
+            const savedDownload = await resolveSavedDownload(chrome, downloadId);
+            savedFile = { ...savedDownload, mimeType: mime };
           } catch (e) {
             savedFile = { error: e.message || String(e) };
           }
@@ -9516,7 +9519,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return {
             success: true,
             method: 'save_only',
-            description: `Screenshot saved to Downloads as ${savedFile.filename}. (The active model has no vision, so the image was not shown to the model.)`,
+            description: `Screenshot saved to ${savedFile.filename}. (The active model has no vision, so the image was not shown to the model.)`,
             savedFile,
             page: probe || undefined,
             coordAligned,
@@ -9915,7 +9918,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const downloadId = await chrome.downloads.download({
               url: rawUrl, filename, saveAs: false,
             });
-            savedFile = { downloadId, filename, mimeType: 'image/png' };
+            const savedDownload = await resolveSavedDownload(chrome, downloadId);
+            savedFile = { ...savedDownload, mimeType: 'image/png' };
           } catch (e) {
             savedFile = { error: e.message || String(e) };
           }
@@ -9967,7 +9971,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return {
             success: true,
             method: 'save_only',
-            description: `Full-page screenshot saved to Downloads as ${savedFile.filename}.`,
+            description: `Full-page screenshot saved to ${savedFile.filename}.`,
             savedFile,
           };
         }

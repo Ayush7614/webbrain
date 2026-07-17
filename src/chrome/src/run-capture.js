@@ -1,3 +1,5 @@
+import { resolveSavedDownload } from './download-result.js';
+
 export const RUN_CAPTURE_START_ERROR_PREFIX = 'Run capture could not start: ';
 
 function sanitizeRunCaptureSaveAs(value) {
@@ -66,7 +68,7 @@ export async function captureAndSaveRunScreenshot(api, tabId, filename) {
     saveAs: false,
     conflictAction: 'uniquify',
   });
-  return { filename, downloadId };
+  return resolveSavedDownload(api, downloadId);
 }
 
 export function createRunCaptureController({
@@ -114,7 +116,7 @@ export function createRunCaptureController({
     const after = await captureAndSaveRunScreenshot(api, tabId, state.filenames.after);
     return {
       kind: 'screenshot',
-      filenames: [state.filenames.before, state.filenames.after],
+      filenames: [state.before.filename, after.filename],
       before: state.before,
       after,
     };
