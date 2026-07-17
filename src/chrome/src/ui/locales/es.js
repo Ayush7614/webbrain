@@ -386,7 +386,7 @@ export default {
   "st.providers.ollama_warning.label": "Preguntas frecuentes de Ollama",
   "st.providers.ollama_warning.title": "¿Por qué Ollama en localhost devuelve 403?",
   "st.providers.ollama_warning.body": "Las versiones recientes de Ollama pueden rechazar solicitudes de orígenes de extensiones del navegador aunque Ollama se ejecute en el mismo equipo. WebBrain envía un Origin como chrome-extension://… o moz-extension://…, y Ollama puede devolver 403 si esos orígenes no están permitidos.",
-  "st.providers.ollama_warning.restart": "Cierra cualquier aplicación de escritorio de Ollama que esté usando el puerto 11434 y luego inicia Ollama con uno de estos comandos:",
+  "st.providers.ollama_warning.restart": "Cierra cualquier aplicación de escritorio de Ollama que esté usando el puerto 11434 y luego inicia Ollama con este comando:",
   "st.providers.ollama_warning.base_url": "Mantén la URL base de Ollama en WebBrain como http://localhost:11434/v1. Las pruebas con curl desde la terminal pueden funcionar sin esta configuración porque no envían el origen de una extensión del navegador.",
   "st.providers.ollama_warning.link": "Leer el anuncio de integración con Ollama",
   "st.provider.field.model_custom": "Personalizado...",

@@ -386,7 +386,7 @@ export default {
   "st.providers.ollama_warning.label": "Ollama FAQ",
   "st.providers.ollama_warning.title": "localhost의 Ollama가 403을 반환하는 이유는 무엇인가요?",
   "st.providers.ollama_warning.body": "최신 Ollama 버전은 같은 컴퓨터에서 실행 중이어도 브라우저 확장 프로그램 origin의 요청을 거부할 수 있습니다. WebBrain은 chrome-extension://… 또는 moz-extension://… 같은 Origin을 전송하며, 이러한 origin이 허용되지 않으면 Ollama가 403을 반환할 수 있습니다.",
-  "st.providers.ollama_warning.restart": "포트 11434를 사용 중인 Ollama 데스크톱 앱을 종료한 다음, 다음 명령 중 하나로 Ollama를 시작하세요:",
+  "st.providers.ollama_warning.restart": "포트 11434를 사용 중인 Ollama 데스크톱 앱을 종료한 다음, 다음 명령으로 Ollama를 시작하세요:",
   "st.providers.ollama_warning.base_url": "WebBrain의 Ollama 기본 URL을 http://localhost:11434/v1로 유지하세요. 터미널의 curl 테스트는 브라우저 확장 프로그램 origin을 보내지 않으므로 이 설정 없이도 성공할 수 있습니다.",
   "st.providers.ollama_warning.link": "Ollama 연동 공지 읽기",
   "st.provider.field.model_custom": "사용자 지정...",

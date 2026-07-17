@@ -386,7 +386,7 @@ export default {
   "st.providers.ollama_warning.label": "Ollama FAQ",
   "st.providers.ollama_warning.title": "localhost の Ollama が 403 を返すのはなぜですか？",
   "st.providers.ollama_warning.body": "最近の Ollama は、同じマシンで実行中でもブラウザー拡張機能のオリジンからのリクエストを拒否することがあります。WebBrain は chrome-extension://… や moz-extension://… などの Origin を送信するため、許可されていない場合は Ollama が 403 を返すことがあります。",
-  "st.providers.ollama_warning.restart": "ポート 11434 を使用している Ollama デスクトップアプリを終了し、次のいずれかのコマンドで Ollama を起動してください：",
+  "st.providers.ollama_warning.restart": "ポート 11434 を使用している Ollama デスクトップアプリを終了し、次のコマンドで Ollama を起動してください：",
   "st.providers.ollama_warning.base_url": "WebBrain の Ollama ベース URL は http://localhost:11434/v1 のままにしてください。ターミナルの curl はブラウザー拡張機能のオリジンを送信しないため、この設定なしでも成功することがあります。",
   "st.providers.ollama_warning.link": "Ollama 連携のお知らせを読む",
   "st.provider.field.model_custom": "カスタム...",

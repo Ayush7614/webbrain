@@ -425,7 +425,7 @@ export default {
   "st.providers.ollama_warning.label": "Ollama SSS",
   "st.providers.ollama_warning.title": "localhost üzerindeki Ollama neden 403 döndürüyor?",
   "st.providers.ollama_warning.body": "Yeni Ollama sürümleri, Ollama aynı makinede çalışsa bile tarayıcı uzantısı origin’lerinden gelen istekleri reddedebilir. WebBrain chrome-extension://… veya moz-extension://… gibi bir Origin gönderir; bu origin’lere izin verilmezse Ollama 403 döndürebilir.",
-  "st.providers.ollama_warning.restart": "11434 bağlantı noktasını kullanan Ollama masaüstü uygulamasını kapatın, ardından Ollama’yı şu komutlardan biriyle başlatın:",
+  "st.providers.ollama_warning.restart": "11434 bağlantı noktasını kullanan Ollama masaüstü uygulamasını kapatın, ardından Ollama’yı aşağıdaki komutla başlatın:",
   "st.providers.ollama_warning.base_url": "WebBrain’in Ollama temel URL’sini http://localhost:11434/v1 olarak bırakın. Terminaldeki curl testleri tarayıcı uzantısı origin’i göndermediği için bu ayar olmadan da çalışabilir.",
   "st.providers.ollama_warning.link": "Ollama entegrasyon duyurusunu okuyun",
   "st.provider.field.model_custom": "Özel...",

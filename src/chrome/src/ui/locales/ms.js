@@ -386,7 +386,7 @@ export default {
   "st.providers.ollama_warning.label": "Soalan lazim Ollama",
   "st.providers.ollama_warning.title": "Mengapakah Ollama pada localhost mengembalikan 403?",
   "st.providers.ollama_warning.body": "Versi Ollama terkini boleh menolak permintaan daripada origin sambungan pelayar walaupun Ollama berjalan pada komputer yang sama. WebBrain menghantar Origin seperti chrome-extension://… atau moz-extension://…, dan Ollama boleh mengembalikan 403 jika origin tersebut tidak dibenarkan.",
-  "st.providers.ollama_warning.restart": "Tutup mana-mana aplikasi desktop Ollama yang sedang menggunakan port 11434, kemudian mulakan Ollama dengan salah satu arahan berikut:",
+  "st.providers.ollama_warning.restart": "Tutup mana-mana aplikasi desktop Ollama yang sedang menggunakan port 11434, kemudian mulakan Ollama dengan arahan berikut:",
   "st.providers.ollama_warning.base_url": "Kekalkan URL asas Ollama WebBrain sebagai http://localhost:11434/v1. Ujian curl dalam terminal mungkin berjaya tanpa tetapan ini kerana ia tidak menghantar origin sambungan pelayar.",
   "st.providers.ollama_warning.link": "Baca pengumuman integrasi Ollama",
   "st.provider.field.model_custom": "Tersuai...",

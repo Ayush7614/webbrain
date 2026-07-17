@@ -377,7 +377,7 @@ export default {
   "st.providers.ollama_warning.label": "Ollama 常见问题",
   "st.providers.ollama_warning.title": "为什么 localhost 上的 Ollama 会返回 403？",
   "st.providers.ollama_warning.body": "即使 Ollama 在同一台机器上运行，较新的 Ollama 版本也可能拒绝来自浏览器扩展源的请求。WebBrain 会发送 chrome-extension://… 或 moz-extension://… 之类的 Origin；如果未允许这些源，Ollama 可能返回 403。",
-  "st.providers.ollama_warning.restart": "退出任何正在占用 11434 端口的 Ollama 桌面应用，然后使用以下任一命令启动 Ollama：",
+  "st.providers.ollama_warning.restart": "退出任何正在占用 11434 端口的 Ollama 桌面应用，然后使用以下命令启动 Ollama：",
   "st.providers.ollama_warning.base_url": "请将 WebBrain 的 Ollama 基础 URL 保持为 http://localhost:11434/v1。终端中的 curl 测试即使没有此设置也可能成功，因为它们不会发送浏览器扩展源。",
   "st.providers.ollama_warning.link": "阅读 Ollama 集成公告",
   "st.provider.field.model_custom": "自定义...",

@@ -377,7 +377,7 @@ export default {
   "st.providers.ollama_warning.label": "الأسئلة الشائعة حول Ollama",
   "st.providers.ollama_warning.title": "لماذا يعيد Ollama على localhost الخطأ 403؟",
   "st.providers.ollama_warning.body": "قد ترفض الإصدارات الحديثة من Ollama الطلبات الواردة من أصول إضافات المتصفح حتى عندما يعمل Ollama على الجهاز نفسه. يرسل WebBrain قيمة Origin مثل chrome-extension://… أو moz-extension://…، وقد يعيد Ollama الخطأ 403 ما لم يُسمح بهذه الأصول.",
-  "st.providers.ollama_warning.restart": "أغلق أي تطبيق Ollama لسطح المكتب يستخدم المنفذ 11434، ثم شغّل Ollama بأحد الأمرين التاليين:",
+  "st.providers.ollama_warning.restart": "أغلق أي تطبيق Ollama لسطح المكتب يستخدم المنفذ 11434، ثم شغّل Ollama بالأمر التالي:",
   "st.providers.ollama_warning.base_url": "اترك عنوان URL الأساسي لـ Ollama في WebBrain مضبوطًا على http://localhost:11434/v1. قد تنجح اختبارات curl من الطرفية بدون هذا الإعداد لأنها لا ترسل أصل إضافة متصفح.",
   "st.providers.ollama_warning.link": "اقرأ إعلان تكامل Ollama",
   "st.provider.field.model_custom": "مخصّص...",
