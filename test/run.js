@@ -2338,27 +2338,43 @@ test('Firefox download_files preserves server-selected filenames inside the conf
       'an unavailable HEAD response should leave filename selection to Firefox',
     );
 
+    globalThis.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      url,
+      headers: { get() { return null; } },
+    });
+    const getSelected = await downloadFilesFx({ urls: ['https://example.com/download?id=3'] });
+    assert.equal(getSelected.success, true);
+    assert.equal(downloadCalls.length, 3);
+    assert.equal(
+      Object.hasOwn(downloadCalls[2], 'filename'),
+      false,
+      'a successful HEAD without Content-Disposition should not override the actual GET filename',
+    );
+
     configuredDirectory = '';
     globalThis.fetch = async () => {
       throw new Error('filename discovery should not run without a configured directory');
     };
-    const systemDefault = await downloadFilesFx({ urls: ['https://example.com/export?id=3'] });
+    const systemDefault = await downloadFilesFx({ urls: ['https://example.com/export?id=4'] });
     assert.equal(systemDefault.success, true);
-    assert.equal(downloadCalls.length, 3);
+    assert.equal(downloadCalls.length, 4);
     assert.equal(
-      Object.hasOwn(downloadCalls[2], 'filename'),
+      Object.hasOwn(downloadCalls[3], 'filename'),
       false,
       'the system-default setting should not probe or override Firefox filename selection',
     );
 
     const explicit = await downloadFilesFx({
-      urls: ['https://example.com/export?id=4'],
+      urls: ['https://example.com/export?id=5'],
       filename: 'manual-report.csv',
     });
     assert.equal(explicit.success, true);
-    assert.equal(downloadCalls.length, 4);
+    assert.equal(downloadCalls.length, 5);
     assert.equal(
-      downloadCalls[3].filename,
+      downloadCalls[4].filename,
       'manual-report.csv',
       'an explicit user filename should not require a HEAD probe when no directory is configured',
     );

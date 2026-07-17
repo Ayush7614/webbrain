@@ -423,19 +423,6 @@ export function filenameFromContentDisposition(value) {
   return safeDownloadFilename(parameters.get('filename'));
 }
 
-function filenameFromHttpUrl(value) {
-  try {
-    const url = new URL(String(value || ''));
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
-    const encoded = url.pathname.split('/').filter(Boolean).pop() || '';
-    let decoded = encoded;
-    try { decoded = decodeURIComponent(encoded); } catch (_) {}
-    return safeDownloadFilename(decoded);
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Firefox has no downloads.onDeterminingFilename event, so a complete filename
  * must be supplied to downloads.download() to select a subdirectory. Discover
@@ -463,8 +450,7 @@ async function discoverHttpDownloadFilename(url) {
     const responseUrl = response.url || target;
     const responseUrlCheck = validateFetchUrl(responseUrl, { allowLocalNetwork: getAllowLocalNetwork() });
     if (!responseUrlCheck.ok) return undefined;
-    return filenameFromContentDisposition(response.headers?.get?.('content-disposition'))
-      || filenameFromHttpUrl(responseUrl);
+    return filenameFromContentDisposition(response.headers?.get?.('content-disposition'));
   } catch {
     return undefined;
   } finally {
