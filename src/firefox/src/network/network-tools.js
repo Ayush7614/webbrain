@@ -1,5 +1,9 @@
 import { firefoxRestrictedDomainFailure } from '../firefox-restricted-domains.js';
-import { filenameInConfiguredDownloadDirectory } from '../download-directory.js';
+import {
+  configuredDownloadDirectory,
+  filenameInConfiguredDownloadDirectory,
+  filenameInDownloadDirectory,
+} from '../download-directory.js';
 
 /**
  * Network & download tools for the WebBrain agent (Firefox).
@@ -466,6 +470,17 @@ async function discoverHttpDownloadFilename(url) {
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+async function filenameForConfiguredHttpDownload(filename, url) {
+  const explicitFilename = safeDownloadFilename(filename);
+  if (explicitFilename) {
+    return filenameInConfiguredDownloadDirectory(browser, explicitFilename);
+  }
+  const directory = await configuredDownloadDirectory(browser);
+  if (!directory) return undefined;
+  const discoveredFilename = await discoverHttpDownloadFilename(url);
+  return filenameInDownloadDirectory(directory, discoveredFilename) || undefined;
 }
 
 function defaultSkillDownloadFilename(contentType) {
@@ -2148,8 +2163,7 @@ export async function downloadResourceFromPage(tabId, args = {}) {
       };
     }
 
-    const suggestedFilename = filename || await discoverHttpDownloadFilename(r.url);
-    const downloadFilename = await filenameInConfiguredDownloadDirectory(browser, suggestedFilename);
+    const downloadFilename = await filenameForConfiguredHttpDownload(filename, r.url);
     const downloadId = await browser.downloads.download({
       url: r.url,
       filename: downloadFilename,
@@ -2216,9 +2230,10 @@ export async function downloadFiles(args = {}) {
       if (i >= urls.length) return;
       const url = urls[i];
       try {
-        const suggestedFilename = (i === 0 ? singleFilename : null)
-          || await discoverHttpDownloadFilename(url);
-        const filename = await filenameInConfiguredDownloadDirectory(browser, suggestedFilename);
+        const filename = await filenameForConfiguredHttpDownload(
+          i === 0 ? singleFilename : null,
+          url,
+        );
         const opts = { url, conflictAction: 'uniquify' };
         if (filename) opts.filename = filename;
         const downloadId = await browser.downloads.download(opts);

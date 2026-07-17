@@ -30,6 +30,16 @@ export function filenameInDownloadDirectory(directory, filename) {
   return `${normalizedDirectory}/${basename}`;
 }
 
+export async function configuredDownloadDirectory(api) {
+  if (!api?.storage?.local?.get) return '';
+  try {
+    const stored = await api.storage.local.get(DOWNLOAD_DIRECTORY_STORAGE_KEY);
+    return normalizeDownloadDirectory(stored?.[DOWNLOAD_DIRECTORY_STORAGE_KEY]);
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Firefox does not expose downloads.onDeterminingFilename. Its download call
  * sites therefore resolve the configured relative path before starting each
@@ -40,14 +50,8 @@ export function filenameInDownloadDirectory(directory, filename) {
  */
 export async function filenameInConfiguredDownloadDirectory(api, filename) {
   const original = filename || undefined;
-  if (!api?.storage?.local?.get) return original;
-  try {
-    const stored = await api.storage.local.get(DOWNLOAD_DIRECTORY_STORAGE_KEY);
-    const directory = normalizeDownloadDirectory(stored?.[DOWNLOAD_DIRECTORY_STORAGE_KEY]);
-    if (!directory) return original;
-    if (!original) return undefined;
-    return filenameInDownloadDirectory(directory, original) || original;
-  } catch {
-    return original;
-  }
+  const directory = await configuredDownloadDirectory(api);
+  if (!directory) return original;
+  if (!original) return undefined;
+  return filenameInDownloadDirectory(directory, original) || original;
 }

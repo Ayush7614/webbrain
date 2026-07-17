@@ -2259,6 +2259,11 @@ test('download directory routing is relative and uses each browser-supported pat
     undefined,
     'firefox: missing filenames should be left to the browser instead of overriding Content-Disposition',
   );
+  assert.equal(
+    await DownloadDirectoryFx.configuredDownloadDirectory(firefoxApi),
+    'Work/Exports',
+    'firefox: callers should be able to check whether routing is configured before probing a URL',
+  );
 });
 
 test('Firefox download_files preserves server-selected filenames inside the configured directory', async () => {
@@ -2266,12 +2271,13 @@ test('Firefox download_files preserves server-selected filenames inside the conf
   const originalFetch = globalThis.fetch;
   const downloadCalls = [];
   const fetchCalls = [];
+  let configuredDirectory = 'Work/WebBrain';
   try {
     globalThis.browser = {
       storage: {
         local: {
           async get() {
-            return { downloadDirectory: 'Work/WebBrain' };
+            return { downloadDirectory: configuredDirectory };
           },
         },
       },
@@ -2330,6 +2336,31 @@ test('Firefox download_files preserves server-selected filenames inside the conf
       Object.hasOwn(downloadCalls[1], 'filename'),
       false,
       'an unavailable HEAD response should leave filename selection to Firefox',
+    );
+
+    configuredDirectory = '';
+    globalThis.fetch = async () => {
+      throw new Error('filename discovery should not run without a configured directory');
+    };
+    const systemDefault = await downloadFilesFx({ urls: ['https://example.com/export?id=3'] });
+    assert.equal(systemDefault.success, true);
+    assert.equal(downloadCalls.length, 3);
+    assert.equal(
+      Object.hasOwn(downloadCalls[2], 'filename'),
+      false,
+      'the system-default setting should not probe or override Firefox filename selection',
+    );
+
+    const explicit = await downloadFilesFx({
+      urls: ['https://example.com/export?id=4'],
+      filename: 'manual-report.csv',
+    });
+    assert.equal(explicit.success, true);
+    assert.equal(downloadCalls.length, 4);
+    assert.equal(
+      downloadCalls[3].filename,
+      'manual-report.csv',
+      'an explicit user filename should not require a HEAD probe when no directory is configured',
     );
   } finally {
     if (originalBrowser === undefined) delete globalThis.browser;
