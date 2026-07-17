@@ -138,7 +138,7 @@ body {
 .pin-coachmark-arrow {
   position: absolute;
   top: 2px;
-  right: 12px;
+  right: 28px;
   left: auto;
   width: min(190px, 54vw);
   height: 150px;
@@ -156,7 +156,7 @@ body {
 /* Chrome mirrors its side-panel toolbar controls with the panel. A panel on
    the left therefore needs the coachmark arrow mirrored to the left. */
 :root[data-panel-side="left"] .pin-coachmark-arrow {
-  left: 12px;
+  left: 28px;
   right: auto;
   transform: scaleX(-1);
 }

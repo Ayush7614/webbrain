@@ -9214,12 +9214,12 @@ test('first install opens a browser-aware panel launcher without fake toolbar co
   assert.match(chromePanelJs, /event\.key === 'Escape'[\s\S]*?stopImmediatePropagation\(\)[\s\S]*?dismiss\(\)/, 'chrome: Escape should be consumed by the modal and use the same dismissal path');
   assert.match(
     chromePanelCss,
-    /\.pin-coachmark-arrow\s*\{[^}]*\bright:\s*12px;[^}]*\bleft:\s*auto;[^}]*\btransform:\s*none;/,
+    /\.pin-coachmark-arrow\s*\{[^}]*\bright:\s*28px;[^}]*\bleft:\s*auto;[^}]*\btransform:\s*none;/,
     'chrome: the normal right-side panel should point the coachmark arrow at the upper-right pin',
   );
   assert.match(
     chromePanelCss,
-    /:root\[data-panel-side="left"\] \.pin-coachmark-arrow\s*\{[^}]*\bleft:\s*12px;[^}]*\bright:\s*auto;[^}]*\btransform:\s*scaleX\(-1\);/,
+    /:root\[data-panel-side="left"\] \.pin-coachmark-arrow\s*\{[^}]*\bleft:\s*28px;[^}]*\bright:\s*auto;[^}]*\btransform:\s*scaleX\(-1\);/,
     'chrome: left-side panels should mirror the coachmark arrow toward the upper-left pin',
   );
 
