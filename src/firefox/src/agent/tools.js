@@ -534,7 +534,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'get_shadow_dom',
-      description: 'Get all shadow DOM hosts on the page with their mode (open/closed) and visible text. Only open shadow roots are accessible in Firefox.',
+      description: 'Get all accessible open shadow DOM hosts on the page with their visible text. Closed shadow roots are not accessible in Firefox.',
       parameters: {
         type: 'object',
         properties: {},

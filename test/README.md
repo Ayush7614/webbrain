@@ -11,7 +11,7 @@ npx playwright install chromium
 
 ## 1. Unit — `npm test`
 
-`test/run.js`. Pure-JS tests covering loop detection, adapter routing, provider parity, permission gates, tool classifications, planner logic, skills, slash commands, credential fields, and context management. No browser, no network. Run `node test/run.js`.
+`test/run.js`. Pure-JS tests covering loop detection, adapter routing, provider parity, permission gates, tool classifications, planner logic, skills, slash commands, credential fields, and context management. No browser, no network. Run the complete unit suite with `npm test`.
 
 ## 2. Fixtures — `npm run test:fixtures`
 
