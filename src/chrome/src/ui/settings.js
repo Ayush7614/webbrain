@@ -2070,7 +2070,7 @@ function renderProviders() {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'sk-...' },
         { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'kimi-k2.5',
-          suggestions: ['kimi-k2.5', 'kimi-k3'] },
+          suggestions: ['kimi-k2.5', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed', 'kimi-k2.6'] },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.moonshot.ai/v1' },
         ...COST_ESTIMATE_FIELDS,
       ],

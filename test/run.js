@@ -15062,7 +15062,7 @@ test('inferContextWindow: model-aware cloud/router defaults and local 16k fallba
     for (const model of ['kimi-k3', 'kimi-k-3']) {
       assert.equal(infer({ category: 'cloud', providerName: 'kimi', model }), 1000000);
     }
-    for (const model of ['kimi-k2.5', 'kimi-k2.6', 'kimi-k2.7-code']) {
+    for (const model of ['kimi-k2.5', 'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed']) {
       assert.equal(infer({ category: 'cloud', providerName: 'kimi', model }), 262144);
     }
     assert.equal(infer({ category: 'router', providerName: 'openrouter', model: 'qwen/qwen3.7-max' }), 262144);
@@ -16664,13 +16664,13 @@ test('OpenAI settings list every GPT-5.6 family model with Terra first', () => {
   }
 });
 
-test('Kimi settings keep K2.5 as the default and offer K3 as an option', () => {
+test('Kimi settings keep K2.5 as the default and list every supported model', () => {
   for (const prefix of ['src/chrome', 'src/firefox']) {
     const source = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/settings.js'), 'utf8');
     assert.match(
       source,
-      /kimi:\s*\{[\s\S]*?placeholder: 'kimi-k2\.5'[\s\S]*?suggestions: \['kimi-k2\.5', 'kimi-k3'\][\s\S]*?https:\/\/api\.moonshot\.ai\/v1/,
-      `${prefix}: Kimi should default to K2.5 and list K3 second`,
+      /kimi:\s*\{[\s\S]*?placeholder: 'kimi-k2\.5'[\s\S]*?suggestions: \['kimi-k2\.5', 'kimi-k3', 'kimi-k2\.7-code', 'kimi-k2\.7-code-highspeed', 'kimi-k2\.6'\][\s\S]*?https:\/\/api\.moonshot\.ai\/v1/,
+      `${prefix}: Kimi should default to K2.5 and list all five current model IDs`,
     );
   }
 });
@@ -16955,13 +16955,25 @@ test('GPT-5.6 Responses streaming emits text, tool calls, usage, and replay item
 });
 
 test('Chat Completions scopes reasoning replay to providers that support it', () => {
-  const replayMessage = {
+  const reasoningMessage = (model, currentToolLoop = false, preserveAcrossTurns = false) => ({
     role: 'assistant',
     content: null,
     tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_page', arguments: '{}' } }],
     response_items: [{ type: 'reasoning', encrypted_content: 'responses-only' }],
     reasoning_content: 'kimi-only reasoning',
-  };
+    _reasoning_replay: {
+      provider: 'kimi',
+      model,
+      ...(preserveAcrossTurns ? { preserveAcrossTurns: true } : {}),
+      ...(currentToolLoop ? { currentToolLoop: true } : {}),
+    },
+  });
+  const expectedWithoutReasoning = (message) => ({
+    role: 'assistant',
+    content: null,
+    tool_calls: message.tool_calls,
+  });
+  const historicalK25 = reasoningMessage('kimi-k2.5');
   for (const [label, Provider] of [
     ['chrome OpenAI-compatible', OpenAIProviderCh],
     ['firefox OpenAI-compatible', OpenAIProviderFx],
@@ -16972,12 +16984,8 @@ test('Chat Completions scopes reasoning replay to providers that support it', ()
   ]) {
     const generic = new Provider({ providerName: 'openai', model: 'generic-model' });
     assert.deepEqual(
-      generic._chatMessages([replayMessage]),
-      [{
-        role: 'assistant',
-        content: null,
-        tool_calls: replayMessage.tool_calls,
-      }],
+      generic._chatMessages([historicalK25]),
+      [expectedWithoutReasoning(historicalK25)],
       `${label}: provider switches must strip foreign replay fields`,
     );
 
@@ -16986,12 +16994,8 @@ test('Chat Completions scopes reasoning replay to providers that support it', ()
       model: 'kimi-k2.5',
     });
     assert.deepEqual(
-      kimiK25._chatMessages([replayMessage]),
-      [{
-        role: 'assistant',
-        content: null,
-        tool_calls: replayMessage.tool_calls,
-      }],
+      kimiK25._chatMessages([historicalK25]),
+      [expectedWithoutReasoning(historicalK25)],
       `${label}: K2.5 must not receive unsupported preserved thinking`,
     );
   }
@@ -17000,14 +17004,24 @@ test('Chat Completions scopes reasoning replay to providers that support it', ()
     ['chrome OpenAI-compatible', OpenAIProviderCh],
     ['firefox OpenAI-compatible', OpenAIProviderFx],
   ]) {
+    const kimiK25 = new Provider({ providerName: 'kimi', model: 'kimi-k2.5' });
+    const activeK25ToolLoop = reasoningMessage('kimi-k2.5', true);
+    assert.deepEqual(
+      kimiK25._chatMessages([activeK25ToolLoop]),
+      [{
+        ...expectedWithoutReasoning(activeK25ToolLoop),
+        reasoning_content: 'kimi-only reasoning',
+      }],
+      `${label}: K2.5 must replay reasoning during the active tool loop`,
+    );
+
     for (const model of ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed']) {
       const kimiPreserved = new Provider({ providerName: 'kimi', model });
+      const historicalMessage = reasoningMessage(model, false, true);
       assert.deepEqual(
-        kimiPreserved._chatMessages([replayMessage]),
+        kimiPreserved._chatMessages([historicalMessage]),
         [{
-          role: 'assistant',
-          content: null,
-          tool_calls: replayMessage.tool_calls,
+          ...expectedWithoutReasoning(historicalMessage),
           reasoning_content: 'kimi-only reasoning',
         }],
         `${label}: ${model} should retain required preserved thinking`,
@@ -17015,14 +17029,17 @@ test('Chat Completions scopes reasoning replay to providers that support it', ()
     }
 
     const kimiK26Default = new Provider({ providerName: 'kimi', model: 'kimi-k2.6' });
+    const historicalK26 = reasoningMessage('kimi-k2.6');
     assert.deepEqual(
-      kimiK26Default._chatMessages([replayMessage]),
-      [{
-        role: 'assistant',
-        content: null,
-        tool_calls: replayMessage.tool_calls,
-      }],
+      kimiK26Default._chatMessages([historicalK26]),
+      [expectedWithoutReasoning(historicalK26)],
       `${label}: K2.6 should not retain historical thinking by default`,
+    );
+    const activeK26ToolLoop = reasoningMessage('kimi-k2.6', true);
+    assert.equal(
+      kimiK26Default._chatMessages([activeK26ToolLoop])[0].reasoning_content,
+      'kimi-only reasoning',
+      `${label}: K2.6 should replay reasoning during the active tool loop`,
     );
 
     const kimiK26Preserved = new Provider({
@@ -17030,19 +17047,18 @@ test('Chat Completions scopes reasoning replay to providers that support it', ()
       model: 'kimi-k2.6',
       extraBody: { thinking: { type: 'enabled', keep: 'all' } },
     });
+    const preservedK26 = reasoningMessage('kimi-k2.6', false, true);
     assert.deepEqual(
-      kimiK26Preserved._chatMessages([replayMessage]),
+      kimiK26Preserved._chatMessages([preservedK26]),
       [{
-        role: 'assistant',
-        content: null,
-        tool_calls: replayMessage.tool_calls,
+        ...expectedWithoutReasoning(preservedK26),
         reasoning_content: 'kimi-only reasoning',
       }],
       `${label}: explicitly preserved K2.6 calls should retain reasoning_content`,
     );
 
     const perRequestBody = kimiK26Default._buildChatCompletionsBody(
-      [replayMessage],
+      [preservedK26],
       { extraBody: { thinking: { type: 'enabled', keep: 'all' } } },
     );
     assert.equal(
@@ -17053,13 +17069,26 @@ test('Chat Completions scopes reasoning replay to providers that support it', ()
     assert.deepEqual(perRequestBody.thinking, { type: 'enabled', keep: 'all' });
 
     const disabledBody = kimiK26Preserved._buildChatCompletionsBody(
-      [replayMessage],
+      [preservedK26],
       { extraBody: { thinking: { type: 'disabled' } } },
     );
     assert.equal(
       disabledBody.messages[0].reasoning_content,
       undefined,
       `${label}: disabling K2.6 thinking should strip historical reasoning`,
+    );
+
+    const mismatchedModel = reasoningMessage('kimi-k3');
+    assert.equal(
+      kimiK25._chatMessages([mismatchedModel])[0].reasoning_content,
+      undefined,
+      `${label}: reasoning from a different Kimi model must not cross model switches`,
+    );
+    const unknownAlias = new Provider({ providerName: 'kimi', model: 'kimi-k2.5-preview' });
+    assert.equal(
+      unknownAlias._chatMessages([reasoningMessage('kimi-k2.5-preview', true)])[0].reasoning_content,
+      undefined,
+      `${label}: unknown Kimi aliases must not inherit reasoning replay support`,
     );
   }
 });
@@ -17104,21 +17133,62 @@ test('GPT-5.6 Responses streaming preserves refusal text', async () => {
 });
 
 test('Agent tool loops preserve provider reasoning state on both execution paths', () => {
-  for (const [prefix, AgentClass] of [
-    ['src/chrome', AgentCh],
-    ['src/firefox', AgentFx],
+  for (const [prefix, AgentClass, Provider] of [
+    ['src/chrome', AgentCh, OpenAIProviderCh],
+    ['src/firefox', AgentFx, OpenAIProviderFx],
   ]) {
     const source = fs.readFileSync(path.join(ROOT, prefix, 'src/agent/agent.js'), 'utf8');
     const agent = new AgentClass({});
+    const kimiK25 = new Provider({ providerName: 'kimi', model: 'kimi-k2.5' });
+    const kimiK3 = new Provider({ providerName: 'kimi', model: 'kimi-k3' });
     const assistant = {
       role: 'assistant',
       content: null,
       tool_calls: [{ id: 'call_1', function: { name: 'read_page', arguments: '{}' } }],
     };
+    const activeK25ToolLoop = agent._withResponseItems(
+      assistant,
+      null,
+      'required Kimi reasoning',
+      kimiK25,
+    );
+    assert.deepEqual(activeK25ToolLoop, {
+      ...assistant,
+      reasoning_content: 'required Kimi reasoning',
+      _reasoning_replay: {
+        provider: 'kimi',
+        model: 'kimi-k2.5',
+        currentToolLoop: true,
+      },
+    }, `${prefix}: K2.5 reasoning should be replayable during the active tool loop`);
+    assert.equal(
+      kimiK25._chatMessages([activeK25ToolLoop])[0].reasoning_content,
+      'required Kimi reasoning',
+      `${prefix}: K2.5 immediate tool-result requests should retain reasoning`,
+    );
+    agent._expireCurrentToolReasoning([activeK25ToolLoop]);
+    assert.equal(activeK25ToolLoop._reasoning_replay, undefined);
+    assert.equal(activeK25ToolLoop.reasoning_content, undefined);
+    assert.equal(
+      kimiK25._chatMessages([activeK25ToolLoop])[0].reasoning_content,
+      undefined,
+      `${prefix}: K2.5 later turns should strip expired tool-loop reasoning`,
+    );
     assert.deepEqual(
-      agent._withResponseItems(assistant, null, 'required Kimi reasoning'),
-      { ...assistant, reasoning_content: 'required Kimi reasoning' },
-      `${prefix}: Chat Completions reasoning should be replayed on the assistant message`,
+      agent._withResponseItems({ role: 'assistant', content: 'done' }, null, 'discarded final reasoning', kimiK25),
+      { role: 'assistant', content: 'done' },
+      `${prefix}: K2.5 final reasoning should not bloat persisted history`,
+    );
+    const preservedK3 = agent._withResponseItems(
+      { role: 'assistant', content: 'done' },
+      null,
+      'preserved K3 reasoning',
+      kimiK3,
+    );
+    assert.equal(
+      kimiK3._chatMessages([preservedK3])[0].reasoning_content,
+      'preserved K3 reasoning',
+      `${prefix}: K3 reasoning should remain available across turns`,
     );
     const responseItems = [{ type: 'reasoning', encrypted_content: 'opaque' }];
     assert.deepEqual(
@@ -17131,14 +17201,15 @@ test('Agent tool loops preserve provider reasoning state on both execution paths
         > agent._estimateContextChars([{ role: 'assistant', content: '' }]),
       `${prefix}: reasoning replay should count toward context budgeting`,
     );
-    assert.match(source, /_withResponseItems\(message, responseItems, reasoningContent = ''\)[\s\S]*response_items: responseItems/, `${prefix}: assistant helper should retain Responses output Items`);
+    assert.match(source, /_withResponseItems\(message, responseItems, reasoningContent = '', provider = null\)[\s\S]*response_items: responseItems/, `${prefix}: assistant helper should retain Responses output Items`);
+    assert.match(source, /_expireCurrentToolReasoning\(messages\)/, `${prefix}: new user turns should expire immediate-only reasoning replay`);
     assert.match(source, /reasoning_content: reasoningContent/, `${prefix}: assistant helper should retain Chat Completions reasoning content`);
-    assert.match(source, /content: result\.content \|\| null,[\s\S]*tool_calls: result\.toolCalls,[\s\S]*}, result\.responseItems, result\.reasoningContent\)/, `${prefix}: non-stream tool loop should retain provider reasoning state`);
-    assert.match(source, /content: result\.content \}, result\.responseItems, result\.reasoningContent\)[\s\S]*messages\.push\(\{ role: 'user', content: progressFinalBlock \}/, `${prefix}: non-stream progress continuations should retain provider reasoning state`);
-    assert.match(source, /content: finalResponse \}, result\.responseItems, result\.reasoningContent\)/, `${prefix}: non-stream final answers should retain provider reasoning state`);
-    assert.match(source, /chunk\.type === 'reasoning'[\s\S]*content: fullText \|\| null,[\s\S]*tool_calls: toolCalls,[\s\S]*}, responseItems, reasoningContent\)/, `${prefix}: stream tool loop should retain provider reasoning state`);
-    assert.match(source, /content: fullText \}, responseItems, reasoningContent\)[\s\S]*messages\.push\(\{ role: 'user', content: progressFinalBlock \}/, `${prefix}: stream progress continuations should retain provider reasoning state`);
-    assert.match(source, /content: fullText \}, responseItems, reasoningContent\)[\s\S]*return finish\(fullText\)/, `${prefix}: stream final answers should retain provider reasoning state`);
+    assert.match(source, /content: result\.content \|\| null,[\s\S]*tool_calls: result\.toolCalls,[\s\S]*}, result\.responseItems, result\.reasoningContent, provider\)/, `${prefix}: non-stream tool loop should retain provider reasoning state`);
+    assert.match(source, /content: result\.content \}, result\.responseItems, result\.reasoningContent, provider\)[\s\S]*messages\.push\(\{ role: 'user', content: progressFinalBlock \}/, `${prefix}: non-stream progress continuations should scope provider reasoning state`);
+    assert.match(source, /content: finalResponse \}, result\.responseItems, result\.reasoningContent, provider\)/, `${prefix}: non-stream final answers should scope provider reasoning state`);
+    assert.match(source, /chunk\.type === 'reasoning'[\s\S]*content: fullText \|\| null,[\s\S]*tool_calls: toolCalls,[\s\S]*}, responseItems, reasoningContent, provider\)/, `${prefix}: stream tool loop should retain provider reasoning state`);
+    assert.match(source, /content: fullText \}, responseItems, reasoningContent, provider\)[\s\S]*messages\.push\(\{ role: 'user', content: progressFinalBlock \}/, `${prefix}: stream progress continuations should scope provider reasoning state`);
+    assert.match(source, /content: fullText \}, responseItems, reasoningContent, provider\)[\s\S]*return finish\(fullText\)/, `${prefix}: stream final answers should scope provider reasoning state`);
     assert.match(source, /if \(msg\.response_items\) totalChars \+= JSON\.stringify\(msg\.response_items\)\.length/, `${prefix}: context budgeting should include encrypted reasoning Items`);
     assert.match(source, /if \(typeof msg\.reasoning_content === 'string'\) totalChars \+= msg\.reasoning_content\.length/, `${prefix}: context budgeting should include Chat Completions reasoning content`);
   }

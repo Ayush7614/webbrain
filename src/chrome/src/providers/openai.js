@@ -3,6 +3,18 @@ import { fetchWithFallback } from './fetch-with-fallback.js';
 import { shouldUseOpenAIResponsesApi } from './provider-compatibility.js';
 
 const OPENAI_RESPONSES_MIN_MAX_OUTPUT_TOKENS = 16;
+const KIMI_CURRENT_TOOL_REASONING_MODELS = new Set([
+  'kimi-k3',
+  'kimi-k2.7-code',
+  'kimi-k2.7-code-highspeed',
+  'kimi-k2.6',
+  'kimi-k2.5',
+]);
+const KIMI_PRESERVED_THINKING_MODELS = new Set([
+  'kimi-k3',
+  'kimi-k2.7-code',
+  'kimi-k2.7-code-highspeed',
+]);
 
 /**
  * Provider for OpenAI-compatible APIs (ChatGPT, OpenRouter, any OpenAI-compatible endpoint).
@@ -200,14 +212,43 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
   _supportsReasoningContentReplay(options = {}) {
     if (String(this.config.providerName || '').trim().toLowerCase() !== 'kimi') return false;
     const model = String(this.model || '').trim().toLowerCase();
-    if (/^kimi-k(?:3(?:$|-)|2\.7-code(?:$|-))/.test(model)) return true;
-    if (!/^kimi-k2\.6(?:$|-)/.test(model)) return false;
+    if (KIMI_PRESERVED_THINKING_MODELS.has(model)) return true;
+    if (model !== 'kimi-k2.6') return false;
 
     const configuredThinking = this.config.extraBody?.thinking;
     const requestThinking = options.extraBody?.thinking;
     const keep = requestThinking?.keep ?? configuredThinking?.keep;
     const type = requestThinking?.type ?? configuredThinking?.type;
     return keep === 'all' && type !== 'disabled';
+  }
+
+  _supportsCurrentToolReasoningReplay() {
+    if (String(this.config.providerName || '').trim().toLowerCase() !== 'kimi') return false;
+    // K2.5 lacks cross-turn Preserved Thinking, but Kimi still requires the
+    // reasoning attached to a tool call on that loop's immediate follow-up.
+    return KIMI_CURRENT_TOOL_REASONING_MODELS.has(
+      String(this.model || '').trim().toLowerCase()
+    );
+  }
+
+  _shouldReplayReasoningContent(message, options = {}) {
+    // Never mix opaque reasoning across providers or model switches.
+    const replay = message?._reasoning_replay;
+    if (!replay || typeof replay !== 'object') return false;
+    const providerName = String(this.config.providerName || '').trim().toLowerCase();
+    const model = String(this.model || '').trim().toLowerCase();
+    if (String(replay.provider || '').trim().toLowerCase() !== providerName) return false;
+    if (String(replay.model || '').trim().toLowerCase() !== model) return false;
+    if (
+      replay.currentToolLoop === true
+      && Array.isArray(message.tool_calls)
+      && message.tool_calls.length > 0
+      && this._supportsCurrentToolReasoningReplay(options)
+    ) {
+      return true;
+    }
+    if (replay.preserveAcrossTurns !== true) return false;
+    return this._supportsReasoningContentReplay(options);
   }
 
   _isOfficialOpenAIBaseUrl() {
