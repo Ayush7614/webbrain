@@ -349,7 +349,7 @@ export default {
   "sp.record.banner_label": "录制中",
   "sp.record.error": "录制出错：{error}",
   "sp.record.mic_unavailable": "麦克风不可用：{error}。录制已开始，仅包含标签页音频和视频。",
-  "sp.record.saved": "已将 {filename} 保存到 Downloads。",
+  "sp.record.saved": "已保存至 {filename}。",
   "sp.record.transcribing": "正在用 Whisper 转写音频…",
   "sp.record.transcribed": "转写文本已保存：{filename}",
   "sp.record.transcribe_failed": "转写失败：{error}",

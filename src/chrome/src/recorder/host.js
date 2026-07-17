@@ -28,6 +28,7 @@
 
 import { ensureOffscreen } from '../offscreen/ensure.js';
 import { transcribeAudio } from '../agent/transcribe.js';
+import { resolveSavedDownload } from '../download-result.js';
 
 let recordingState = { active: false };
 const RECORDING_STATE_KEY = 'recordingState';
@@ -431,6 +432,7 @@ export async function stopTabRecording(opts = {}) {
     .slice(0, 19);
   const filename = recordingState.filename || `webbrain-recording-${stamp}.webm`;
   let downloadId = null;
+  let savedDownload = null;
   let saveError = null;
   try {
     downloadId = await chrome.downloads.download({
@@ -438,6 +440,7 @@ export async function stopTabRecording(opts = {}) {
       filename,
       saveAs: false,
     });
+    savedDownload = await resolveSavedDownload(chrome, downloadId);
   } catch (e) {
     saveError = `download failed: ${e.message}`;
   }
@@ -445,8 +448,9 @@ export async function stopTabRecording(opts = {}) {
   const wantTranscribe = recordingState.transcribeAfter && !saveError;
   const final = {
     ok: !saveError,
-    filename: saveError ? null : filename,
+    filename: saveError ? null : savedDownload.filename,
     downloadId,
+    state: savedDownload?.state,
     error: saveError || undefined,
     sizeBytes: res.sizeBytes,
     durationMs: res.durationMs,
@@ -515,12 +519,14 @@ async function runTranscription({ dataUrl, mimeType, baseFilename }) {
   const txtFilename = `${baseFilename}.txt`;
   const txtDataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(result.text);
   let downloadId = null;
+  let savedDownload = null;
   try {
     downloadId = await chrome.downloads.download({
       url: txtDataUrl,
       filename: txtFilename,
       saveAs: false,
     });
+    savedDownload = await resolveSavedDownload(chrome, downloadId);
   } catch (e) {
     return broadcastTranscribed({
       ok: false,
@@ -535,7 +541,7 @@ async function runTranscription({ dataUrl, mimeType, baseFilename }) {
     ok: true,
     text: result.text,
     transcriptDownloadId: downloadId,
-    transcriptFilename: txtFilename,
+    transcriptFilename: savedDownload.filename,
     providerId: result.providerId,
     model: result.model,
     latencyMs: result.latencyMs,

@@ -5034,7 +5034,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // Minimal status strip just below the (now-hidden) recording banner.
-// Carries post-recording notifications: "saved to Downloads", "transcribing…",
+// Carries post-recording notifications: saved path, "transcribing…",
 // "transcript ready" + optional Summarize CTA (Phase 3).
 function showRecordingStatus(text, opts = {}) {
   let el = document.getElementById('recording-status');

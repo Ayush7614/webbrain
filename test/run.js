@@ -34,6 +34,10 @@ async function loadRunCaptureRuntime(runCaptureRel) {
   return import(pathToFileURL(path.join(ROOT, runCaptureRel)).href);
 }
 
+async function loadDownloadResultRuntime(downloadResultRel) {
+  return import(pathToFileURL(path.join(ROOT, downloadResultRel)).href);
+}
+
 function loadSlashAutocompleteRuntime(panelRel) {
   const slash = loadSlashCommandRuntime(panelRel);
   const source = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
@@ -9508,6 +9512,11 @@ test('run screenshot capture reactivates the originating tab before saving', asy
           downloads.push(options);
           return 99;
         },
+        search: async ({ id }) => [{
+          id,
+          filename: `/Users/test/Downloads/WebBrain/${downloads.at(-1).filename}`,
+          state: 'complete',
+        }],
       },
     };
     const runtime = await loadRunCaptureRuntime(captureRel);
@@ -9516,7 +9525,121 @@ test('run screenshot capture reactivates the originating tab before saving', asy
     assert.deepEqual(updates, [{ tabId: 42, changes: { active: true } }], `${label}: inactive run tab should be reactivated`);
     assert.deepEqual(captures, [{ windowId: 7, options: { format: 'png' } }], `${label}: capture should use the reactivated tab's window`);
     assert.equal(downloads[0].filename, 'run-after.png', `${label}: after screenshot should be saved under the requested filename`);
-    assert.deepEqual(result, { filename: 'run-after.png', downloadId: 99 });
+    assert.deepEqual(result, {
+      filename: '/Users/test/Downloads/WebBrain/run-after.png',
+      downloadId: 99,
+      state: 'complete',
+    });
+  }
+});
+
+test('saved download results wait for completion and expose the browser-resolved absolute path', async () => {
+  for (const [label, resultRel] of [
+    ['chrome', 'src/chrome/src/download-result.js'],
+    ['firefox', 'src/firefox/src/download-result.js'],
+  ]) {
+    const runtime = await loadDownloadResultRuntime(resultRel);
+    let clock = 0;
+    let searches = 0;
+    const api = {
+      downloads: {
+        async search({ id }) {
+          searches += 1;
+          if (searches === 1) {
+            return [{ id, filename: '/Users/test/Downloads/WebBrain/report.pdf', state: 'in_progress' }];
+          }
+          return [{ id, filename: '/Users/test/Downloads/WebBrain/report (1).pdf', state: 'complete' }];
+        },
+      },
+    };
+
+    const result = await runtime.resolveSavedDownload(api, 73, {
+      timeoutMs: 10,
+      pollMs: 0,
+      now: () => clock,
+      wait: async () => { clock += 1; },
+    });
+
+    assert.deepEqual(result, {
+      downloadId: 73,
+      filename: '/Users/test/Downloads/WebBrain/report (1).pdf',
+      state: 'complete',
+    }, `${label}: should return the completed browser path, including conflict renames`);
+    assert.equal(searches, 2, `${label}: should not report an in-progress download as saved`);
+  }
+});
+
+test('saved download results reject interrupted and timed-out saves', async () => {
+  for (const [label, resultRel] of [
+    ['chrome', 'src/chrome/src/download-result.js'],
+    ['firefox', 'src/firefox/src/download-result.js'],
+  ]) {
+    const runtime = await loadDownloadResultRuntime(resultRel);
+    await assert.rejects(
+      runtime.resolveSavedDownload({
+        downloads: {
+          async search() {
+            return [{ id: 74, state: 'interrupted', error: 'USER_CANCELED' }];
+          },
+        },
+      }, 74),
+      /Download #74 was interrupted: USER_CANCELED/,
+      `${label}: interrupted downloads must not be reported as saved`,
+    );
+
+    let clock = 0;
+    await assert.rejects(
+      runtime.resolveSavedDownload({
+        downloads: {
+          async search() {
+            return [{
+              id: 75,
+              filename: '/Users/test/Downloads/WebBrain/large-recording.webm',
+              state: 'in_progress',
+            }];
+          },
+        },
+      }, 75, {
+        timeoutMs: 1,
+        pollMs: 0,
+        now: () => clock,
+        wait: async () => { clock += 1; },
+      }),
+      /Download #75 did not complete within 1ms \(last state: in_progress\)/,
+      `${label}: timed-out downloads must not be reported as saved`,
+    );
+  }
+});
+
+test('WebBrain save surfaces report completed paths while durable download context stays id-only', async () => {
+  for (const [label, prefix] of [
+    ['chrome', 'src/chrome'],
+    ['firefox', 'src/firefox'],
+  ]) {
+    const agent = fs.readFileSync(path.join(ROOT, prefix, 'src/agent/agent.js'), 'utf8');
+    const capture = fs.readFileSync(path.join(ROOT, prefix, 'src/run-capture.js'), 'utf8');
+    assert.match(agent, /resolveSavedDownload\([^,]+,\s*downloadId\)/, `${label}: agent saves should wait for the completed browser item`);
+    assert.match(capture, /return resolveSavedDownload\(api, downloadId\)/, `${label}: run screenshots should return the completed browser path`);
+    assert.match(capture, /filenames: \[state\.before\.filename, after\.filename\]/, `${label}: run result should surface resolved before/after paths`);
+  }
+
+  const chromeAgent = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const recorder = fs.readFileSync(path.join(ROOT, 'src/chrome/src/recorder/host.js'), 'utf8');
+  assert.doesNotMatch(chromeAgent, /saved to Downloads as/, 'chrome: screenshot messages should not claim a fixed Downloads location');
+  assert.match(recorder, /savedDownload = await resolveSavedDownload\(chrome, downloadId\)/, 'chrome: recordings and transcripts should wait for the completed browser item');
+  assert.match(recorder, /filename: saveError \? null : savedDownload\.filename/, 'chrome: recording results should expose the resolved path');
+  assert.match(recorder, /transcriptFilename: savedDownload\.filename/, 'chrome: transcript results should expose the resolved path');
+
+  const localeFilenames = fs.readdirSync(path.join(ROOT, 'src/chrome/src/ui/locales'))
+    .filter((name) => name.endsWith('.js'))
+    .sort();
+  const fixedDownloadsNames = /Downloads|Descargas|Téléchargements|İndirilenler|التنزيلات|Загрузки|Pobranych|להורדות|Завантаження/;
+  for (const filename of localeFilenames) {
+    const chromeLocale = (await import(pathToFileURL(path.join(ROOT, 'src/chrome/src/ui/locales', filename)).href)).default;
+    const firefoxLocale = (await import(pathToFileURL(path.join(ROOT, 'src/firefox/src/ui/locales', filename)).href)).default;
+    assert.equal(chromeLocale['sp.record.saved'], firefoxLocale['sp.record.saved'], `${filename}: save-path copy should match across browser builds`);
+    assert.match(chromeLocale['sp.record.saved'], /\{filename\}/, `${filename}: save-path copy should include the resolved path`);
+    assert.doesNotMatch(chromeLocale['sp.record.saved'], fixedDownloadsNames, `${filename}: save-path copy should not name a fixed Downloads folder`);
   }
 });
 

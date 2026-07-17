@@ -49,6 +49,7 @@ import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from '
 import { buildTrustedRuntimeContext, stripTrustedRuntimeContext } from './runtime-context.js';
 import { firefoxHostPermissionFailure, firefoxRestrictedDomainFailure } from '../firefox-restricted-domains.js';
 import { filenameInConfiguredDownloadDirectory } from '../download-directory.js';
+import { resolveSavedDownload } from '../download-result.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -3407,6 +3408,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!/\.png$/i.test(filename)) filename += '.png';
     filename = await filenameInConfiguredDownloadDirectory(browser, filename);
     const downloadId = await browser.downloads.download({ url: crop.dataUrl, filename, saveAs: false });
+    const savedDownload = await resolveSavedDownload(browser, downloadId);
 
     return {
       success: true,
@@ -3418,7 +3420,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       completedCount: 1,
       openedInTabCount: 0,
       failedCount: 0,
-      savedFile: { downloadId, filename, mimeType: crop.mimeType, bytes: crop.bytes },
+      savedFile: { ...savedDownload, mimeType: crop.mimeType, bytes: crop.bytes },
       visibleMedia: {
         rect: located.rect,
         cropSize: { width: crop.width, height: crop.height },

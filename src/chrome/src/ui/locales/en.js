@@ -50,7 +50,7 @@ export default {
   'sp.record.error': 'Recording error: {error}',
   'sp.record.mic_unavailable': 'Microphone unavailable: {error}. Recording started with tab audio and video only.',
   'sp.record.full_screen_started_html': 'Screen/window recording started. Press <code>Escape</code> twice in WebBrain or a browser page to stop, or use Chrome\'s Stop sharing control.',
-  'sp.record.saved': 'Saved {filename} to Downloads.',
+  'sp.record.saved': 'Saved to {filename}.',
   'sp.record.transcribing': 'Transcribing audio with Whisper…',
   'sp.record.transcribed': 'Transcript saved: {filename}',
   'sp.record.transcribe_failed': 'Transcription failed: {error}',
