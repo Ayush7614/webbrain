@@ -30,32 +30,23 @@ export function filenameInDownloadDirectory(directory, filename) {
   return `${normalizedDirectory}/${basename}`;
 }
 
-function filenameFromDownloadUrl(value) {
-  try {
-    const url = new URL(String(value || ''));
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
-    return decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
-  } catch {
-    return '';
-  }
-}
-
 /**
  * Firefox does not expose downloads.onDeterminingFilename. Its download call
  * sites therefore resolve the configured relative path before starting each
  * download. Missing storage keeps tests and older runtimes on the original
- * filename, while a configured directory also supplies a URL-derived fallback
- * for downloads that did not request a name.
+ * filename. Callers must supply a real filename rather than guessing from the
+ * URL, because doing so would override a server-selected Content-Disposition
+ * filename.
  */
-export async function filenameInConfiguredDownloadDirectory(api, filename, url = '') {
+export async function filenameInConfiguredDownloadDirectory(api, filename) {
   const original = filename || undefined;
   if (!api?.storage?.local?.get) return original;
   try {
     const stored = await api.storage.local.get(DOWNLOAD_DIRECTORY_STORAGE_KEY);
     const directory = normalizeDownloadDirectory(stored?.[DOWNLOAD_DIRECTORY_STORAGE_KEY]);
     if (!directory) return original;
-    const candidate = original || filenameFromDownloadUrl(url) || 'download';
-    return filenameInDownloadDirectory(directory, candidate) || `${directory}/download`;
+    if (!original) return undefined;
+    return filenameInDownloadDirectory(directory, original) || original;
   } catch {
     return original;
   }

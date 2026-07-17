@@ -3405,7 +3405,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     filename = filename.split('/').pop().split('\\').pop();
     filename = filename.replace(/\.(jpe?g|webp)$/i, '.png');
     if (!/\.png$/i.test(filename)) filename += '.png';
-    filename = await filenameInConfiguredDownloadDirectory(browser, filename, crop.dataUrl);
+    filename = await filenameInConfiguredDownloadDirectory(browser, filename);
     const downloadId = await browser.downloads.download({ url: crop.dataUrl, filename, saveAs: false });
 
     return {

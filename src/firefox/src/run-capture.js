@@ -62,7 +62,7 @@ export async function captureAndSaveRunScreenshot(api, tabId, filename) {
     throw new Error('The run tab could not be activated for capture.');
   }
   const dataUrl = await api.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-  filename = await filenameInConfiguredDownloadDirectory(api, filename, dataUrl);
+  filename = await filenameInConfiguredDownloadDirectory(api, filename);
   const downloadId = await api.downloads.download({
     url: dataUrl,
     filename,

@@ -419,6 +419,55 @@ export function filenameFromContentDisposition(value) {
   return safeDownloadFilename(parameters.get('filename'));
 }
 
+function filenameFromHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+    const encoded = url.pathname.split('/').filter(Boolean).pop() || '';
+    let decoded = encoded;
+    try { decoded = decodeURIComponent(encoded); } catch (_) {}
+    return safeDownloadFilename(decoded);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Firefox has no downloads.onDeterminingFilename event, so a complete filename
+ * must be supplied to downloads.download() to select a subdirectory. Discover
+ * the server's preferred basename with a bounded HEAD request first. If the
+ * request cannot be inspected, return undefined and let Firefox preserve its
+ * normal Content-Disposition filename instead of fabricating one.
+ */
+async function discoverHttpDownloadFilename(url) {
+  const target = String(url || '').trim();
+  const urlCheck = validateFetchUrl(target, { allowLocalNetwork: getAllowLocalNetwork() });
+  if (!urlCheck.ok) return undefined;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), 5000) : null;
+  try {
+    const response = await fetch(target, {
+      method: 'HEAD',
+      credentials: 'include',
+      redirect: 'manual',
+      cache: 'no-store',
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (response?.type === 'opaqueredirect' || isHttpRedirectStatus(response?.status) || !response?.ok) {
+      return undefined;
+    }
+    const responseUrl = response.url || target;
+    const responseUrlCheck = validateFetchUrl(responseUrl, { allowLocalNetwork: getAllowLocalNetwork() });
+    if (!responseUrlCheck.ok) return undefined;
+    return filenameFromContentDisposition(response.headers?.get?.('content-disposition'))
+      || filenameFromHttpUrl(responseUrl);
+  } catch {
+    return undefined;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 function defaultSkillDownloadFilename(contentType) {
   const type = safeDataUrlMimeType(contentType);
   const extension = {
@@ -909,7 +958,7 @@ async function downloadSkillFile(url, filename, waitMs = 60000) {
     || filenameFromContentDisposition(file.contentDisposition);
   const opts = { url: staged ? staged.localUrl : file.dataUrl, conflictAction: 'uniquify' };
   const safeName = safeDownloadFilename(filename) || responseFilename || defaultSkillDownloadFilename(contentType);
-  const configuredName = await filenameInConfiguredDownloadDirectory(browser, safeName, url);
+  const configuredName = await filenameInConfiguredDownloadDirectory(browser, safeName);
   if (configuredName) opts.filename = configuredName;
   let downloadId;
   try {
@@ -2099,7 +2148,8 @@ export async function downloadResourceFromPage(tabId, args = {}) {
       };
     }
 
-    const downloadFilename = await filenameInConfiguredDownloadDirectory(browser, filename, r.url);
+    const suggestedFilename = filename || await discoverHttpDownloadFilename(r.url);
+    const downloadFilename = await filenameInConfiguredDownloadDirectory(browser, suggestedFilename);
     const downloadId = await browser.downloads.download({
       url: r.url,
       filename: downloadFilename,
@@ -2166,11 +2216,9 @@ export async function downloadFiles(args = {}) {
       if (i >= urls.length) return;
       const url = urls[i];
       try {
-        const filename = await filenameInConfiguredDownloadDirectory(
-          browser,
-          i === 0 ? singleFilename : null,
-          url,
-        );
+        const suggestedFilename = (i === 0 ? singleFilename : null)
+          || await discoverHttpDownloadFilename(url);
+        const filename = await filenameInConfiguredDownloadDirectory(browser, suggestedFilename);
         const opts = { url, conflictAction: 'uniquify' };
         if (filename) opts.filename = filename;
         const downloadId = await browser.downloads.download(opts);

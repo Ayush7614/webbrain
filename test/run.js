@@ -2255,15 +2255,17 @@ test('download directory routing is relative and uses each browser-supported pat
     'firefox: explicit filenames should be routed before downloads.download',
   );
   assert.equal(
-    await DownloadDirectoryFx.filenameInConfiguredDownloadDirectory(firefoxApi, undefined, 'https://example.com/files/report.pdf'),
-    'Work/Exports/report.pdf',
-    'firefox: URL-derived filenames should be routed before downloads.download',
+    await DownloadDirectoryFx.filenameInConfiguredDownloadDirectory(firefoxApi, undefined),
+    undefined,
+    'firefox: missing filenames should be left to the browser instead of overriding Content-Disposition',
   );
 });
 
-test('Firefox download_files passes the configured relative directory to downloads.download', async () => {
+test('Firefox download_files preserves server-selected filenames inside the configured directory', async () => {
   const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
   const downloadCalls = [];
+  const fetchCalls = [];
   try {
     globalThis.browser = {
       storage: {
@@ -2276,11 +2278,11 @@ test('Firefox download_files passes the configured relative directory to downloa
       downloads: {
         async download(options) {
           downloadCalls.push(options);
-          return 9101;
+          return 9100 + downloadCalls.length;
         },
-        async search() {
+        async search({ id }) {
           return [{
-            id: 9101,
+            id,
             filename: '/Users/test/Downloads/Work/WebBrain/report.pdf',
             state: 'complete',
             bytesReceived: 100,
@@ -2289,14 +2291,51 @@ test('Firefox download_files passes the configured relative directory to downloa
         },
       },
     };
+    globalThis.fetch = async (url, options) => {
+      fetchCalls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        type: 'basic',
+        url,
+        headers: {
+          get(name) {
+            return String(name).toLowerCase() === 'content-disposition'
+              ? 'attachment; filename="quarterly-report.pdf"'
+              : null;
+          },
+        },
+      };
+    };
 
-    const result = await downloadFilesFx({ urls: ['https://example.com/files/report.pdf'] });
+    const result = await downloadFilesFx({ urls: ['https://example.com/export?id=1'] });
     assert.equal(result.success, true);
     assert.equal(downloadCalls.length, 1);
-    assert.equal(downloadCalls[0].filename, 'Work/WebBrain/report.pdf');
+    assert.equal(downloadCalls[0].filename, 'Work/WebBrain/quarterly-report.pdf');
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0].options.method, 'HEAD');
+    assert.equal(fetchCalls[0].options.credentials, 'include');
+
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 405,
+      type: 'basic',
+      url: 'https://example.com/export?id=2',
+      headers: { get() { return null; } },
+    });
+    const fallback = await downloadFilesFx({ urls: ['https://example.com/export?id=2'] });
+    assert.equal(fallback.success, true);
+    assert.equal(downloadCalls.length, 2);
+    assert.equal(
+      Object.hasOwn(downloadCalls[1], 'filename'),
+      false,
+      'an unavailable HEAD response should leave filename selection to Firefox',
+    );
   } finally {
     if (originalBrowser === undefined) delete globalThis.browser;
     else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
   }
 });
 
@@ -10160,8 +10199,8 @@ test('Settings > General configures WebBrain download subdirectory with system-d
       const capture = fs.readFileSync(path.join(ROOT, prefix, 'src/run-capture.js'), 'utf8');
       assert.doesNotMatch(background, /onDeterminingFilename|installDownloadDirectoryRouting/, 'firefox: background must not depend on unsupported filename events');
       assert.match(network, /filenameInConfiguredDownloadDirectory\(browser,[\s\S]*?browser\.downloads\.download/g, 'firefox: network downloads should resolve the configured path before starting');
-      assert.match(agent, /filenameInConfiguredDownloadDirectory\(browser, filename, crop\.dataUrl\)[\s\S]*?browser\.downloads\.download/, 'firefox: visible-media downloads should resolve the configured path');
-      assert.match(capture, /filenameInConfiguredDownloadDirectory\(api, filename, dataUrl\)[\s\S]*?api\.downloads\.download/, 'firefox: run captures should resolve the configured path');
+      assert.match(agent, /filenameInConfiguredDownloadDirectory\(browser, filename\)[\s\S]*?browser\.downloads\.download/, 'firefox: visible-media downloads should resolve the configured path');
+      assert.match(capture, /filenameInConfiguredDownloadDirectory\(api, filename\)[\s\S]*?api\.downloads\.download/, 'firefox: run captures should resolve the configured path');
     }
   }
 });
