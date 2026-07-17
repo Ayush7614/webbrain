@@ -9212,7 +9212,16 @@ test('first install opens a browser-aware panel launcher without fake toolbar co
   assert.match(chromePanelJs, /doneButton\.addEventListener\('click', dismiss\)/, 'chrome: pin confirmation should dismiss the coachmark');
   assert.match(chromePanelJs, /skipButton\.addEventListener\('click', dismiss\)/, 'chrome: explicit skip should dismiss the coachmark');
   assert.match(chromePanelJs, /event\.key === 'Escape'[\s\S]*?stopImmediatePropagation\(\)[\s\S]*?dismiss\(\)/, 'chrome: Escape should be consumed by the modal and use the same dismissal path');
-  assert.match(chromePanelCss, /:root\[data-panel-side="left"\] \.pin-coachmark-arrow/, 'chrome: Vivaldi and other left-side panels should mirror the coachmark arrow');
+  assert.match(
+    chromePanelCss,
+    /\.pin-coachmark-arrow\s*\{[^}]*\bright:\s*12px;[^}]*\bleft:\s*auto;[^}]*\btransform:\s*none;/,
+    'chrome: the normal right-side panel should point the coachmark arrow at the upper-right pin',
+  );
+  assert.match(
+    chromePanelCss,
+    /:root\[data-panel-side="left"\] \.pin-coachmark-arrow\s*\{[^}]*\bleft:\s*12px;[^}]*\bright:\s*auto;[^}]*\btransform:\s*scaleX\(-1\);/,
+    'chrome: left-side panels should mirror the coachmark arrow toward the upper-left pin',
+  );
 
   const localeFilenames = fs.readdirSync(path.join(ROOT, 'src/chrome/src/ui/locales'))
     .filter((name) => name.endsWith('.js'))

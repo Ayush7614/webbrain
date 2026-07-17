@@ -138,7 +138,8 @@ body {
 .pin-coachmark-arrow {
   position: absolute;
   top: 2px;
-  left: 12px;
+  right: 12px;
+  left: auto;
   width: min(190px, 54vw);
   height: 150px;
   overflow: visible;
@@ -147,17 +148,17 @@ body {
   stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
-  transform: scaleX(-1);
+  transform: none;
   transform-origin: center;
   filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--accent) 24%, transparent));
 }
 
 /* Chrome mirrors its side-panel toolbar controls with the panel. A panel on
-   the left therefore needs the coachmark arrow on the right, as in Vivaldi. */
+   the left therefore needs the coachmark arrow mirrored to the left. */
 :root[data-panel-side="left"] .pin-coachmark-arrow {
-  right: 12px;
-  left: auto;
-  transform: none;
+  left: 12px;
+  right: auto;
+  transform: scaleX(-1);
 }
 
 .pin-coachmark-card {
