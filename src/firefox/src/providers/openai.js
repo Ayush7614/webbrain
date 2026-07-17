@@ -235,17 +235,6 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     return body;
   }
 
-  _chatMessages(messages) {
-    // Strip Responses-only replay payload before Chat Completions, then apply
-    // provider compatibility role mapping (e.g. system → developer).
-    const stripped = (Array.isArray(messages) ? messages : []).map((message) => {
-      if (!message || !Object.hasOwn(message, 'response_items')) return message;
-      const { response_items: _responseItems, ...chatMessage } = message;
-      return chatMessage;
-    });
-    return this._mapMessages(stripped);
-  }
-
   _responsesContent(content) {
     if (!Array.isArray(content)) return content == null ? '' : String(content);
     return content.map((block) => {

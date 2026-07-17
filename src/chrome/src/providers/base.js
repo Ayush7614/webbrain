@@ -92,6 +92,28 @@ export class BaseLLMProvider {
     return mapProviderMessages(messages, this.config);
   }
 
+  _chatMessages(messages) {
+    // Internal replay state is provider-specific. Responses output Items never
+    // belong in Chat Completions, and reasoning_content is only valid for
+    // providers that explicitly opt into that extension (currently Kimi).
+    const keepReasoningContent = this.config.supportsReasoningContent === true;
+    const sanitized = (Array.isArray(messages) ? messages : []).map((message) => {
+      if (!message || typeof message !== 'object') return message;
+      const hasResponseItems = Object.hasOwn(message, 'response_items');
+      const hasReasoningContent = Object.hasOwn(message, 'reasoning_content');
+      if (!hasResponseItems && (keepReasoningContent || !hasReasoningContent)) return message;
+      const {
+        response_items: _responseItems,
+        reasoning_content: reasoningContent,
+        ...chatMessage
+      } = message;
+      return keepReasoningContent && hasReasoningContent
+        ? { ...chatMessage, reasoning_content: reasoningContent }
+        : chatMessage;
+    });
+    return this._mapMessages(sanitized);
+  }
+
   _addConfiguredMaxTokens(body, options, fallback = 'max_tokens') {
     return addConfiguredMaxTokens(body, options.maxTokens ?? 4096, this.config, fallback);
   }

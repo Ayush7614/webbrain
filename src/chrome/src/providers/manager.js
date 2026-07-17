@@ -425,6 +425,7 @@ export class ProviderManager {
         baseUrl: 'https://api.moonshot.ai/v1',
         model: 'kimi-k2.5',
         supportsStreamUsageOptions: true,
+        supportsReasoningContent: true,
         omitTemperature: true,
         compat: { maxTokensField: 'max_completion_tokens' },
         apiKey: '',

@@ -16361,6 +16361,7 @@ test('ProviderManager update rejects unknown providers and pins existing provide
       }, { markConfigured: false });
       const savedKimi = mgr.providers.get('kimi');
       assert.equal(savedKimi?.config.omitTemperature, true, `${label}: Settings-style compat saves should preserve Kimi's temperature omission`);
+      assert.equal(savedKimi?.config.supportsReasoningContent, true, `${label}: Settings-style compat saves should preserve Kimi reasoning replay support`);
       assert.equal(
         savedKimi?._buildChatCompletionsBody(
           [{ role: 'user', content: 'hello' }],
@@ -16409,6 +16410,7 @@ test('_defaultConfigs: new cloud providers present and disabled by default', () 
     assert.equal(defaults.kimi.baseUrl, 'https://api.moonshot.ai/v1');
     assert.equal(defaults.kimi.model, 'kimi-k2.5');
     assert.equal(defaults.kimi.supportsStreamUsageOptions, true);
+    assert.equal(defaults.kimi.supportsReasoningContent, true);
     assert.equal(defaults.kimi.omitTemperature, true);
     assert.equal(defaults.kimi.compat?.maxTokensField, 'max_completion_tokens');
     assert.equal(defaults.kimi.compat?.omitTemperature, undefined);
@@ -16951,6 +16953,51 @@ test('GPT-5.6 Responses streaming emits text, tool calls, usage, and replay item
     }
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('Chat Completions scopes reasoning replay to providers that support it', () => {
+  const replayMessage = {
+    role: 'assistant',
+    content: null,
+    tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_page', arguments: '{}' } }],
+    response_items: [{ type: 'reasoning', encrypted_content: 'responses-only' }],
+    reasoning_content: 'kimi-only reasoning',
+  };
+  for (const [label, Provider] of [
+    ['chrome OpenAI-compatible', OpenAIProviderCh],
+    ['firefox OpenAI-compatible', OpenAIProviderFx],
+    ['chrome Azure OpenAI', AzureOpenAIProviderCh],
+    ['firefox Azure OpenAI', AzureOpenAIProviderFx],
+    ['chrome llama.cpp', LlamaCppProviderCh],
+    ['firefox llama.cpp', LlamaCppProviderFx],
+  ]) {
+    const generic = new Provider({ providerName: 'openai', model: 'generic-model' });
+    assert.deepEqual(
+      generic._chatMessages([replayMessage]),
+      [{
+        role: 'assistant',
+        content: null,
+        tool_calls: replayMessage.tool_calls,
+      }],
+      `${label}: provider switches must strip foreign replay fields`,
+    );
+
+    const kimiCompatible = new Provider({
+      providerName: 'kimi',
+      model: 'kimi-k2.5',
+      supportsReasoningContent: true,
+    });
+    assert.deepEqual(
+      kimiCompatible._chatMessages([replayMessage]),
+      [{
+        role: 'assistant',
+        content: null,
+        tool_calls: replayMessage.tool_calls,
+        reasoning_content: 'kimi-only reasoning',
+      }],
+      `${label}: compatible calls should retain reasoning_content`,
+    );
   }
 });
 
