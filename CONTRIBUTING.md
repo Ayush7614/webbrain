@@ -159,7 +159,7 @@ the loop ended. A screenshot or "it didn't work" message tells us nothing.
 
 ### Translations
 
-The plugin UI ships in en, es, fr, tr, zh
+The plugin UI ships in 16 locales: ar, en, es, fr, he, id, ja, ko, ms, pl, ru, th, tl, tr, uk, zh
 ([`src/chrome/src/ui/locales/`](src/chrome/src/ui/locales/)). Adding a new
 locale is mechanical — copy `en.js`, translate the values, run the build,
 mirror to firefox. Most useful additions: pt (Brazil/Portugal), de
