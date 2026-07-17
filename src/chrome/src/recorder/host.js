@@ -63,6 +63,11 @@ export function getRecordingState() {
   return recordingState;
 }
 
+/** Live capture or in-flight disk flush — either blocks a concurrent start. */
+function isRecordingBusy(state = recordingState) {
+  return !!(state?.active || state?.saving);
+}
+
 function getRecordingSafetyDueAt(state = recordingState) {
   const startedAt = Number(state?.startedAt || 0);
   return startedAt > 0 ? startedAt + MAX_RECORDING_MS : 0;
@@ -101,6 +106,15 @@ async function loadRecordingState() {
     const stored = await chrome.storage.session.get(RECORDING_STATE_KEY);
     if (stored[RECORDING_STATE_KEY]) recordingState = stored[RECORDING_STATE_KEY];
   } catch { /* session storage unavailable */ }
+  // A saving reservation only makes sense while this process is awaiting
+  // resolveSavedDownload. After a service-worker restart the wait is gone —
+  // free the slot so the user is not blocked forever.
+  if (recordingState?.saving && !recordingState?.active) {
+    recordingState = { active: false };
+    try {
+      await chrome.storage.session?.set?.({ [RECORDING_STATE_KEY]: recordingState });
+    } catch { /* best-effort */ }
+  }
   if (recordingState.active) scheduleRecordingSafetyWatchdog(recordingState);
 }
 recordingStateReady = loadRecordingState();
@@ -150,7 +164,7 @@ function broadcastContentRecordingState(active) {
   } catch {}
 }
 
-function broadcast(event, payload = {}) {
+function broadcast(event, payload = {}, { contentActive } = {}) {
   try {
     chrome.runtime.sendMessage({
       target: 'sidepanel',
@@ -159,7 +173,9 @@ function broadcast(event, payload = {}) {
       ...payload,
     }).catch(() => {});
   } catch {}
-  if (event === 'started') broadcastContentRecordingState(true);
+  if (contentActive === true) broadcastContentRecordingState(true);
+  else if (contentActive === false) broadcastContentRecordingState(false);
+  else if (event === 'started') broadcastContentRecordingState(true);
   else if (event === 'stopped' || event === 'saving') broadcastContentRecordingState(false);
 }
 
@@ -257,6 +273,14 @@ async function reconcileStaleRecordingState({ finalizeInactiveSession = false, b
  */
 async function startRecordingSession({ source, tabId = null, streamId = null, options = {} }) {
   await ensureRecordingStateLoaded();
+  if (recordingState.saving) {
+    // Disk flush can take minutes for large .webm writes. Keep the slot reserved
+    // so a late stopped broadcast cannot clobber a second session's UI.
+    return {
+      ok: false,
+      error: 'A recording is still being saved. Wait a moment and try again.',
+    };
+  }
   if (recordingState.active) {
     const cleared = await reconcileStaleRecordingState({ finalizeInactiveSession: true });
     if (!cleared) {
@@ -386,9 +410,13 @@ async function stopRecordingForSafetyCap({ beforeFinalizeRecording = null } = {}
 export async function stopTabRecording(opts = {}) {
   await ensureRecordingStateLoaded();
   if (opts.expectedRecordingId
-      && recordingState.active
+      && isRecordingBusy()
       && recordingState.recordingId !== opts.expectedRecordingId) {
     return { ok: true, skipped: true, reason: 'different-recording' };
+  }
+  if (recordingState.saving) {
+    // Capture already stopped; disk flush is still running for this session.
+    return { ok: true, alreadyStopped: true, saving: true };
   }
   if (!recordingState.active) {
     // Scoped run cleanup may arrive after the user already stopped and saved
@@ -425,9 +453,9 @@ export async function stopTabRecording(opts = {}) {
     return { ok: true, cleared: true, warning: error };
   }
 
-  // Capture is over as soon as the offscreen recorder stops. Clear the live
-  // banner before waiting on disk so large .webm writes do not look like the
-  // user is still recording.
+  // Capture is over as soon as the offscreen recorder stops. Drop the live
+  // banner, but keep a saving reservation so a second start cannot race the
+  // disk flush and then get wiped by this session's final stopped broadcast.
   const stamp = new Date()
     .toISOString()
     .replace(/[:.]/g, '-')
@@ -435,8 +463,16 @@ export async function stopTabRecording(opts = {}) {
     .slice(0, 19);
   const filename = recordingState.filename || `webbrain-recording-${stamp}.webm`;
   const wantTranscribeAfter = !!recordingState.transcribeAfter;
+  const savingRecordingId = recordingState.recordingId;
   clearRecordingSafetyWatchdog();
-  recordingState = { active: false };
+  recordingState = {
+    active: false,
+    saving: true,
+    recordingId: savingRecordingId,
+    tabId: recordingState.tabId,
+    source: recordingState.source,
+    startedAt: recordingState.startedAt,
+  };
   saveRecordingState();
   broadcast('saving');
 
@@ -471,9 +507,25 @@ export async function stopTabRecording(opts = {}) {
     mimeType: res.mimeType,
     transcribeAfter: wantTranscribe,
     reason: opts.reason || undefined,
+    recordingId: savingRecordingId,
   };
 
-  broadcast('stopped', { result: final });
+  // Defense in depth: only clear/broadcast terminal stopped for this save if
+  // the reservation is still ours (another path should not have started).
+  const stillOurSave = recordingState.saving
+    && recordingState.recordingId === savingRecordingId
+    && !recordingState.active;
+  if (stillOurSave) {
+    recordingState = { active: false };
+    saveRecordingState();
+    broadcast('stopped', { result: final });
+  } else if (recordingState.active) {
+    // A newer live session exists — deliver the path toast without content:false
+    // or banner teardown.
+    broadcast('saved', { result: final }, { contentActive: true });
+  } else {
+    broadcast('stopped', { result: final });
+  }
 
   if (wantTranscribe) {
     runTranscription({

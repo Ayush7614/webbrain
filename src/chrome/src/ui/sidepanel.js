@@ -5006,6 +5006,18 @@ chrome.runtime.onMessage.addListener((msg) => {
     // Capture has stopped; browser is still committing the file to disk.
     setRecordingUI(false);
     showRecordingStatus(t('sp.record.saving'));
+  } else if (msg.event === 'saved') {
+    // Prior session finished saving. Host normally blocks concurrent starts, so
+    // this is defensive for a live banner from another path.
+    lastRecordingResult = msg.result || null;
+    if (lastRecordingResult && lastRecordingResult.ok === false) {
+      showRecordingStatus(
+        t('sp.record.error', { error: lastRecordingResult.error || 'unknown' }),
+        { autoHide: 8000 }
+      );
+    } else if (lastRecordingResult?.filename) {
+      showRecordingStatus(t('sp.record.saved', { filename: lastRecordingResult.filename }), { autoHide: 6000 });
+    }
   } else if (msg.event === 'stopped') {
     setRecordingUI(false);
     lastRecordingResult = msg.result || null;

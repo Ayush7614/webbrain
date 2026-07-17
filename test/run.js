@@ -9642,6 +9642,9 @@ test('WebBrain save surfaces report completed paths while durable download conte
   assert.match(downloadResult, /RECORDING_DOWNLOAD_TIMEOUT_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/, 'chrome: recording saves need a longer timeout than screenshots');
   assert.match(recorder, /timeoutMs:\s*RECORDING_DOWNLOAD_TIMEOUT_MS/, 'chrome: recordings and transcripts should use the longer save timeout');
   assert.match(recorder, /broadcast\(['"]saving['"]\)/, 'chrome: should clear live-recording UI before waiting on disk');
+  assert.match(recorder, /saving:\s*true/, 'chrome: disk flush should reserve recording state so a second start cannot race stopped');
+  assert.match(recorder, /A recording is still being saved/, 'chrome: concurrent start during save should be rejected');
+  assert.match(recorder, /stillOurSave/, 'chrome: final stopped broadcast should only clear our own save reservation');
   assert.match(recorder, /savedDownload = await resolveSavedDownload\(chrome, downloadId/, 'chrome: recordings and transcripts should wait for the completed browser item');
   assert.match(recorder, /filename: saveError \? null : savedDownload\.filename/, 'chrome: recording results should expose the resolved path');
   assert.match(recorder, /transcriptFilename: savedDownload\.filename/, 'chrome: transcript results should expose the resolved path');
