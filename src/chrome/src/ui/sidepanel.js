@@ -5175,6 +5175,22 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.event === 'started') {
     recordingStartedAt = msg.state?.startedAt || Date.now();
     setRecordingUI(true, msg.state || {});
+  } else if (msg.event === 'saving') {
+    // Capture has stopped; browser is still committing the file to disk.
+    setRecordingUI(false);
+    showRecordingStatus(t('sp.record.saving'));
+  } else if (msg.event === 'saved') {
+    // Prior session finished saving. Host normally blocks concurrent starts, so
+    // this is defensive for a live banner from another path.
+    lastRecordingResult = msg.result || null;
+    if (lastRecordingResult && lastRecordingResult.ok === false) {
+      showRecordingStatus(
+        t('sp.record.error', { error: lastRecordingResult.error || 'unknown' }),
+        { autoHide: 8000 }
+      );
+    } else if (lastRecordingResult?.filename) {
+      showRecordingStatus(t('sp.record.saved', { filename: lastRecordingResult.filename }), { autoHide: 6000 });
+    }
   } else if (msg.event === 'stopped') {
     setRecordingUI(false);
     lastRecordingResult = msg.result || null;
@@ -5207,7 +5223,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // Minimal status strip just below the (now-hidden) recording banner.
-// Carries post-recording notifications: "saved to Downloads", "transcribing…",
+// Carries post-recording notifications: saved path, "transcribing…",
 // "transcript ready" + optional Summarize CTA (Phase 3).
 function showRecordingStatus(text, opts = {}) {
   let el = document.getElementById('recording-status');

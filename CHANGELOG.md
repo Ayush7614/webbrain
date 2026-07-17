@@ -10,6 +10,7 @@ This changelog was generated from the repository Git history and release tags. V
 - Replaced the first-install fake toolbar walkthrough with a real **Open Side Panel** action in Chromium and **Open Sidebar** action in Firefox.
 - Added an accessible Chromium first-open coachmark that points to the browser's actual side-panel pin, mirrors its arrow for left-side layouts such as Vivaldi, and clearly distinguishes that pin from the toolbar icon it adds.
 - Kept Firefox guidance aligned with its native Extensions menu and refreshed the install flow across all 16 supported locales.
+- Report the browser-resolved absolute path after WebBrain screenshots, recordings, transcripts, and run captures finish saving, including configured subfolders and uniquified filenames.
 
 ### Fixed
 - Removed non-interactive toolbar and extension-menu illustrations that looked clickable but could not complete setup.
