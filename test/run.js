@@ -10893,7 +10893,7 @@ test('settings warns on missing or short API keys and shows the Ollama localhost
     );
     assert.match(
       settings,
-      /id === 'ollama'[\s\S]*?provider-ollama-warning[\s\S]*?OLLAMA_ORIGINS="" ollama serve[\s\S]*?OLLAMA_ORIGINS="chrome-extension:\/\/,moz-extension:\/\/\*" ollama serve[\s\S]*?https:\/\/www\.webbrain\.one\/blog\/ollama-launch-handoff[\s\S]*?target="_blank" rel="noopener noreferrer"/,
+      /id === 'ollama'[\s\S]*?provider-ollama-warning[\s\S]*?OLLAMA_ORIGINS="\*" ollama serve[\s\S]*?OLLAMA_ORIGINS="chrome-extension:\/\/\*,moz-extension:\/\/\*" ollama serve[\s\S]*?https:\/\/www\.webbrain\.one\/blog\/ollama-launch-handoff[\s\S]*?target="_blank" rel="noopener noreferrer"/,
       `${label}: Ollama card should include both origin commands and the external handoff link`,
     );
     assert.match(html, /\.provider-warning \{/, `${label}: Ollama FAQ warning styling missing`);
