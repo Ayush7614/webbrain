@@ -97,7 +97,7 @@ The agent uses this as its first action on almost every turn — it's faster and
 
 Returns `{success, method, tag, rect, name, href?, navigates?, hint?}`.
 
-On Chrome, the click fires via CDP `Input.dispatchMouseEvent` → trusted event. On Firefox, it's a synthetic `el.click()`.
+Both builds first preserve the compatible synthetic `el.click()` path. On Chrome only, a safe generic target may receive one guarded CDP `Input.dispatchMouseEvent` fallback after the page and target remain stable through two observation intervals. DOM, focus, URL, or target-state changes prove progress; concurrent tab, network, or download activity only vetoes an automatic retry and is not reported as proof. CSS-hidden, pointer-disabled, native, stateful/toggle, form, download, and potentially mutating targets are never auto-retried. Firefox remains synthetic-only.
 
 ### `type_ax({ref_id, text, clear})`
 

@@ -674,6 +674,111 @@ test('ambiguity: two Cancels return rich candidates with ancestor', async (page)
 });
 
 // ─── click_ax same-page anchors ─────────────────────────────────────────────
+test('click_ax: synthetic-first row needs trusted CDP events only when the page ignores synthetic activation', async (page) => {
+  await setup(page, 'trusted-click-fallback.html');
+  const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 20000 });
+  const trustedMatch = String(tree?.pageContent || '').match(/listitem "Defne Sokullu Yesterday Photo" \[(ref_\d+)\]/);
+  const syntheticMatch = String(tree?.pageContent || '').match(/listitem "Normal synthetic row" \[(ref_\d+)\]/);
+  if (!trustedMatch || !syntheticMatch) {
+    throw new Error(`expected trusted and synthetic fixture rows in AX tree: ${tree?.pageContent}`);
+  }
+
+  const syntheticOnly = await call(page, 'click_ax', { ref_id: trustedMatch[1] });
+  if (!syntheticOnly?.success) throw new Error(`expected synthetic click_ax dispatch, got ${JSON.stringify(syntheticOnly)}`);
+  const afterSynthetic = await page.evaluate(() => ({
+    status: document.getElementById('status').textContent,
+    events: window.__trustedClickEvents,
+  }));
+  if (afterSynthetic.status !== 'idle') {
+    throw new Error(`untrusted el.click() must not activate the trusted-only row, got ${afterSynthetic.status}`);
+  }
+  if (afterSynthetic.events.length !== 1 || afterSynthetic.events[0].trusted !== false) {
+    throw new Error(`expected exactly one untrusted synthetic click event, got ${JSON.stringify(afterSynthetic.events)}`);
+  }
+
+  const target = await call(page, 'ax_resolve_rect', { ref_id: trustedMatch[1], forClickFallback: true });
+  if (!target?.success || !target.fallbackEligible || !target.hitOk) {
+    throw new Error(`trusted-only generic row should be eligible for fallback: ${JSON.stringify(target)}`);
+  }
+
+  const session = await page.context().newCDPSession(page);
+  try {
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: target.x, y: target.y, button: 'none', buttons: 0,
+    });
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: target.x, y: target.y, button: 'left', buttons: 1, clickCount: 1,
+    });
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: target.x, y: target.y, button: 'left', buttons: 0, clickCount: 1,
+    });
+  } finally {
+    await session.detach();
+  }
+
+  const afterTrusted = await page.evaluate(() => ({
+    status: document.getElementById('status').textContent,
+    events: window.__trustedClickEvents,
+  }));
+  if (afterTrusted.status !== 'trusted-opened') {
+    throw new Error(`trusted CDP fallback did not activate the row: ${JSON.stringify(afterTrusted)}`);
+  }
+  if (afterTrusted.events.length !== 2 || afterTrusted.events[1].trusted !== true) {
+    throw new Error(`expected one synthetic then one trusted event: ${JSON.stringify(afterTrusted.events)}`);
+  }
+
+  await page.evaluate(() => { document.getElementById('status').textContent = 'idle'; });
+  const normal = await call(page, 'click_ax', { ref_id: syntheticMatch[1] });
+  if (!normal?.success) throw new Error(`normal synthetic row should still work: ${JSON.stringify(normal)}`);
+  const normalStatus = await page.evaluate(() => document.getElementById('status').textContent);
+  if (normalStatus !== 'synthetic-opened') {
+    throw new Error(`working synthetic click path regressed, got ${normalStatus}`);
+  }
+});
+
+test('ax_resolve_rect: trusted fallback eligibility rejects hidden, indirect/localized mutation, stateful, native, form, and download targets', async (page) => {
+  await setup(page, 'trusted-click-fallback.html');
+  const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 20000 });
+  const content = String(tree?.pageContent || '');
+  const refs = {
+    native: content.match(/button "Native button" \[(ref_\d+)\]/)?.[1],
+    destructive: content.match(/listitem "Delete account" \[(ref_\d+)\]/)?.[1],
+    indirectDestructive: content.match(/listitem "Delete account indirectly" \[(ref_\d+)\]/)?.[1],
+    localizedDestructive: content.match(/listitem "Hesabı sil" \[(ref_\d+)\]/)?.[1],
+    statefulRole: content.match(/treeitem "Expandable row" \[(ref_\d+)\]/)?.[1],
+    statefulAttribute: content.match(/listitem "Stateful list row" \[(ref_\d+)\]/)?.[1],
+    input: content.match(/textbox "Native input" \[(ref_\d+)\]/)?.[1],
+    select: content.match(/combobox "Native select" \[(ref_\d+)\]/)?.[1],
+    editable: content.match(/textbox "Editable row" \[(ref_\d+)\]/)?.[1],
+    download: content.match(/listitem "Export report" \[(ref_\d+)\]/)?.[1],
+    form: content.match(/listitem "Form row" \[(ref_\d+)\]/)?.[1],
+    covered: content.match(/listitem "Covered row" \[(ref_\d+)\]/)?.[1],
+    opacity: content.match(/listitem "Opacity row" \[(ref_\d+)\]/)?.[1],
+    pointer: content.match(/listitem "Pointer disabled row" \[(ref_\d+)\]/)?.[1],
+    zero: content.match(/listitem "Zero row" \[(ref_\d+)\]/)?.[1],
+  };
+  await page.evaluate(() => {
+    document.getElementById('opacity-row').style.opacity = '0';
+  });
+  for (const [label, ref] of Object.entries(refs)) {
+    if (!ref) throw new Error(`missing ${label} ref in AX tree: ${content}`);
+    const result = await call(page, 'ax_resolve_rect', { ref_id: ref, forClickFallback: true });
+    if (!result?.success) throw new Error(`${label} ref did not resolve: ${JSON.stringify(result)}`);
+    if (result.fallbackEligible !== false || !result.fallbackBlockedReason) {
+      throw new Error(`${label} target should be blocked from trusted fallback: ${JSON.stringify(result)}`);
+    }
+  }
+
+  const ordinaryResolve = await call(page, 'ax_resolve_rect', { ref_id: refs.destructive });
+  if (
+    ordinaryResolve.fallbackEligible !== undefined
+    || ordinaryResolve.fallbackState !== undefined
+    || ordinaryResolve.documentToken !== undefined
+  ) {
+    throw new Error(`fallback-only metadata leaked into ordinary ref resolution: ${JSON.stringify(ordinaryResolve)}`);
+  }
+});
+
 test('click_ax: same-page anchor reports hash and scroll completion', async (page) => {
   await setup(page, 'anchor-click.html');
   const before = await page.evaluate(() => ({ hash: location.hash, scrollY: window.scrollY }));

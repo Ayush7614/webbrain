@@ -95,7 +95,7 @@ role "accessible name" [ref_id] href="..." type="..." placeholder="..." value=".
 
 返回 `{success, method, tag, rect, name, href?, navigates?, hint?}`。
 
-在 Chrome 上，通过 CDP `Input.dispatchMouseEvent` 触发点击 → 受信任事件。在 Firefox 上，使用合成事件 `el.click()`。
+两个版本都会优先保留兼容的合成 `el.click()` 路径。仅在 Chrome 上，当页面和目标经过两个观察区间仍保持稳定时，安全的通用目标才可获得一次受保护的 CDP `Input.dispatchMouseEvent` 回退。DOM、焦点、URL 或目标状态变化可证明已有进展；并发的标签页、网络或下载活动只会阻止自动重试，不会被报告为成功证明。被 CSS 隐藏、禁用指针事件、原生、带状态/切换语义、位于表单中、用于下载或可能产生变更的目标绝不会自动重试。Firefox 仍只使用合成点击。
 
 ### `type_ax({ref_id, text, clear})`
 

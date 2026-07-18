@@ -509,6 +509,149 @@
     return false;
   }
 
+  function _axAccessibleName(el) {
+    try {
+      if (typeof window.__wb_ax_name === 'function') {
+        const name = window.__wb_ax_name(el);
+        if (name) return String(name).trim().slice(0, 160);
+      }
+    } catch {}
+    try {
+      return String(
+        el?.getAttribute?.('aria-label')
+        || el?.getAttribute?.('title')
+        || el?.innerText
+        || ''
+      ).trim().slice(0, 160);
+    } catch {
+      return '';
+    }
+  }
+
+  function _axFallbackState(el) {
+    if (!el) return '';
+    try {
+      const attrs = [
+        'aria-expanded', 'aria-selected', 'aria-checked', 'aria-pressed',
+        'aria-current', 'aria-busy', 'data-state', 'data-status', 'hidden',
+      ].map(name => `${name}=${el.getAttribute?.(name) || ''}`).join('|');
+      return JSON.stringify({
+        connected: !!el.isConnected,
+        role: (el.getAttribute?.('role') || '').trim().toLowerCase(),
+        name: _axAccessibleName(el),
+        className: String(el.getAttribute?.('class') || '').slice(0, 240),
+        style: String(el.getAttribute?.('style') || '').slice(0, 240),
+        attrs,
+        childCount: Number(el.childElementCount || 0),
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  const _MUTATING_ACTION_TERMS = [
+    // English
+    'send', 'delete', 'remove', 'pay', 'purchase', 'buy', 'checkout',
+    'publish', 'post', 'follow', 'unfollow', 'submit', 'confirm', 'approve',
+    'reject', 'archive',
+    // Turkish
+    'gönder', 'sil', 'kaldır', 'öde', 'satın al', 'yayınla', 'paylaş',
+    'takip et', 'takibi bırak', 'onayla', 'reddet', 'arşivle',
+    // French, Spanish, German, Italian, Portuguese, Dutch
+    'envoyer', 'supprimer', 'retirer', 'payer', 'acheter', 'publier',
+    'suivre', 'se désabonner', 'confirmer', 'approuver', 'rejeter', 'archiver',
+    'enviar', 'eliminar', 'quitar', 'pagar', 'comprar', 'publicar', 'seguir',
+    'dejar de seguir', 'confirmar', 'aprobar', 'rechazar', 'archivar',
+    'senden', 'löschen', 'entfernen', 'bezahlen', 'kaufen', 'veröffentlichen',
+    'folgen', 'entfolgen', 'bestätigen', 'genehmigen', 'ablehnen', 'archivieren',
+    'invia', 'eliminare', 'rimuovere', 'pagare', 'acquistare', 'pubblicare',
+    'seguire', 'smettere di seguire', 'confermare', 'approvare', 'rifiutare',
+    'archiviare', 'excluir', 'remover', 'deixar de seguir', 'aprovar',
+    'rejeitar', 'arquivar', 'verzenden', 'verwijderen', 'betalen', 'kopen',
+    'publiceren', 'volgen', 'ontvolgen', 'bevestigen', 'goedkeuren',
+    'afwijzen', 'archiveren',
+    // Polish, Russian, Arabic, Hindi, Indonesian, Vietnamese
+    'wyślij', 'usuń', 'zapłać', 'kup', 'opublikuj', 'obserwuj',
+    'przestań obserwować', 'potwierdź', 'zatwierdź', 'odrzuć', 'archiwizuj',
+    'отправить', 'удалить', 'оплатить', 'купить', 'опубликовать',
+    'подписаться', 'отписаться', 'подтвердить', 'одобрить', 'отклонить',
+    'архивировать', 'إرسال', 'حذف', 'إزالة', 'دفع', 'شراء', 'نشر', 'متابعة',
+    'إلغاء المتابعة', 'تأكيد', 'موافقة', 'رفض', 'أرشفة', 'भेजें', 'हटाएं',
+    'भुगतान', 'खरीदें', 'प्रकाशित करें', 'फ़ॉलो', 'अनफ़ॉलो', 'पुष्टि',
+    'स्वीकृत', 'अस्वीकार', 'संग्रह', 'kirim', 'hapus', 'bayar', 'beli',
+    'terbitkan', 'ikuti', 'berhenti mengikuti', 'konfirmasi', 'setujui',
+    'tolak', 'arsipkan', 'gửi', 'xóa', 'thanh toán', 'mua', 'đăng',
+    'theo dõi', 'bỏ theo dõi', 'xác nhận', 'phê duyệt', 'từ chối', 'lưu trữ',
+    // Chinese, Japanese, Korean (substring matching is intentional).
+    '发送', '删除', '移除', '支付', '购买', '发布', '关注', '取消关注', '确认',
+    '批准', '拒绝', '归档', '送信', '削除', '支払', '購入', '公開', 'フォロー',
+    'フォロー解除', '確認', '承認', '拒否', 'アーカイブ', '보내기', '삭제',
+    '제거', '결제', '구매', '게시', '팔로우', '언팔로우', '확인', '승인',
+    '거부', '보관',
+  ];
+
+  const _DOWNLOAD_ACTION_TERMS = [
+    'download', 'save as', 'export', 'indir', 'farklı kaydet', 'dışa aktar',
+    'télécharger', 'enregistrer sous', 'exporter', 'descargar', 'guardar como',
+    'exportar', 'herunterladen', 'speichern unter', 'exportieren', 'scarica',
+    'salva come', 'esporta', 'baixar', 'salvar como', 'exportar',
+    '下载', '导出', 'ダウンロード', '書き出す', '다운로드', '내보내기',
+    'скачать', 'экспорт', 'تنزيل', 'تصدير', 'डाउनलोड', 'निर्यात',
+  ];
+
+  function _hasActionTerm(value, terms) {
+    const normalize = input => String(input || '')
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '');
+    const text = normalize(value);
+    if (!text) return false;
+    const isWordChar = char => !!char && /[\p{L}\p{N}]/u.test(char);
+    for (const rawTerm of terms) {
+      const term = normalize(rawTerm);
+      let index = text.indexOf(term);
+      while (index >= 0) {
+        const scriptWithoutWordBoundaries = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(term);
+        const before = index > 0 ? text[index - 1] : '';
+        const afterIndex = index + term.length;
+        const after = afterIndex < text.length ? text[afterIndex] : '';
+        if (scriptWithoutWordBoundaries || (!isWordChar(before) && !isWordChar(after))) return true;
+        index = text.indexOf(term, index + term.length);
+      }
+    }
+    return false;
+  }
+
+  function _hasMutatingActionName(value) {
+    return _hasActionTerm(value, _MUTATING_ACTION_TERMS);
+  }
+
+  function _hasDownloadActionName(value) {
+    return _hasActionTerm(value, _DOWNLOAD_ACTION_TERMS);
+  }
+
+  function _axFallbackVisibility(el) {
+    if (!el?.isConnected) return { visible: false, reason: 'target is no longer connected to the document' };
+    try {
+      for (let node = el; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
+          return { visible: false, reason: 'target or an ancestor is CSS-hidden' };
+        }
+        if (Number.parseFloat(style.opacity || '1') <= 0) {
+          return { visible: false, reason: 'target or an ancestor is fully transparent' };
+        }
+        if (style.pointerEvents === 'none') {
+          return { visible: false, reason: 'target or an ancestor does not receive pointer events' };
+        }
+      }
+    } catch {
+      return { visible: false, reason: 'target visibility could not be verified' };
+    }
+    return { visible: true, reason: '' };
+  }
+
   /** Walk up from a passive child to find its interactive ancestor (up to 5 levels). */
   function _resolveInteractiveAncestor(el) {
     if (!_PASSIVE_TAGS.has(el.tagName) || _isInteractive(el)) return el;
@@ -2750,6 +2893,23 @@
           }
           try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
           try { el.focus({ preventScroll: true }); } catch {}
+          const preparedActive = (() => {
+            try {
+              const active = document.activeElement;
+              if (!active || active === document.body || active === document.documentElement) return '';
+              const activeRect = active.getBoundingClientRect?.();
+              return [
+                active.tagName || '',
+                active.getAttribute?.('role') || '',
+                active.getAttribute?.('aria-label') || active.getAttribute?.('title') || active.id || '',
+                Math.round(activeRect?.x || 0),
+                Math.round(activeRect?.y || 0),
+              ].join(':');
+            } catch {
+              return '';
+            }
+          })();
+          const fallbackStateBefore = _axFallbackState(el);
           const rect = el.getBoundingClientRect();
           const tag = el.tagName ? el.tagName.toLowerCase() : '';
           let popupRole = '';
@@ -2799,6 +2959,7 @@
           }
           rememberInteractionPoint(el, 'click_ax');
           el.click();
+          const fallbackStateAfterImmediate = _axFallbackState(el);
           // If the model just clicked a text-entry element, its next call must
           // be type_ax on the same ref_id. Putting the directive in the tool
           // payload (rather than only in the system prompt) keeps it in the
@@ -2816,6 +2977,9 @@
               method: 'click_ax',
               ref_id,
               tag,
+              _preparedActive: preparedActive,
+              _fallbackStateBefore: fallbackStateBefore,
+              _fallbackStateAfterImmediate: fallbackStateAfterImmediate,
               rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
             };
             // Echo accessible name + href so the model can see exactly what
@@ -2823,9 +2987,7 @@
             // the wrong thing — e.g. a sidebar nav link that navigates away
             // from an open modal, silently destroying in-progress form state.
             try {
-              const accName = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title')))
-                || (el.innerText && el.innerText.trim().slice(0, 80))
-                || '';
+              const accName = _axAccessibleName(el);
               if (accName) resp.name = accName;
             } catch {}
             if (tag === 'a') {
@@ -3197,7 +3359,7 @@
       // miss are identical so error messages stay consistent.
       'ax_resolve_rect': () => {
         try {
-          const { ref_id } = msg.params || {};
+          const { ref_id, forClickFallback = false } = msg.params || {};
           if (typeof ref_id !== 'string') return { success: false, error: 'ref_id (string, e.g. "ref_42") is required' };
           if (typeof window.__wb_ax_lookup !== 'function') return { success: false, error: 'accessibility-tree.js not injected' };
           const el = window.__wb_ax_lookup(ref_id);
@@ -3221,21 +3383,74 @@
           const cy = r.top + r.height / 2;
           const vw = window.innerWidth, vh = window.innerHeight;
           const inViewport = r.width > 0 && r.height > 0 && cx >= 0 && cy >= 0 && cx <= vw && cy <= vh;
-          let name = '';
-          try {
-            name = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title')))
-              || (el.innerText && el.innerText.trim().slice(0, 80))
-              || '';
-          } catch {}
+          const tag = el.tagName ? el.tagName.toLowerCase() : '';
+          const role = (el.getAttribute?.('role') || '').trim().toLowerCase();
+          const name = _axAccessibleName(el);
+          let topmost = null;
+          try { if (forClickFallback && inViewport) topmost = document.elementFromPoint(cx, cy); } catch {}
+          const hitOk = !forClickFallback || !!topmost && (
+            topmost === el
+            || el.contains?.(topmost)
+          );
+          const isEditable = !!el.isContentEditable || tag === 'input' || tag === 'textarea';
+          const isNativeControl = ['button', 'a', 'input', 'select', 'textarea', 'label', 'option'].includes(tag);
+          const isButtonLike = role === 'button' || !!el.closest?.('[role="button"]');
+          const isSubmitControl = _isSubmitControl(el);
+          const isDownloadControl = !!el.closest?.('a[download],[download],[data-download]')
+            || _hasDownloadActionName(name);
+          const isDestructiveLike = _hasMutatingActionName(name);
+          const hasStatefulSemantics = ['treeitem', 'option'].includes(role)
+            || ['aria-expanded', 'aria-selected', 'aria-checked', 'aria-pressed', 'aria-haspopup', 'data-state']
+              .some(attr => el.hasAttribute?.(attr));
+          const unsafeAncestor = el.closest?.(
+            'button,a,input,select,textarea,label,form,[role="button"],[role="link"],[onclick],[data-action]'
+          );
+          const safeRole = !role || ['generic', 'listitem', 'row'].includes(role);
+          const visibility = forClickFallback
+            ? _axFallbackVisibility(el)
+            : { visible: true, reason: '' };
+          let fallbackBlockedReason = '';
+          if (!visibility.visible) fallbackBlockedReason = visibility.reason;
+          else if (!inViewport) fallbackBlockedReason = 'target is outside the viewport or has a zero-sized box';
+          else if (!hitOk) fallbackBlockedReason = 'target center is covered by another element';
+          else if (isEditable) fallbackBlockedReason = 'editable targets must not be auto-clicked twice';
+          else if (tag === 'select') fallbackBlockedReason = 'native select controls must use keyboard selection';
+          else if (isNativeControl || isButtonLike) fallbackBlockedReason = 'native/button-like controls keep the existing synthetic path';
+          else if (isSubmitControl || !!el.closest?.('form')) fallbackBlockedReason = 'form controls must not be auto-retried';
+          else if (isDownloadControl) fallbackBlockedReason = 'download controls must not be auto-retried';
+          else if (isDestructiveLike) fallbackBlockedReason = 'potentially mutating controls must not be auto-retried';
+          else if (hasStatefulSemantics) fallbackBlockedReason = 'toggle/selection controls must not be auto-clicked twice';
+          else if (unsafeAncestor) fallbackBlockedReason = 'targets with explicit interactive handlers must not be auto-retried';
+          else if (!safeRole) fallbackBlockedReason = `role "${role}" is not eligible for automatic trusted fallback`;
+          if (forClickFallback && !window.__wbAxDocumentToken) {
+            window.__wbAxDocumentToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+          }
           return {
             success: true,
             ref_id,
-            tag: el.tagName ? el.tagName.toLowerCase() : '',
+            tag,
+            role,
             name,
             x: Math.round(cx),
             y: Math.round(cy),
             rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
             inViewport,
+            ...(forClickFallback ? {
+              documentToken: window.__wbAxDocumentToken,
+              hitOk,
+              topmostTag: topmost?.tagName ? topmost.tagName.toLowerCase() : '',
+              fallbackEligible: !fallbackBlockedReason,
+              fallbackBlockedReason: fallbackBlockedReason || undefined,
+              fallbackState: _axFallbackState(el),
+              isComputedVisible: visibility.visible,
+              isEditable,
+              isNativeControl,
+              isButtonLike,
+              isSubmitControl,
+              isDownloadControl,
+              isDestructiveLike,
+              hasStatefulSemantics,
+            } : {}),
           };
         } catch (e) {
           return { success: false, error: e && e.message || String(e) };

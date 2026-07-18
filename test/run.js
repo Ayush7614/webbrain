@@ -15081,6 +15081,515 @@ test('CDP sendCommand rejects failures reported through chrome.runtime.lastError
   }
 });
 
+test('CDP input dispatchers never call the nonexistent Input.enable command', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    commands.push({ tabId, method, params });
+    return {};
+  };
+
+  await cdp.dispatchMouseEvent(42, 'mouseMoved', 100, 200);
+  await cdp.dispatchMouseEvent(42, 'mousePressed', 100, 200);
+  await cdp.dispatchMouseEvent(42, 'mouseReleased', 100, 200);
+  await cdp.dispatchKeyEvent(42, 'keyDown', 'Enter');
+
+  assert.deepEqual(
+    commands.map(command => command.method),
+    [
+      'Input.dispatchMouseEvent',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchKeyEvent',
+    ],
+  );
+  assert.equal(commands.some(command => command.method === 'Input.enable'), false);
+
+  const source = fs.readFileSync(path.join(ROOT, 'src/chrome/src/cdp/cdp-client.js'), 'utf8');
+  assert.doesNotMatch(source, /Input\.enable/, 'Chrome CDP client must not reintroduce the unsupported Input.enable command');
+});
+
+test('Chrome click_ax keeps successful synthetic clicks and skips trusted fallback', async () => {
+  const agent = new AgentCh({});
+  let resolved = false;
+  agent._observeClickAxSideEffect = async () => ({
+    changed: true,
+    proved: true,
+    safetyVeto: false,
+    observable: true,
+    reasons: ['page_text'],
+    proofReasons: ['page_text'],
+    safetyReasons: [],
+    snapshot: '{"text":"after"}',
+  });
+  agent._resolveClickAxFallbackTarget = async () => {
+    resolved = true;
+    return { success: false };
+  };
+
+  const result = await agent._maybeFallbackClickAxWithCdp(
+    42,
+    { ref_id: 'ref_10' },
+    { success: true, method: 'click_ax', ref_id: 'ref_10', tag: 'button' },
+    { snapshot: '{"text":"before"}' },
+  );
+
+  assert.equal(resolved, false, 'a productive synthetic click must not resolve or dispatch a trusted fallback');
+  assert.equal(result.success, true);
+  assert.equal(result.trusted, false);
+  assert.equal(result.verified, true);
+  assert.deepEqual(result.observedEffects, ['page_text']);
+});
+
+test('Chrome click_ax uses one trusted fallback for an eligible synthetic no-progress target', async () => {
+  const originals = {
+    attach: cdpClientCh.attach,
+    dispatch: cdpClientCh.dispatchMouseEvent,
+  };
+  const agent = new AgentCh({});
+  const observations = [
+    {
+      changed: false, proved: false, safetyVeto: false, observable: true,
+      reasons: [], proofReasons: [], safetyReasons: [], snapshot: '{"text":"same"}',
+    },
+    {
+      changed: true, proved: true, safetyVeto: false, observable: true,
+      reasons: ['page_controls'], proofReasons: ['page_controls'], safetyReasons: [], snapshot: '{"text":"opened"}',
+    },
+  ];
+  const dispatched = [];
+  agent._clickAxFinalSettleMs = () => 0;
+  agent._observeClickAxSideEffect = async () => observations.shift();
+  agent._clickAxObservedSideEffect = async () => ({
+    changed: false,
+    proved: false,
+    safetyVeto: false,
+    observable: true,
+    reasons: [],
+    proofReasons: [],
+    safetyReasons: [],
+    snapshot: '{"text":"same"}',
+  });
+  agent._resolveClickAxFallbackTarget = async () => ({
+    success: true,
+    fallbackEligible: true,
+    documentToken: 'doc-1',
+    ref_id: 'ref_145',
+    tag: 'div',
+    name: 'Defne Sokullu',
+    x: 289,
+    y: 495,
+    rect: { x: 65, y: 459, w: 449, h: 72 },
+    inViewport: true,
+    hitOk: true,
+    fallbackState: '{"state":"same"}',
+  });
+  agent._captureClickAxObservation = async (_tabId, snapshot, sideEffectWatch, startedAt) => ({
+    startedAt,
+    snapshot,
+    tabIds: '1,42',
+    sideEffectWatch,
+  });
+
+  try {
+    cdpClientCh.attach = async () => ({ tabId: 42, attached: true });
+    cdpClientCh.dispatchMouseEvent = async (tabId, type, x, y) => {
+      dispatched.push({ tabId, type, x, y });
+      return {};
+    };
+
+    const result = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_145' },
+      { success: true, method: 'click_ax', ref_id: 'ref_145', tag: 'div', name: 'Defne Sokullu' },
+      { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
+    );
+
+    assert.deepEqual(
+      dispatched.map(event => event.type),
+      ['mouseMoved', 'mousePressed', 'mouseReleased'],
+    );
+    assert.ok(dispatched.every(event => event.x === 289 && event.y === 495));
+    assert.equal(result.success, true);
+    assert.equal(result.fallback, 'cdp_after_synthetic_no_progress');
+    assert.equal(result.fallbackAttempted, true);
+    assert.equal(result.trusted, true);
+    assert.equal(result.verified, true);
+    assert.deepEqual(result.observedEffects, ['page_controls']);
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.dispatchMouseEvent = originals.dispatch;
+  }
+});
+
+test('Chrome click_ax never trusts ineligible targets and never retries one trusted fallback', async () => {
+  const originals = {
+    attach: cdpClientCh.attach,
+    dispatch: cdpClientCh.dispatchMouseEvent,
+  };
+  const agent = new AgentCh({});
+  let dispatched = 0;
+  agent._clickAxFinalSettleMs = () => 0;
+  agent._observeClickAxSideEffect = async () => ({
+    changed: false,
+    proved: false,
+    safetyVeto: false,
+    observable: true,
+    reasons: [],
+    proofReasons: [],
+    safetyReasons: [],
+    snapshot: '{"text":"same"}',
+  });
+  agent._clickAxObservedSideEffect = async () => ({
+    changed: false,
+    proved: false,
+    safetyVeto: false,
+    observable: true,
+    reasons: [],
+    proofReasons: [],
+    safetyReasons: [],
+    snapshot: '{"text":"same"}',
+  });
+  agent._captureClickAxObservation = async (_tabId, snapshot, sideEffectWatch, startedAt) => ({
+    startedAt,
+    snapshot,
+    tabIds: '1,42',
+    sideEffectWatch,
+  });
+
+  try {
+    cdpClientCh.attach = async () => ({ tabId: 42, attached: true });
+    cdpClientCh.dispatchMouseEvent = async () => { dispatched++; };
+
+    agent._resolveClickAxFallbackTarget = async () => ({
+      success: true,
+      fallbackEligible: false,
+      fallbackBlockedReason: 'native/button-like controls keep the existing synthetic path',
+    });
+    const button = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_button' },
+      { success: true, method: 'click_ax', ref_id: 'ref_button', tag: 'button' },
+      { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
+    );
+    assert.equal(button.success, true, 'ineligible existing paths stay backward compatible');
+    assert.equal(button.trusted, false);
+    assert.match(button.fallbackSkipped, /native\/button-like/);
+    assert.equal(button.warning, undefined, 'first ineligible no-progress result should stay trace-only');
+    assert.equal(dispatched, 0);
+
+    agent._resolveClickAxFallbackTarget = async () => ({
+      success: true,
+      fallbackEligible: true,
+      documentToken: 'doc-2',
+      x: 100,
+      y: 200,
+      rect: { x: 50, y: 180, w: 100, h: 40 },
+      fallbackState: '{"state":"same"}',
+    });
+    const first = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_row' },
+      { success: true, method: 'click_ax', ref_id: 'ref_row', tag: 'div' },
+      { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
+    );
+    assert.equal(first.success, false);
+    assert.equal(first.noProgress, true);
+    assert.equal(first.fallbackAttempted, true);
+    assert.equal(dispatched, 3);
+
+    const second = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_row' },
+      { success: true, method: 'click_ax', ref_id: 'ref_row', tag: 'div' },
+      { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
+    );
+    assert.equal(second.success, false);
+    assert.equal(second.noProgress, true);
+    assert.match(second.fallbackSkipped, /already attempted/);
+    assert.equal(dispatched, 3, 'the same document/ref target must receive at most one trusted fallback');
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.dispatchMouseEvent = originals.dispatch;
+  }
+});
+
+test('Chrome click_ax side-effect observer ignores preparatory focus but catches handler focus, network, and downloads', async () => {
+  const agent = new AgentCh({});
+  const before = JSON.stringify({
+    url: 'https://example.com',
+    text: 'Same',
+    media: '',
+    controls: 'DIV:row',
+    active: '',
+  });
+  const focusOnly = JSON.stringify({
+    url: 'https://example.com',
+    text: 'Same',
+    media: '',
+    controls: 'DIV:row',
+    active: 'DIV:listitem:row:10:10',
+  });
+  agent._clickProgressSnapshot = async () => focusOnly;
+  agent._clickAxTabSnapshot = async () => '1,42';
+
+  const weak = await agent._clickAxObservedSideEffect(42, {
+    startedAt: 100,
+    snapshot: before,
+    tabIds: '1,42',
+    preparedActive: 'DIV:listitem:row:10:10',
+    sideEffectWatch: { created: [], requests: [], listeningRequests: true },
+  });
+  assert.equal(weak.changed, false, 'pre-click target focus alone must not prove that a generic row activated');
+  assert.equal(weak.focusChanged, true);
+
+  const handlerFocus = await agent._clickAxObservedSideEffect(42, {
+    startedAt: 100,
+    snapshot: before,
+    tabIds: '1,42',
+    preparedActive: 'DIV:listitem:different-row:20:20',
+    sideEffectWatch: { created: [], requests: [], listeningRequests: true },
+  });
+  assert.equal(handlerFocus.changed, true);
+  assert.equal(handlerFocus.proved, true);
+  assert.ok(handlerFocus.reasons.includes('focus'));
+
+  const network = await agent._clickAxObservedSideEffect(42, {
+    startedAt: 100,
+    snapshot: before,
+    tabIds: '1,42',
+    preparedActive: 'DIV:listitem:row:10:10',
+    sideEffectWatch: {
+      created: [],
+      requests: [{ url: 'https://example.com/api/open', method: 'POST', ts: 101 }],
+      listeningRequests: true,
+    },
+  });
+  assert.equal(network.changed, true);
+  assert.equal(network.proved, false);
+  assert.equal(network.safetyVeto, true);
+  assert.ok(network.reasons.includes('network_request'));
+
+  const download = await agent._clickAxObservedSideEffect(42, {
+    startedAt: 100,
+    snapshot: before,
+    tabIds: '1,42',
+    preparedActive: 'DIV:listitem:row:10:10',
+    sideEffectWatch: {
+      created: [{ id: 7, filename: 'file.zip', ts: 102 }],
+      requests: [],
+      listeningRequests: true,
+    },
+  });
+  assert.equal(download.changed, true);
+  assert.equal(download.proved, false);
+  assert.equal(download.safetyVeto, true);
+  assert.ok(download.reasons.includes('download'));
+});
+
+test('Chrome click_ax treats uncorrelated network activity as a safety veto, not verified progress', async () => {
+  const agent = new AgentCh({});
+  let resolved = false;
+  agent._observeClickAxSideEffect = async () => ({
+    changed: true,
+    proved: false,
+    safetyVeto: true,
+    observable: true,
+    reasons: ['network_request'],
+    proofReasons: [],
+    safetyReasons: ['network_request'],
+    snapshot: '{"text":"same"}',
+  });
+  agent._resolveClickAxFallbackTarget = async () => {
+    resolved = true;
+    return { success: true, fallbackEligible: true };
+  };
+
+  const result = await agent._maybeFallbackClickAxWithCdp(
+    42,
+    { ref_id: 'ref_20' },
+    { success: true, method: 'click_ax', ref_id: 'ref_20', tag: 'div' },
+    { snapshot: '{"text":"same"}' },
+  );
+
+  assert.equal(resolved, false);
+  assert.equal(result.success, true, 'existing synthetic semantics remain backward compatible');
+  assert.equal(result.verified, false, 'uncorrelated XHR must not prove click progress');
+  assert.equal(result.trusted, false);
+  assert.deepEqual(result.observedEffects, ['network_request']);
+  assert.match(result.fallbackSkipped, /concurrent tab, network, or download activity/);
+});
+
+test('Chrome click_ax accepts a delayed target-state change without sending a second click', async () => {
+  const originals = {
+    attach: cdpClientCh.attach,
+    dispatch: cdpClientCh.dispatchMouseEvent,
+  };
+  const agent = new AgentCh({});
+  let dispatched = 0;
+  agent._observeClickAxSideEffect = async () => ({
+    changed: false,
+    proved: false,
+    safetyVeto: false,
+    observable: true,
+    reasons: [],
+    proofReasons: [],
+    safetyReasons: [],
+    snapshot: '{"text":"same"}',
+  });
+  agent._resolveClickAxFallbackTarget = async () => ({
+    success: true,
+    fallbackEligible: true,
+    documentToken: 'doc-state',
+    fallbackState: '{"className":"selected"}',
+    x: 100,
+    y: 200,
+  });
+  try {
+    cdpClientCh.attach = async () => ({ tabId: 42, attached: true });
+    cdpClientCh.dispatchMouseEvent = async () => { dispatched++; };
+    const result = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_state' },
+      {
+        success: true,
+        method: 'click_ax',
+        ref_id: 'ref_state',
+        tag: 'div',
+        _fallbackStateBefore: '{"className":""}',
+        _fallbackStateAfterImmediate: '{"className":""}',
+      },
+      { snapshot: '{"text":"same"}' },
+    );
+    assert.equal(result.success, true);
+    assert.equal(result.verified, true);
+    assert.deepEqual(result.observedEffects, ['target_state']);
+    assert.equal(dispatched, 0);
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.dispatchMouseEvent = originals.dispatch;
+  }
+});
+
+test('Chrome executeTool runs automatic click_ax fallback and reuses its observed snapshot', async () => {
+  const originalChrome = globalThis.chrome;
+  const originals = {
+    attach: cdpClientCh.attach,
+    dispatch: cdpClientCh.dispatchMouseEvent,
+  };
+  const actions = [];
+  const dispatched = [];
+  let snapshotCalls = 0;
+  let downloadAdds = 0;
+  let downloadRemoves = 0;
+  let requestAdds = 0;
+  let requestRemoves = 0;
+  const stableSnapshot = JSON.stringify({
+    url: 'https://web.whatsapp.com/',
+    text: 'Defne Sokullu',
+    media: '',
+    controls: 'DIV:Defne Sokullu',
+    active: 'DIV::contact:65:459',
+  });
+  const openedSnapshot = JSON.stringify({
+    url: 'https://web.whatsapp.com/',
+    text: 'Defne Sokullu Conversation opened',
+    media: '',
+    controls: 'DIV:Defne Sokullu|DIV:Conversation opened',
+    active: 'DIV::contact:65:459',
+  });
+  const downloadListener = {
+    addListener() { downloadAdds++; },
+    removeListener() { downloadRemoves++; },
+  };
+  const requestListener = {
+    addListener() { requestAdds++; },
+    removeListener() { requestRemoves++; },
+  };
+  globalThis.chrome = {
+    runtime: {},
+    tabs: {
+      async get(tabId) {
+        return { id: tabId, url: 'https://web.whatsapp.com/', title: 'WhatsApp' };
+      },
+      async query() {
+        return [{ id: 42, url: 'https://web.whatsapp.com/' }];
+      },
+      async sendMessage(_tabId, message) {
+        actions.push(message.action);
+        if (message.action === 'click_ax') {
+          return {
+            success: true,
+            method: 'click_ax',
+            ref_id: 'ref_145',
+            tag: 'div',
+            name: 'Defne Sokullu',
+            rect: { x: 65, y: 459, w: 449, h: 72 },
+            _preparedActive: 'DIV::contact:65:459',
+            _fallbackStateBefore: '{"className":""}',
+            _fallbackStateAfterImmediate: '{"className":""}',
+          };
+        }
+        if (message.action === 'ax_resolve_rect') {
+          return {
+            success: true,
+            fallbackEligible: true,
+            documentToken: 'doc-whatsapp',
+            fallbackState: '{"className":""}',
+            x: 289,
+            y: 495,
+            rect: { x: 65, y: 459, w: 449, h: 72 },
+            inViewport: true,
+            hitOk: true,
+          };
+        }
+        throw new Error(`unexpected content action ${message.action}`);
+      },
+    },
+    downloads: { onCreated: downloadListener },
+    webRequest: { onBeforeRequest: requestListener },
+    scripting: { async executeScript() {} },
+  };
+
+  try {
+    const agent = new AgentCh({});
+    agent._isPdfTab = async () => false;
+    agent._currentUrl = async () => 'https://web.whatsapp.com/';
+    agent._clickAxFinalSettleMs = () => 0;
+    agent._clickProgressSnapshot = async () => {
+      snapshotCalls++;
+      return snapshotCalls >= 5 ? openedSnapshot : stableSnapshot;
+    };
+    cdpClientCh.attach = async () => ({ tabId: 42, attached: true });
+    cdpClientCh.dispatchMouseEvent = async (tabId, type, x, y) => {
+      dispatched.push({ tabId, type, x, y });
+      return {};
+    };
+
+    const result = await agent.executeTool(42, 'click_ax', { ref_id: 'ref_145' });
+    assert.deepEqual(actions, ['click_ax', 'ax_resolve_rect', 'ax_resolve_rect']);
+    assert.deepEqual(
+      dispatched.map(event => event.type),
+      ['mouseMoved', 'mousePressed', 'mouseReleased'],
+    );
+    assert.equal(result.success, true);
+    assert.equal(result.fallback, 'cdp_after_synthetic_no_progress');
+    assert.equal(result.trusted, true);
+    assert.equal(result.verified, true);
+    assert.equal(snapshotCalls, 5, 'annotate must reuse the observer snapshot instead of waiting and evaluating again');
+    assert.equal(result._clickAxAfterSnapshot, undefined, 'internal observation state must not leak into tool results');
+    assert.equal(downloadAdds, 1);
+    assert.equal(downloadRemoves, 1);
+    assert.equal(requestAdds, 1);
+    assert.equal(requestRemoves, 1);
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.dispatchMouseEvent = originals.dispatch;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
 test('CDP evaluate forwards a bounded Runtime timeout', async () => {
   const cdp = new CDPClient();
   const commands = [];

@@ -895,7 +895,6 @@ export class CDPClient {
    * Dispatch mouse event.
    */
   async dispatchMouseEvent(tabId, type, x, y, button = 'left') {
-    await this.sendCommand(tabId, 'Input.enable');
     // Use string button names as required by CDP Input.dispatchMouseEvent.
     // 'buttons' is a bitmask: 1 = left held. clickCount must be 1 on BOTH
     // mousePressed AND mouseReleased for the browser to synthesize a 'click'
@@ -916,7 +915,6 @@ export class CDPClient {
    * Dispatch key event.
    */
   async dispatchKeyEvent(tabId, type, key, text = '') {
-    await this.sendCommand(tabId, 'Input.enable');
     return await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
       type,
       key,
@@ -1625,8 +1623,6 @@ export class CDPClient {
    *     element so we still attempt the action.
    */
   async clickElement(tabId, selector) {
-    await this.sendCommand(tabId, 'Input.enable').catch(() => {});
-
     const info = await this.resolveSelector(tabId, selector);
     if (!info) return { success: false, error: 'Element not found' };
     if (info.error) return { success: false, error: info.error };
@@ -1761,8 +1757,6 @@ export class CDPClient {
    *      shadow root with no usable hit point).
    */
   async typeText(tabId, selector, text, clear = false) {
-    await this.sendCommand(tabId, 'Input.enable').catch(() => {});
-
     const info = await this.resolveSelector(tabId, selector);
     if (!info) return { success: false, error: 'Element not found' };
     if (info.error) return { success: false, error: info.error };

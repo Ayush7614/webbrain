@@ -95,7 +95,7 @@ L'agent l'utilise comme première action à presque chaque tour — c'est plus r
 
 Retourne `{success, method, tag, rect, name, href?, navigates?, hint?}`.
 
-Sur Chrome, le clic est déclenché via CDP `Input.dispatchMouseEvent` → événement de confiance. Sur Firefox, c'est un `el.click()` synthétique.
+Les deux versions conservent d'abord le chemin compatible `el.click()` synthétique. Sous Chrome uniquement, une cible générique sûre peut recevoir un unique repli protégé via CDP `Input.dispatchMouseEvent` après deux intervalles d'observation stables de la page et de la cible. Les changements du DOM, du focus, de l'URL ou de l'état de la cible prouvent une progression ; l'activité concurrente des onglets, du réseau ou des téléchargements interdit seulement la relance automatique sans être déclarée comme preuve. Les cibles masquées par CSS, sans événements de pointeur, natives, avec état/bascule, dans un formulaire, de téléchargement ou potentiellement mutantes ne sont jamais retentées automatiquement. Firefox reste entièrement synthétique.
 
 ### `type_ax({ref_id, text, clear})`
 

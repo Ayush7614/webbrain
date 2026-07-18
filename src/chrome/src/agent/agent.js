@@ -184,6 +184,7 @@ export class Agent {
     // Stale click detection: per-tab last clicked element identity.
     this._lastCdpClickIdent = new Map(); // tabId -> string
     this._lastClickProgress = new Map(); // tabId -> { ident, snapshot }
+    this._clickAxCdpFallbacks = new Map(); // tabId -> Set(documentToken|ref_id), one trusted fallback per document target
     // Loop detection: per-tab ring buffer of recent tool calls + nudge count.
     this.recentCalls = new Map(); // tabId -> [{ key, name, ts }]
     this.loopNudges = new Map();  // tabId -> consecutive-nudge counter
@@ -5989,6 +5990,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._isPdfTabCache.delete(tabId);
     this._lastCdpClickIdent?.delete(tabId);
     this._lastClickProgress?.delete(tabId);
+    this._clickAxCdpFallbacks?.delete(tabId);
     this.progressPageScopes.delete(tabId);
     this.progressSessions.delete(tabId);
     this.mastodonStates.delete(tabId);
@@ -12229,43 +12231,60 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const clickProgressBefore = (name === 'click' || name === 'click_ax')
       ? await this._clickProgressSnapshot(tabId)
       : '';
+    const clickAxSideEffectWatch = name === 'click_ax' ? this._beginClickAxSideEffectWatch(tabId) : null;
+    const clickAxBaseline = name === 'click_ax'
+      ? await this._captureClickAxObservation(tabId, clickProgressBefore, clickAxSideEffectWatch)
+      : null;
 
     try {
-      const response = await chrome.tabs.sendMessage(tabId, {
-        target: 'content',
-        action,
-        params: args,
-      });
-      await this._annotateClickProgress(tabId, name, args, response, clickProgressBefore);
-      this._recordInteractionRect(tabId, name, response, interactionUrl);
-      this._annotateCredentialField(name, response);
-      return response;
-    } catch (e) {
-      // Content script might not be injected — try injecting it.
-      // accessibility-tree.js must load first so content.js's
-      // get_accessibility_tree / click_ax / type_ax handlers can reach
-      // window.__generateAccessibilityTree and window.__wb_ax_lookup.
+      let response;
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: [
-            'src/content/accessibility-tree.js',
-            'src/content/content.js',
-            'src/content/agent-visual-indicator.js',
-          ],
-        });
-        const response = await chrome.tabs.sendMessage(tabId, {
+        response = await chrome.tabs.sendMessage(tabId, {
           target: 'content',
           action,
           params: args,
         });
-        await this._annotateClickProgress(tabId, name, args, response, clickProgressBefore);
-        this._recordInteractionRect(tabId, name, response, interactionUrl);
-        this._annotateCredentialField(name, response);
-        return response;
-      } catch (e2) {
-        return { error: `Failed to communicate with page: ${e2.message}` };
+      } catch (e) {
+        // Content script might not be injected — try injecting it.
+        // accessibility-tree.js must load first so content.js's
+        // get_accessibility_tree / click_ax / type_ax handlers can reach
+        // window.__generateAccessibilityTree and window.__wb_ax_lookup.
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: [
+              'src/content/accessibility-tree.js',
+              'src/content/content.js',
+              'src/content/agent-visual-indicator.js',
+            ],
+          });
+          response = await chrome.tabs.sendMessage(tabId, {
+            target: 'content',
+            action,
+            params: args,
+          });
+        } catch (e2) {
+          return { error: `Failed to communicate with page: ${e2.message}` };
+        }
       }
+      if (name === 'click_ax') {
+        response = await this._maybeFallbackClickAxWithCdp(tabId, args, response, clickAxBaseline);
+      }
+      const observedAfterSnapshot = response?._clickAxAfterSnapshot || '';
+      if (response) delete response._clickAxAfterSnapshot;
+      await this._annotateClickProgress(
+        tabId,
+        name,
+        args,
+        response,
+        clickProgressBefore,
+        { afterSnapshot: observedAfterSnapshot },
+      );
+      this._recordInteractionRect(tabId, name, response, interactionUrl);
+      this._annotateCredentialField(name, response);
+      return response;
+    } finally {
+      clickAxSideEffectWatch?.stop();
     }
   }
 
@@ -12303,6 +12322,357 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         response.note = CREDENTIAL_NOTE_STRICT;
       }
     } catch { /* never let detection failure break the tool call */ }
+  }
+
+  _beginClickAxSideEffectWatch(tabId) {
+    const created = [];
+    const requests = [];
+    const downloadListener = (item) => {
+      created.push({ id: item?.id, filename: item?.filename || '', ts: Date.now() });
+    };
+    const requestListener = (details) => {
+      if (details?.tabId !== tabId) return;
+      requests.push({
+        url: details.url || '',
+        method: details.method || '',
+        requestId: details.requestId,
+        ts: Date.now(),
+      });
+    };
+    let listeningDownloads = false;
+    let listeningRequests = false;
+    try {
+      if (chrome.downloads?.onCreated?.addListener) {
+        chrome.downloads.onCreated.addListener(downloadListener);
+        listeningDownloads = true;
+      }
+    } catch {}
+    try {
+      if (chrome.webRequest?.onBeforeRequest?.addListener) {
+        chrome.webRequest.onBeforeRequest.addListener(
+          requestListener,
+          { urls: ['<all_urls>'], types: ['xmlhttprequest'] },
+        );
+        listeningRequests = true;
+      }
+    } catch {}
+    return {
+      created,
+      requests,
+      get listeningRequests() {
+        return listeningRequests;
+      },
+      stop() {
+        if (listeningDownloads) {
+          try { chrome.downloads.onCreated.removeListener(downloadListener); } catch {}
+          listeningDownloads = false;
+        }
+        if (listeningRequests) {
+          try { chrome.webRequest.onBeforeRequest.removeListener(requestListener); } catch {}
+          listeningRequests = false;
+        }
+      },
+    };
+  }
+
+  async _clickAxTabSnapshot() {
+    try {
+      const tabs = await chrome.tabs.query({});
+      return tabs.map(tab => tab.id).filter(id => id != null).sort((a, b) => a - b).join(',');
+    } catch {
+      return '';
+    }
+  }
+
+  _clickAxApiRequestSince(tabId, startedAt, sideEffectWatch = null) {
+    const watched = sideEffectWatch?.requests?.find(request => Number(request?.ts) >= startedAt);
+    if (watched) return watched;
+    if (sideEffectWatch?.listeningRequests) return null;
+    const requests = globalThis.__webbrainApiRequests?.get(tabId);
+    if (!Array.isArray(requests)) return null;
+    return requests.find(request => Number(request?.ts) >= startedAt) || null;
+  }
+
+  async _captureClickAxObservation(tabId, snapshot, sideEffectWatch, startedAt = Date.now()) {
+    return {
+      startedAt,
+      snapshot: snapshot || await this._clickProgressSnapshot(tabId),
+      tabIds: await this._clickAxTabSnapshot(),
+      sideEffectWatch,
+    };
+  }
+
+  async _clickAxObservedSideEffect(tabId, baseline) {
+    const snapshot = await this._clickProgressSnapshot(tabId);
+    const tabIds = await this._clickAxTabSnapshot();
+    const apiRequest = this._clickAxApiRequestSince(tabId, baseline.startedAt, baseline.sideEffectWatch);
+    const download = baseline.sideEffectWatch?.created?.find(item => item.ts >= baseline.startedAt) || null;
+    const proofReasons = [];
+    const safetyReasons = [];
+    let focusChanged = false;
+    if (baseline.snapshot && snapshot && baseline.snapshot !== snapshot) {
+      try {
+        const before = JSON.parse(baseline.snapshot);
+        const after = JSON.parse(snapshot);
+        for (const key of ['url', 'text', 'media', 'controls']) {
+          if (before?.[key] !== after?.[key]) proofReasons.push(key === 'url' ? 'url' : `page_${key}`);
+        }
+        focusChanged = before?.active !== after?.active;
+        if (focusChanged && after?.active !== baseline.preparedActive) proofReasons.push('focus');
+      } catch {
+        proofReasons.push('page_snapshot');
+      }
+    }
+    // Tab/network/download activity is a safety veto, not proof that this
+    // click caused progress. Tabs can change concurrently, any XHR may be a
+    // poll/heartbeat, and downloads.onCreated is not scoped to a source tab.
+    if (baseline.tabIds && tabIds && baseline.tabIds !== tabIds) safetyReasons.push('tab_set');
+    if (apiRequest) safetyReasons.push('network_request');
+    if (download) safetyReasons.push('download');
+    const reasons = [...proofReasons, ...safetyReasons];
+    return {
+      changed: reasons.length > 0,
+      proved: proofReasons.length > 0,
+      safetyVeto: safetyReasons.length > 0,
+      observable: !!(baseline.snapshot && snapshot),
+      reasons,
+      proofReasons,
+      safetyReasons,
+      snapshot,
+      tabIds,
+      apiRequest,
+      download,
+      focusChanged,
+    };
+  }
+
+  async _observeClickAxSideEffect(tabId, baseline) {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    let observed = await this._clickAxObservedSideEffect(tabId, baseline);
+    if (observed.proved || observed.safetyVeto || !observed.observable) return observed;
+    await new Promise(resolve => setTimeout(resolve, 500));
+    observed = await this._clickAxObservedSideEffect(tabId, baseline);
+    return observed;
+  }
+
+  _clickAxFinalSettleMs() {
+    return 500;
+  }
+
+  async _resolveClickAxFallbackTarget(tabId, refId) {
+    try {
+      let response = await chrome.tabs.sendMessage(tabId, {
+        target: 'content',
+        action: 'ax_resolve_rect',
+        params: { ref_id: refId, forClickFallback: true },
+      });
+      if (response?.success && !response.inViewport) {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        response = await chrome.tabs.sendMessage(tabId, {
+          target: 'content',
+          action: 'ax_resolve_rect',
+          params: { ref_id: refId, forClickFallback: true },
+        });
+      }
+      return response;
+    } catch (error) {
+      return { success: false, error: error?.message || String(error) };
+    }
+  }
+
+  async _maybeFallbackClickAxWithCdp(tabId, args, response, baseline) {
+    if (!response || response.success !== true || !baseline) return response;
+
+    const withSnapshot = (value, observation) => {
+      if (value && observation?.snapshot) value._clickAxAfterSnapshot = observation.snapshot;
+      return value;
+    };
+    const targetStateBefore = response._fallbackStateBefore || '';
+    const targetStateAfterImmediate = response._fallbackStateAfterImmediate || '';
+    // click_ax focuses its target immediately before el.click(). That
+    // preparatory focus is not evidence that the page handled the click;
+    // any different focus transition caused by the page still is.
+    baseline.preparedActive = response._preparedActive || '';
+    delete response._preparedActive;
+    delete response._fallbackStateBefore;
+    delete response._fallbackStateAfterImmediate;
+
+    const syntheticObservation = await this._observeClickAxSideEffect(tabId, baseline);
+    const immediateTargetStateChanged = !!(
+      targetStateBefore
+      && targetStateAfterImmediate
+      && targetStateBefore !== targetStateAfterImmediate
+    );
+    if (syntheticObservation.proved || immediateTargetStateChanged) {
+      response.trusted = false;
+      response.verified = true;
+      response.observedEffects = [
+        ...syntheticObservation.proofReasons,
+        ...(immediateTargetStateChanged ? ['target_state'] : []),
+      ];
+      return withSnapshot(response, syntheticObservation);
+    }
+    if (syntheticObservation.safetyVeto) {
+      response.trusted = false;
+      response.verified = false;
+      response.observedEffects = syntheticObservation.safetyReasons;
+      response.fallbackSkipped = 'concurrent tab, network, or download activity made an automatic retry unsafe';
+      return withSnapshot(response, syntheticObservation);
+    }
+    if (!syntheticObservation.observable) {
+      response.trusted = false;
+      response.verified = false;
+      response.fallbackSkipped = 'page progress could not be observed safely';
+      return withSnapshot(response, syntheticObservation);
+    }
+
+    let target = await this._resolveClickAxFallbackTarget(tabId, args?.ref_id);
+    const resolvedTargetStateChanged = !!(
+      targetStateBefore
+      && target?.fallbackState
+      && targetStateBefore !== target.fallbackState
+    );
+    if (resolvedTargetStateChanged) {
+      response.trusted = false;
+      response.verified = true;
+      response.observedEffects = ['target_state'];
+      return withSnapshot(response, syntheticObservation);
+    }
+    if (!target?.success || !target.fallbackEligible) {
+      response.trusted = false;
+      response.verified = false;
+      response.fallbackSkipped = target?.fallbackBlockedReason || target?.error || 'target is not eligible for trusted fallback';
+      return withSnapshot(response, syntheticObservation);
+    }
+
+    // Give async/toggle-style handlers one final settle interval. This wait
+    // is paid only by otherwise-eligible fallback candidates, not by normal
+    // productive click_ax calls.
+    await new Promise(resolve => setTimeout(resolve, this._clickAxFinalSettleMs()));
+    const settledObservation = await this._clickAxObservedSideEffect(tabId, baseline);
+    if (settledObservation.proved) {
+      response.trusted = false;
+      response.verified = true;
+      response.observedEffects = settledObservation.proofReasons;
+      return withSnapshot(response, settledObservation);
+    }
+    if (settledObservation.safetyVeto) {
+      response.trusted = false;
+      response.verified = false;
+      response.observedEffects = settledObservation.safetyReasons;
+      response.fallbackSkipped = 'concurrent tab, network, or download activity made an automatic retry unsafe';
+      return withSnapshot(response, settledObservation);
+    }
+    if (!settledObservation.observable) {
+      response.trusted = false;
+      response.verified = false;
+      response.fallbackSkipped = 'page progress could not be observed safely during final settle';
+      return withSnapshot(response, settledObservation);
+    }
+
+    const settledTarget = await this._resolveClickAxFallbackTarget(tabId, args?.ref_id);
+    const settledTargetStateChanged = !!(
+      targetStateBefore
+      && settledTarget?.fallbackState
+      && targetStateBefore !== settledTarget.fallbackState
+    ) || !!(
+      target?.fallbackState
+      && settledTarget?.fallbackState
+      && target.fallbackState !== settledTarget.fallbackState
+    );
+    if (settledTargetStateChanged) {
+      response.trusted = false;
+      response.verified = true;
+      response.observedEffects = ['target_state'];
+      return withSnapshot(response, settledObservation);
+    }
+    if (
+      !settledTarget?.success
+      || !settledTarget.fallbackEligible
+      || settledTarget.documentToken !== target.documentToken
+    ) {
+      response.trusted = false;
+      response.verified = false;
+      response.fallbackSkipped = settledTarget?.fallbackBlockedReason
+        || settledTarget?.error
+        || 'target changed or became ineligible during final settle';
+      return withSnapshot(response, settledObservation);
+    }
+    target = settledTarget;
+
+    const fallbackKey = `${target.documentToken || 'document'}|${args?.ref_id || ''}`;
+    const attempted = this._clickAxCdpFallbacks.get(tabId) || new Set();
+    if (attempted.has(fallbackKey)) {
+      return withSnapshot({
+        ...response,
+        success: false,
+        noProgress: true,
+        trusted: false,
+        verified: false,
+        fallbackSkipped: 'trusted fallback was already attempted for this ref in the current run',
+        error: 'The synthetic click produced no observable change, and the one permitted trusted fallback for this target was already used. Re-read the page and choose a different target.',
+      }, settledObservation);
+    }
+    attempted.add(fallbackKey);
+    this._clickAxCdpFallbacks.set(tabId, attempted);
+
+    const fallbackStartedAt = Date.now();
+    const fallbackBaseline = await this._captureClickAxObservation(
+      tabId,
+      settledObservation.snapshot,
+      baseline.sideEffectWatch,
+      fallbackStartedAt,
+    );
+
+    try {
+      await cdpClient.attach(tabId);
+      await cdpClient.dispatchMouseEvent(tabId, 'mouseMoved', target.x, target.y);
+      await cdpClient.dispatchMouseEvent(tabId, 'mousePressed', target.x, target.y);
+      await cdpClient.dispatchMouseEvent(tabId, 'mouseReleased', target.x, target.y);
+    } catch (error) {
+      return withSnapshot({
+        ...response,
+        success: false,
+        noProgress: true,
+        fallback: 'cdp_after_synthetic_no_progress',
+        fallbackAttempted: true,
+        trusted: true,
+        verified: false,
+        error: `Trusted click fallback failed: ${error?.message || String(error)}`,
+      }, settledObservation);
+    }
+
+    const trustedObservation = await this._observeClickAxSideEffect(tabId, fallbackBaseline);
+    if (!trustedObservation.proved) {
+      return withSnapshot({
+        ...response,
+        success: false,
+        noProgress: true,
+        inconclusive: trustedObservation.safetyVeto || undefined,
+        fallback: 'cdp_after_synthetic_no_progress',
+        fallbackAttempted: true,
+        trusted: true,
+        verified: false,
+        observedEffects: trustedObservation.safetyReasons.length
+          ? trustedObservation.safetyReasons
+          : undefined,
+        rect: target.rect || response.rect,
+        error: trustedObservation.safetyVeto
+          ? 'The trusted fallback was sent, but concurrent tab, network, or download activity made its result inconclusive. Do not repeat this target; re-read the page.'
+          : 'The synthetic click and the single trusted CDP fallback both produced no observable page change. Do not repeat this target; re-read the page and choose a different element.',
+      }, trustedObservation);
+    }
+
+    return withSnapshot({
+      ...response,
+      success: true,
+      fallback: 'cdp_after_synthetic_no_progress',
+      fallbackAttempted: true,
+      trusted: true,
+      verified: true,
+      observedEffects: trustedObservation.proofReasons,
+      rect: target.rect || response.rect,
+    }, trustedObservation);
   }
 
   async _clickProgressSnapshot(tabId) {
@@ -12348,7 +12718,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             })
             .slice(0, 60)
             .join('|');
-          return { url: location.href, text, media, controls };
+          const active = (() => {
+            const el = document.activeElement;
+            if (!el || el === document.body || el === document.documentElement) return '';
+            const r = el.getBoundingClientRect?.();
+            return [
+              el.tagName || '',
+              el.getAttribute?.('role') || '',
+              el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.id || '',
+              Math.round(r?.x || 0),
+              Math.round(r?.y || 0),
+            ].join(':');
+          })();
+          return { url: location.href, text, media, controls, active };
         })()
       `);
       const value = res?.result?.value;
@@ -12398,8 +12780,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const ident = this._clickProgressIdent(toolName, args, response);
     if (!ident) return response;
 
-    await new Promise(r => setTimeout(r, 250));
-    const afterSnapshot = await this._clickProgressSnapshot(tabId);
+    let afterSnapshot = opts.afterSnapshot || '';
+    if (!afterSnapshot) {
+      await new Promise(r => setTimeout(r, 250));
+      afterSnapshot = await this._clickProgressSnapshot(tabId);
+    }
     const previous = this._lastClickProgress.get(tabId);
     this._lastClickProgress.set(tabId, { ident, snapshot: afterSnapshot || beforeSnapshot || '' });
 
@@ -12653,6 +13038,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     this._resetActiveSkillsForRun(tabId, { refreshPrompt: false });
     this._clearLoopState(tabId);
+    this._clickAxCdpFallbacks.delete(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
     if (runOptions.cloudRun) {
@@ -12669,6 +13055,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       this._runningTabs.delete(tabId);
       this._clearLoopState(tabId);
+      this._clickAxCdpFallbacks.delete(tabId);
     }
   }
 
@@ -13162,6 +13549,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     this._resetActiveSkillsForRun(tabId, { refreshPrompt: false });
     this._clearLoopState(tabId);
+    this._clickAxCdpFallbacks.delete(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
     if (runOptions.cloudRun) {
@@ -13178,6 +13566,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       this._runningTabs.delete(tabId);
       this._clearLoopState(tabId);
+      this._clickAxCdpFallbacks.delete(tabId);
     }
   }
 
