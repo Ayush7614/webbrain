@@ -15095,6 +15095,68 @@ test('CDP evaluate forwards a bounded Runtime timeout', async () => {
   assert.equal(evaluation.params.awaitPromise, true);
 });
 
+test('CDP full-page screenshots send required metrics and honor evaluated page bounds', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  const evaluations = [];
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    commands.push({ tabId, method, params });
+    if (method === 'Page.captureScreenshot') return { data: 'not-a-real-png' };
+    return {};
+  };
+  cdp.evaluate = async (tabId, expression) => {
+    evaluations.push({ tabId, expression });
+    if (expression.includes('contentWidth')) {
+      return {
+        result: {
+          value: {
+            width: 1920,
+            height: 1080,
+            scrollX: 17,
+            scrollY: 29,
+            contentWidth: 1920,
+            contentHeight: 1200,
+            scale: 1,
+          },
+        },
+      };
+    }
+    return { result: { value: null } };
+  };
+
+  await cdp.captureFullPageScreenshot(42);
+
+  const metrics = commands.filter(command => command.method === 'Emulation.setDeviceMetricsOverride');
+  assert.equal(metrics.length, 3, 'initial viewport plus two vertical tiles should be configured');
+  assert.deepEqual(
+    metrics.map(command => ({
+      width: command.params.width,
+      height: command.params.height,
+      screenWidth: command.params.screenWidth,
+      screenHeight: command.params.screenHeight,
+    })),
+    [
+      { width: 1920, height: 1080, screenWidth: 1920, screenHeight: 1080 },
+      { width: 1920, height: 1080, screenWidth: 1920, screenHeight: 1080 },
+      { width: 1920, height: 120, screenWidth: 1920, screenHeight: 120 },
+    ],
+  );
+  assert.equal(
+    commands.filter(command => command.method === 'Page.captureScreenshot').length,
+    2,
+    'the Runtime.evaluate result should drive capture beyond the first viewport',
+  );
+  assert.equal(
+    commands.at(-1)?.method,
+    'Emulation.clearDeviceMetricsOverride',
+    'device metrics should be cleared after capture',
+  );
+  assert.ok(
+    evaluations.some(({ expression }) => expression === 'window.scrollTo(17, 29)'),
+    'the original page scroll should be restored',
+  );
+});
+
 test('inspect_event_listeners resolves marked ref targets through CDP and always removes markers', async () => {
   const originals = {
     enable: cdpClientCh.enableDevDiagnostics,

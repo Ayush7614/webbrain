@@ -642,75 +642,90 @@ export class CDPClient {
    */
   async captureFullPageScreenshot(tabId) {
     await this.sendCommand(tabId, 'Page.enable');
-    await this.sendCommand(tabId, 'Emulation.setDeviceMetricsOverride', {
-      deviceScaleFactor: 2,
-      mobile: false,
-      screenWidth: 1920,
-      screenHeight: 1080,
-      viewport: { x: 0, y: 0, width: 1920, height: 1080, scale: 1 },
-    });
+    let originalScrollX = 0;
+    let originalScrollY = 0;
+    let shouldRestoreScroll = false;
 
-    const { visualViewport } = await this.evaluate(tabId, `
-      (() => {
-        const vp = window.visualViewport;
-        return {
-          width: window.innerWidth,
-          height: window.innerHeight,
-          scrollX: window.scrollX,
-          scrollY: window.scrollY,
-          contentWidth: document.documentElement.scrollWidth,
-          contentHeight: document.documentElement.scrollHeight,
-          scale: vp ? vp.scale : 1
-        };
-      })()
-    `);
-
-    const scrollWidth = visualViewport?.contentWidth || 1920;
-    const scrollHeight = visualViewport?.contentHeight || 1080;
-    // Remember pre-capture scroll so we can restore it (we're in an MV3
-    // service worker here — there is no `window`, so read from the page eval).
-    const originalScrollX = visualViewport?.scrollX || 0;
-    const originalScrollY = visualViewport?.scrollY || 0;
-
-    const viewports = [];
-    for (let y = 0; y < scrollHeight; y += 1080) {
-      for (let x = 0; x < scrollWidth; x += 1920) {
-        viewports.push({ x, y, width: Math.min(1920, scrollWidth - x), height: Math.min(1080, scrollHeight - y) });
-      }
-    }
-
-    const tiles = [];
-    for (const vp of viewports) {
-      await this.evaluate(tabId, `window.scrollTo(${vp.x}, ${vp.y})`);
-      await new Promise(r => setTimeout(r, 100));
-
+    try {
       await this.sendCommand(tabId, 'Emulation.setDeviceMetricsOverride', {
+        width: 1920,
+        height: 1080,
         deviceScaleFactor: 2,
         mobile: false,
-        screenWidth: vp.width,
-        screenHeight: vp.height,
-        viewport: { x: 0, y: 0, width: vp.width, height: vp.height, scale: 1 },
+        screenWidth: 1920,
+        screenHeight: 1080,
+        viewport: { x: 0, y: 0, width: 1920, height: 1080, scale: 1 },
       });
 
-      const screenshot = await this.sendCommand(tabId, 'Page.captureScreenshot', {
-        format: 'png',
-        quality: 100,
-        fromSurface: true,
-      });
-      tiles.push({ x: vp.x, y: vp.y, width: vp.width, height: vp.height, data: screenshot.data });
+      const viewportResult = await this.evaluate(tabId, `
+        (() => {
+          const vp = window.visualViewport;
+          return {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            contentWidth: document.documentElement.scrollWidth,
+            contentHeight: document.documentElement.scrollHeight,
+            scale: vp ? vp.scale : 1
+          };
+        })()
+      `);
+      const visualViewport = viewportResult?.result?.value;
+
+      const scrollWidth = visualViewport?.contentWidth || 1920;
+      const scrollHeight = visualViewport?.contentHeight || 1080;
+      // Remember pre-capture scroll so we can restore it (we're in an MV3
+      // service worker here — there is no `window`, so read from the page eval).
+      originalScrollX = visualViewport?.scrollX || 0;
+      originalScrollY = visualViewport?.scrollY || 0;
+      shouldRestoreScroll = true;
+
+      const viewports = [];
+      for (let y = 0; y < scrollHeight; y += 1080) {
+        for (let x = 0; x < scrollWidth; x += 1920) {
+          viewports.push({ x, y, width: Math.min(1920, scrollWidth - x), height: Math.min(1080, scrollHeight - y) });
+        }
+      }
+
+      const tiles = [];
+      for (const vp of viewports) {
+        await this.evaluate(tabId, `window.scrollTo(${vp.x}, ${vp.y})`);
+        await new Promise(r => setTimeout(r, 100));
+
+        await this.sendCommand(tabId, 'Emulation.setDeviceMetricsOverride', {
+          width: vp.width,
+          height: vp.height,
+          deviceScaleFactor: 2,
+          mobile: false,
+          screenWidth: vp.width,
+          screenHeight: vp.height,
+          viewport: { x: 0, y: 0, width: vp.width, height: vp.height, scale: 1 },
+        });
+
+        const screenshot = await this.sendCommand(tabId, 'Page.captureScreenshot', {
+          format: 'png',
+          quality: 100,
+          fromSurface: true,
+        });
+        tiles.push({ x: vp.x, y: vp.y, width: vp.width, height: vp.height, data: screenshot.data });
+      }
+
+      const { combineImages } = await import('./image-utils.js').catch(() => ({ combineImages: null }));
+      if (combineImages) {
+        return await combineImages(tiles, scrollWidth, scrollHeight, 2);
+      }
+
+      // Last-resort fallback if image-utils failed to load: return just the
+      // first tile. Previously this returned `images[0]`, which looked like a
+      // full-page screenshot but silently dropped everything below the fold.
+      return tiles[0]?.data || '';
+    } finally {
+      await this.sendCommand(tabId, 'Emulation.clearDeviceMetricsOverride').catch(() => {});
+      if (shouldRestoreScroll) {
+        await this.evaluate(tabId, `window.scrollTo(${originalScrollX}, ${originalScrollY})`).catch(() => {});
+      }
     }
-
-    await this.evaluate(tabId, `window.scrollTo(${originalScrollX}, ${originalScrollY})`);
-
-    const { combineImages } = await import('./image-utils.js').catch(() => ({ combineImages: null }));
-    if (combineImages) {
-      return await combineImages(tiles, scrollWidth, scrollHeight, 2);
-    }
-
-    // Last-resort fallback if image-utils failed to load: return just the
-    // first tile. Previously this returned `images[0]`, which looked like a
-    // full-page screenshot but silently dropped everything below the fold.
-    return tiles[0]?.data || '';
   }
 
   /**
