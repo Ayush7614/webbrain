@@ -680,8 +680,9 @@ test('click_ax: Agent.executeTool keeps synthetic-first behavior and uses truste
   const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 20000 });
   const trustedMatch = String(tree?.pageContent || '').match(/listitem "Defne Sokullu Yesterday Photo" \[(ref_\d+)\]/);
   const syntheticMatch = String(tree?.pageContent || '').match(/listitem "Normal synthetic row" \[(ref_\d+)\]/);
-  if (!trustedMatch || !syntheticMatch) {
-    throw new Error(`expected trusted and synthetic fixture rows in AX tree: ${tree?.pageContent}`);
+  const disclosureMatch = String(tree?.pageContent || '').match(/"Native disclosure" \[(ref_\d+)\]/);
+  if (!trustedMatch || !syntheticMatch || !disclosureMatch) {
+    throw new Error(`expected trusted, synthetic, and disclosure fixture rows in AX tree: ${tree?.pageContent}`);
   }
 
   const originalChrome = globalThis.chrome;
@@ -804,6 +805,23 @@ test('click_ax: Agent.executeTool keeps synthetic-first behavior and uses truste
     if (dispatched.length !== dispatchCountBeforeNormal) {
       throw new Error('working synthetic target unexpectedly received a trusted second click');
     }
+
+    const dispatchCountBeforeDisclosure = dispatched.length;
+    const disclosureResult = await agent.executeTool(42, 'click_ax', { ref_id: disclosureMatch[1] });
+    const disclosureOpen = await page.evaluate(() => document.getElementById('native-details').open);
+    if (
+      disclosureResult?.success !== true
+      || disclosureResult.trusted !== false
+      || !/native\/button-like/.test(disclosureResult.fallbackSkipped || '')
+    ) {
+      throw new Error(`native disclosure did not stay on its synthetic-only path: ${JSON.stringify(disclosureResult)}`);
+    }
+    if (!disclosureOpen) {
+      throw new Error('synthetic summary click should open the native disclosure exactly once');
+    }
+    if (dispatched.length !== dispatchCountBeforeDisclosure) {
+      throw new Error('native disclosure unexpectedly received a trusted second click');
+    }
   } finally {
     cdpClient.attach = originals.attach;
     cdpClient.evaluate = originals.evaluate;
@@ -823,6 +841,7 @@ test('ax_resolve_rect: trusted fallback eligibility rejects interactive descenda
     nestedLink: content.match(/listitem "Nested link row" \[(ref_\d+)\]/)?.[1],
     nestedInput: content.match(/listitem "Nested input row" \[(ref_\d+)\]/)?.[1],
     native: content.match(/button "Native button" \[(ref_\d+)\]/)?.[1],
+    disclosure: content.match(/"Native disclosure" \[(ref_\d+)\]/)?.[1],
     destructive: content.match(/listitem "Delete account" \[(ref_\d+)\]/)?.[1],
     sendMessage: content.match(/listitem "Send message" \[(ref_\d+)\]/)?.[1],
     orderLunch: content.match(/listitem "Order lunch" \[(ref_\d+)\]/)?.[1],

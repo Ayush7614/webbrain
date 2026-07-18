@@ -724,7 +724,13 @@
     const role = (el?.getAttribute?.('role') || '').trim().toLowerCase();
     const name = _axAccessibleName(el);
     const isEditable = !!el?.isContentEditable || tag === 'input' || tag === 'textarea';
-    const isNativeControl = ['button', 'a', 'input', 'select', 'textarea', 'label', 'option'].includes(tag);
+    const isNativeControl = [
+      'button', 'a', 'input', 'select', 'textarea', 'label', 'option',
+      // Native disclosure activation toggles <details open>. Retrying its
+      // <summary> with trusted input can immediately undo a working
+      // synthetic click, so both disclosure elements stay synthetic-only.
+      'summary', 'details',
+    ].includes(tag);
     const isButtonLike = role === 'button' || !!el?.closest?.('[role="button"]');
     const isSubmitControl = _isSubmitControl(el);
     const isDownloadControl = !!el?.closest?.('a[download],[download],[data-download]')
