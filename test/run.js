@@ -23280,6 +23280,41 @@ test('streamed Act finals recover from planner JSON before execution', async () 
   }
 });
 
+test('streamed repeated plan-only output replaces rejected deltas with the failure', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      calls: 0,
+      async *chatStream() {
+        this.calls += 1;
+        yield { type: 'text', content: planOnlyTerminalFixture() };
+        yield { type: 'done' };
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8650 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    const updates = [];
+
+    const final = await agent.processMessageStream(
+      tabId,
+      'Read the current page and summarize it.',
+      (type, data) => updates.push({ type, data }),
+      'act',
+    );
+
+    assert.equal(provider.calls, 2, `${AgentClass.name}: repeated plan did not consume the recovery turn`);
+    assert.match(final, /No action was performed/, `${AgentClass.name}: repeated streamed plan was accepted`);
+    const finalText = updates.filter(update => update.type === 'text').at(-1);
+    assert.equal(finalText?.data?.content, final, `${AgentClass.name}: streamed failure did not replace rejected plan deltas`);
+  }
+});
+
 test('agent detects context-compression placeholder finals', () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({});
