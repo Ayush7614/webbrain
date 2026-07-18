@@ -6087,6 +6087,8 @@ test('completion invariant state machine enforces post-action observation with C
       ['download_resource_from_page', { url: 'https://example.com/file.zip' }],
       ['download_social_media', {}],
       ['download_public_media', { __completionDownloadAction: true }],
+      ['schedule_resume', { after_seconds: 300 }],
+      ['schedule_task', { title: 'Monitor', schedule: { type: 'once' } }],
     ]) {
       assert.equal(invariant.isCompletionActionTool(name, args), true, `${label}: ${name} should open verification debt`);
     }
@@ -6114,6 +6116,13 @@ test('completion invariant state machine enforces post-action observation with C
       { success: false, error: 'target not found', fallbackAttempted: false },
     );
     assert.equal(noDispatch.verificationDebt, false, `${label}: explicit no-dispatch failure opened debt`);
+    const postSyntheticSetupFailure = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-post-synthetic-click`),
+      'click_ax',
+      { ref_id: 'ref_clicked' },
+      { success: false, dispatched: true, error: 'CDP attach failed', fallbackAttempted: false },
+    );
+    assert.equal(postSyntheticSetupFailure.verificationDebt, true, `${label}: post-synthetic click setup failure lost the dispatched action`);
     const devPreflightFailure = invariant.recordCompletionToolResult(
       invariant.createCompletionInvariantState(`${label}-dev-preflight`),
       'execute_js',
@@ -15844,6 +15853,7 @@ test('Chrome click_ax only consumes the one-shot slot after a CDP press is deliv
       { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
     );
     assert.equal(attachFailure.success, false);
+    assert.equal(attachFailure.dispatched, true, 'the earlier synthetic DOM click must remain classified as dispatched');
     assert.equal(attachFailure.fallbackAttempted, false);
     assert.equal(attachFailure.fallbackDispatchStage, 'attach');
     assert.equal(attachFailure.trusted, false);
@@ -23516,13 +23526,22 @@ test('classifier targets become isolated app-owned completion obligations', asyn
     assert.equal(bulkTerminal.success, false, `${AgentClass.name}: one evidence cycle closed multiple obligations`);
     assert.equal(bulkTerminal.completionInvariant, true, `${AgentClass.name}: multi-obligation bypass lost invariant classification`);
 
-    const completedOne = agent._progressUpdate(tabId, {
-      items: [{ id: rows[0].id, status: 'processed' }],
-    });
+    const priorTurnEvidence = agent.completionInvariants.get(tabId);
+    const completedOne = await agent.executeTool(
+      tabId,
+      'progress_update',
+      { items: [{ id: rows[0].id, status: 'processed' }] },
+      null,
+      { completionBatchStartState: priorTurnEvidence },
+    );
     assert.equal(completedOne.success, true, `${AgentClass.name}: observed target could not become terminal`);
-    const reusedEvidence = agent._progressUpdate(tabId, {
-      items: [{ id: rows[1].id, status: 'processed' }],
-    });
+    const reusedEvidence = await agent.executeTool(
+      tabId,
+      'progress_update',
+      { items: [{ id: rows[1].id, status: 'processed' }] },
+      null,
+      { completionBatchStartState: priorTurnEvidence },
+    );
     assert.equal(reusedEvidence.success, false, `${AgentClass.name}: one observation was reused for a second obligation`);
     assert.equal(reusedEvidence.completionInvariant, true, `${AgentClass.name}: reused evidence failure lost invariant classification`);
     agent._recordCompletionToolResult(tabId, 'read_page', {}, { success: true, content: 'Cart: soda' });

@@ -15,6 +15,8 @@ const DIRECT_ACTION_TOOLS = new Set([
   'patch_element',
   'revert_patch',
   'solve_captcha',
+  'schedule_resume',
+  'schedule_task',
 ]);
 
 const NAVIGATION_ACTION_TOOLS = new Set([

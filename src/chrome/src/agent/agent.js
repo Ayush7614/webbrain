@@ -7090,7 +7090,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const hasNewBatchAction = hasBatchStartState
       && Number(currentCompletionState?.lastAction?.sequence || 0) > Number(evidenceState?.sequence || 0);
     if (terminalRequirementIds.length
-      && (!hasUnconsumedCompletionObservation(evidenceState) || hasNewBatchAction)) {
+      && (
+        !hasUnconsumedCompletionObservation(evidenceState)
+        || !hasUnconsumedCompletionObservation(currentCompletionState)
+        || hasNewBatchAction
+      )) {
       return {
         success: false,
         completionInvariant: true,
@@ -13567,6 +13571,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return withSnapshot({
         ...response,
         success: false,
+        dispatched: true,
         noProgress: pressedDelivered || undefined,
         fallback: 'cdp_after_synthetic_no_progress',
         fallbackAttempted,
