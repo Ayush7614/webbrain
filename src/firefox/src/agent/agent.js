@@ -6243,8 +6243,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     if (
       observationOnlyRequirementIds.length
-      && Number(evidenceState?.lastObservation?.sequence || 0)
-        <= Number(evidenceState?.lastAction?.sequence || 0)
+      && (
+        Number(evidenceState?.lastObservation?.sequence || 0)
+          <= Number(evidenceState?.lastAction?.sequence || 0)
+        || hasNewBatchAction
+      )
     ) {
       return {
         success: false,

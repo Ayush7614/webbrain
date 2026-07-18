@@ -23761,7 +23761,17 @@ test('classifier requirements allow transparent skipped and failed exits without
     assert.equal(sameBatchExit.success, false, `${AgentClass.name}: same-batch observation authorized a transparent terminal status`);
     assert.equal(sameBatchExit.completionInvariant, true);
 
+    const priorObservationBatchStart = agent.completionInvariants.get(tabId);
     agent._recordCompletionToolResult(tabId, 'click_ax', { ref_id: 'ref_other' }, { success: true, verified: true });
+    const sameBatchActionExit = await agent.executeTool(
+      tabId,
+      'progress_update',
+      { items: [{ id: 'soda', status: 'skipped', reason: 'already satisfied before this task' }] },
+      null,
+      { completionBatchStartState: priorObservationBatchStart },
+    );
+    assert.equal(sameBatchActionExit.success, false, `${AgentClass.name}: prior observation survived a newer same-batch action`);
+    assert.equal(sameBatchActionExit.completionInvariant, true);
     const staleObservationExit = agent._progressUpdate(tabId, {
       items: [{ id: 'soda', status: 'skipped', reason: 'already satisfied before this task' }],
     }, { sessionId: session.sessionId });
