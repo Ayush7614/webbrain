@@ -185,10 +185,13 @@ function binaryResponse(status, body = 'media-bytes', contentType = 'video/mp4',
 // ────────────────────────────────────────────────────────────────────────
 
 // adapters.js is pure ESM with no chrome.* deps — import directly.
-const { getActiveAdapter, listAdapters } = await import(
+const { getActiveAdapter, getFullPageCapturePolicy, listAdapters } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/agent/adapters.js').replace(/\\/g, '/')
 );
-const { getActiveAdapter: getActiveAdapterFx } = await import(
+const {
+  getActiveAdapter: getActiveAdapterFx,
+  getFullPageCapturePolicy: getFullPageCapturePolicyFx,
+} = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/adapters.js').replace(/\\/g, '/')
 );
 
@@ -407,6 +410,9 @@ const {
 );
 const { CDPClient, cdpClient: cdpClientCh } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/cdp/cdp-client.js').replace(/\\/g, '/')
+);
+const { combineImages } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/cdp/image-utils.js').replace(/\\/g, '/')
 );
 
 // Screenshot redaction (issue #312) — pure Node-testable helpers.
@@ -1044,6 +1050,90 @@ test('mergeRedactionFrameRegions maps nested iframe regions into top capture coo
   ];
   assert.deepEqual(mergeRedactionFrameRegions(frames), expected);
   assert.deepEqual(mergeRedactionFrameRegionsFx(frames), expected, 'Firefox frame mapping should match Chrome');
+});
+
+test('page-coordinate redaction uses captured CSS bounds instead of the grown live document', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+  const outputDrawCalls = [];
+  const liveSnapshot = {
+    viewport: { width: 1600, height: 10000 },
+    elements: [
+      { kind: 'input', type: 'password', rect: { x: 300, y: 4200, w: 100, h: 100 } },
+    ],
+    childFrames: [],
+  };
+  try {
+    const browserApi = {
+      webNavigation: {
+        getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: 'https://example.com/' }],
+      },
+      tabs: {
+        sendMessage: async () => liveSnapshot,
+      },
+    };
+    globalThis.chrome = browserApi;
+    globalThis.browser = browserApi;
+    globalThis.fetch = async () => ({ blob: async () => ({}) });
+    globalThis.createImageBitmap = async () => ({ width: 400, height: 1000 });
+    globalThis.OffscreenCanvas = class {
+      constructor(width, height) {
+        this.width = width;
+        this.height = height;
+      }
+      getContext() {
+        const isOutputCanvas = this.width === 400 && this.height === 1000;
+        return {
+          drawImage: (...args) => {
+            if (isOutputCanvas) outputDrawCalls.push(args);
+          },
+        };
+      }
+      async convertToBlob() {
+        return {
+          arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+        };
+      }
+    };
+
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      outputDrawCalls.length = 0;
+      const agent = new AgentClass({});
+      agent.screenshotRedaction = true;
+      agent._compressJpegToByteCeiling = async (dataUrl) => dataUrl;
+
+      const originalDataUrl = 'data:image/png;base64,AA==';
+      const redacted = await agent._redactScreenshotDataUrl(42, originalDataUrl, {
+        coordinateSpace: 'page',
+        capturedCssBounds: { x: 100, y: 200, width: 800, height: 5000 },
+        imageWidth: 400,
+        imageHeight: 1000,
+      });
+      const pixelationDraw = outputDrawCalls.find(args => args.length === 9);
+
+      assert.notEqual(redacted, originalDataUrl, `${label}: the sensitive region should be pixelated`);
+      assert.ok(pixelationDraw, `${label}: should draw a pixelated replacement region`);
+      assert.deepEqual(
+        pixelationDraw.slice(5),
+        [100, 800, 50, 20],
+        `${label}: mapping should use the captured 800×5000 CSS box at offset 100,200`,
+      );
+    }
+  } finally {
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalCreateImageBitmap === undefined) delete globalThis.createImageBitmap;
+    else globalThis.createImageBitmap = originalCreateImageBitmap;
+    if (originalOffscreenCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = originalOffscreenCanvas;
+  }
 });
 
 test('redaction content scripts run in all frames and startup waits for the stored toggle', () => {
@@ -1837,6 +1927,58 @@ test('matches mastodon profile and interaction URLs on any host', () => {
   assert.equal(getActiveAdapter('https://example.com/@alice'), null);
   assert.equal(getActiveAdapterFx('https://example.com/@alice'), null);
   assert.equal(getActiveAdapter('https://example.com/blog/@alice'), null);
+});
+
+test('social adapters expose URL-specific infinite-scroll capture policy in both browsers', () => {
+  const positiveUrls = [
+    ['twitter', 'https://x.com/home'],
+    ['twitter', 'https://twitter.com/openai/status/1234567890'],
+    ['linkedin', 'https://www.linkedin.com/feed/'],
+    ['linkedin', 'https://www.linkedin.com/in/alice/recent-activity/all/'],
+    ['reddit', 'https://www.reddit.com/r/javascript/'],
+    ['youtube', 'https://www.youtube.com/watch?v=abc123'],
+    ['youtube', 'https://www.youtube.com/@OpenAI/videos'],
+    ['instagram', 'https://www.instagram.com/openai/'],
+    ['instagram', 'https://www.instagram.com/explore/'],
+    ['tiktok', 'https://www.tiktok.com/@openai'],
+    ['facebook', 'https://www.facebook.com/groups/12345/'],
+    ['facebook', 'https://www.facebook.com/marketplace/istanbul/'],
+    ['mastodon', 'https://mastoturk.org/home'],
+    ['mastodon', 'https://mastoturk.org/@alice'],
+  ];
+  const finiteUrls = [
+    'https://x.com/settings/account',
+    'https://www.linkedin.com/in/alice/',
+    'https://old.reddit.com/r/javascript/',
+    'https://www.reddit.com/r/javascript/comments/abc123/example/',
+    'https://youtu.be/abc123',
+    'https://www.instagram.com/p/ABC123/',
+    'https://www.instagram.com/reel/ABC123/',
+    'https://www.tiktok.com/@openai/video/1234567890123456789',
+    'https://www.facebook.com/groups/12345/posts/67890/',
+    'https://www.facebook.com/marketplace/item/12345/',
+    'https://mastoturk.org/@alice/123456789012345678',
+  ];
+  const spoofedUrls = [
+    'https://x.com.evil.example/home',
+    'https://linkedin.com.evil.example/feed/',
+    'https://reddit.com.evil.example/r/javascript/',
+    'https://youtube.com.evil.example/watch?v=abc123',
+    'https://instagram.com.evil.example/explore/',
+    'https://tiktok.com.evil.example/@openai',
+    'https://facebook.com.evil.example/groups/12345/',
+    'https://mastoturk.org.evil.example/home',
+  ];
+
+  for (const [adapterName, url] of positiveUrls) {
+    const expected = { knownInfiniteScroll: true, adapterName };
+    assert.deepEqual(getFullPageCapturePolicy(url), expected, `chrome policy missing for ${url}`);
+    assert.deepEqual(getFullPageCapturePolicyFx(url), expected, `firefox policy missing for ${url}`);
+  }
+  for (const url of [...finiteUrls, ...spoofedUrls]) {
+    assert.equal(getFullPageCapturePolicy(url), null, `chrome should not bound ${url}`);
+    assert.equal(getFullPageCapturePolicyFx(url), null, `firefox should not bound ${url}`);
+  }
 });
 
 test('mastodon observer detects recoverable remote-follow handoff', () => {
@@ -12032,11 +12174,35 @@ test('sidepanel exposes dangerously-skip-permissions in both builds', () => {
 });
 
 test('sidepanel scopes async tab commands to the original tab', () => {
-  for (const [label, panelRel] of [
-    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
-    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  for (const [label, panelRel, styleRel, localeRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/styles/sidepanel.css', 'src/chrome/src/ui/locales/en.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/styles/sidepanel.css', 'src/firefox/src/ui/locales/en.js'],
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const style = fs.readFileSync(path.join(ROOT, styleRel), 'utf8');
+    const locale = fs.readFileSync(path.join(ROOT, localeRel), 'utf8');
+    const filenameHelperStart = panel.indexOf('function screenshotFilenamePrefix(pageUrl)');
+    const filenameHelperEnd = panel.indexOf('function renderScreenshotResult', filenameHelperStart);
+    assert.ok(filenameHelperStart >= 0 && filenameHelperEnd > filenameHelperStart, `${label}: screenshot filename helpers missing`);
+    const filenameRuntime = vm.runInNewContext(
+      `(() => { ${panel.slice(filenameHelperStart, filenameHelperEnd)}; return { screenshotFilenamePrefix, screenshotDownloadFilename }; })()`,
+      { URL },
+    );
+    assert.equal(
+      filenameRuntime.screenshotDownloadFilename('https://emresokullu.com/'),
+      'emresokullu.com-screenshot.png',
+      `${label}: screenshot filenames should identify the page host`,
+    );
+    assert.equal(
+      filenameRuntime.screenshotDownloadFilename('https://www.example.com/products/red%20shoe?token=secret#reviews', true),
+      'example.com-products-red-shoe-full-page-screenshot.png',
+      `${label}: screenshot filenames should include a safe path and full-page marker`,
+    );
+    assert.doesNotMatch(
+      filenameRuntime.screenshotDownloadFilename('https://example.com/account?token=secret#private'),
+      /token|secret|private/,
+      `${label}: screenshot filenames must not expose URL queries or fragments`,
+    );
     assert.match(panel, /async function parseSlashCommands\(text, tabId = currentTabId\) \{/, `${label}: slash-command parsing should accept the initiating tab id`);
 
     const helperStart = panel.indexOf('async function renderClearedConversationForTab(tabId)');
@@ -12081,14 +12247,21 @@ test('sidepanel scopes async tab commands to the original tab', () => {
       ? panel.indexOf("if (command.value === '/screenshot' && action === 'full-page')", screenshotIdx)
       : panel.indexOf("if (command.value === '/export' && action === 'traces')", screenshotIdx);
     const screenshotBody = panel.slice(screenshotIdx, screenshotEnd);
-    assert.match(screenshotBody, /if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?(?:addMessage\('system', systemHtml\(imgHtml\)\)|addPersistentSlashMessage\(systemHtml\(imgHtml\)\));/, `${label}: /screenshot should not render a captured image into a different tab`);
+    assert.match(screenshotBody, /if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addScreenshotResultMessage\(dataUrl, \{ pageUrl: tab\.url \}\);/, `${label}: /screenshot should not render a captured image into a different tab and should retain its URL for naming`);
+    assert.match(panel, /function renderScreenshotResult\(dataUrl,[\s\S]*?screenshot-save-btn[\s\S]*?sp\.screenshot\.save_as/, `${label}: screenshot messages should render a visible Save As action`);
+    assert.match(panel, /function bindScreenshotSaveButton\(btn\)[\s\S]*?downloads\.download\(\{[\s\S]*?url: dataUrl,[\s\S]*?saveAs: true,[\s\S]*?conflictAction: 'uniquify'/, `${label}: screenshot Save As should use the browser Downloads API and native picker`);
+    assert.match(panel, /function rebindRestoredMessageControls\(\)[\s\S]*?rebindScreenshotSaveButtons\(\);/, `${label}: restored screenshot messages should regain their Save As behavior`);
+    assert.match(style, /\.screenshot-save-btn \{[\s\S]*?cursor: pointer;[\s\S]*?\}[\s\S]*?\.screenshot-save-btn:hover,[\s\S]*?\.screenshot-save-btn:focus-visible/, `${label}: screenshot Save As should be styled for pointer and keyboard interaction`);
+    assert.match(locale, /'sp\.screenshot\.save_as': 'Save as…'/, `${label}: screenshot Save As should have an English label`);
+    assert.match(locale, /'sp\.screenshot\.save_failed': 'Could not save screenshot: \{msg\}'/, `${label}: screenshot save failures should have an English fallback`);
     const fullPageIdx = panel.indexOf("if (command.value === '/screenshot' && action === 'full-page')");
     assert.match(panel, /function normalizeScreenshotRequestText\(text\) \{[\s\S]*?\.normalize\('NFKD'\)[\s\S]*?\.replace\(\/\[\\u0300-\\u036f\]\/g, ''\)[\s\S]*?\.replace\(\/\\u0131\/g, 'i'\)/, `${label}: plain screenshot request normalization should handle accented Turkish text`);
     assert.match(panel, /function isPlainScreenshotRequest\(text\) \{[\s\S]*?const s = normalizeScreenshotRequestText\(text\);[\s\S]*?s\.startsWith\('\/'\)[\s\S]*?ekran goruntusu[\s\S]*?ekran goruntusunu/, `${label}: plain screenshot request routing should cover English and Turkish screenshot-only requests`);
     if (label === 'chrome') {
       assert.notEqual(fullPageIdx, -1, `${label}: /screenshot --full-page parser missing`);
       const fullPageBody = panel.slice(fullPageIdx, panel.indexOf("if (command.value === '/record'", fullPageIdx));
-      assert.match(fullPageBody, /sendToBackground\('capture_full_page_screenshot', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?(?:addMessage\('system', systemHtml\(imgHtml\)\)|addPersistentSlashMessage\(systemHtml\(imgHtml\)\));/, `${label}: /screenshot --full-page should render only into the initiating tab`);
+      assert.match(fullPageBody, /tabs\.get\(tabId\)[\s\S]*?sendToBackground\('capture_full_page_screenshot', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addScreenshotResultMessage\(res\.dataUrl, \{ fullPage: true, warning: res\.warning, pageUrl \}\);/, `${label}: /screenshot --full-page should render only into the initiating tab with URL-aware Save As`);
+      assert.match(panel, /function renderScreenshotResult\(dataUrl,[\s\S]*?warningHtml = warning[\s\S]*?escapeHtml\(warning\)/, `${label}: fallback full-page images should display their escaped assembly warning`);
       assert.match(panel, /function isPlainFullPageScreenshotRequest\(text\) \{[\s\S]*?full\|whole\|entire\|complete[\s\S]*?tam sayfa[\s\S]*?ekran goruntusu/, `${label}: plain full-page screenshot request routing should cover English and Turkish requests`);
       assert.match(panel, /function normalizeScreenshotCommandText\(text\) \{[\s\S]*?isPlainFullPageScreenshotRequest\(text\)[\s\S]*?return '\/screenshot --full-page';[\s\S]*?isPlainScreenshotRequest\(text\)[\s\S]*?return '\/screenshot';/, `${label}: screenshot normalization should route full-page requests before viewport screenshots`);
     } else {
@@ -15093,6 +15266,481 @@ test('CDP evaluate forwards a bounded Runtime timeout', async () => {
   const evaluation = commands.find(command => command.method === 'Runtime.evaluate');
   assert.equal(evaluation.params.timeout, 30000);
   assert.equal(evaluation.params.awaitPromise, true);
+});
+
+test('CDP full-page screenshots tile the actual viewport without applying DPR twice', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  const evaluations = [];
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    commands.push({ tabId, method, params });
+    if (method === 'Page.getLayoutMetrics') {
+      return {
+        cssVisualViewport: {
+          offsetX: 0,
+          offsetY: 0,
+          pageX: 17,
+          pageY: 29,
+          clientWidth: 1280,
+          clientHeight: 720,
+          scale: 1,
+        },
+        cssContentSize: { x: 0, y: 0, width: 1280, height: 1500 },
+      };
+    }
+    if (method === 'Page.captureScreenshot') return { data: 'not-a-real-png' };
+    return {};
+  };
+  cdp.evaluate = async (tabId, expression) => {
+    evaluations.push({ tabId, expression });
+    if (expression === 'window.devicePixelRatio') {
+      return { result: { value: 1.5 } };
+    }
+    return { result: { value: null } };
+  };
+
+  const capture = await cdp.captureFullPageScreenshot(42);
+
+  assert.equal(
+    commands.some(command => command.method.startsWith('Emulation.')),
+    false,
+    'full-page capture should not override the user viewport',
+  );
+  const captures = commands.filter(command => command.method === 'Page.captureScreenshot');
+  assert.equal(captures.length, 3, 'the actual 1280x720 viewport should produce three vertical tiles');
+  assert.deepEqual(
+    captures.map(command => command.params.clip),
+    [
+      { x: 0, y: 0, width: 1280, height: 720, scale: 1 },
+      { x: 0, y: 720, width: 1280, height: 720, scale: 1 },
+      { x: 0, y: 1440, width: 1280, height: 60, scale: 1 },
+    ],
+    'Page.captureScreenshot already applies native DPR; clip.scale must remain 1',
+  );
+  assert.ok(captures.every(command => command.params.captureBeyondViewport === true));
+  assert.equal(capture.data, 'not-a-real-png', 'assembly fallback should preserve the first captured tile');
+  assert.match(capture.warning, /assembly failed[\s\S]*first captured tile/i);
+  assert.deepEqual(
+    capture.captureBounds,
+    { x: 0, y: 0, width: 1280, height: 720 },
+    'assembly fallback metadata should describe the returned first tile, not the abandoned full canvas',
+  );
+  assert.deepEqual(
+    evaluations.map(({ expression }) => expression),
+    [
+      'window.devicePixelRatio',
+      'window.scrollTo(0, 0)',
+      'window.scrollTo(0, 720)',
+      'window.scrollTo(0, 780)',
+      'window.scrollTo(0, 780)',
+      'window.scrollTo(0, 0)',
+      'window.scrollTo(0, 720)',
+      'window.scrollTo(0, 1440)',
+      'window.scrollTo(17, 29)',
+    ],
+    'discovery and capture should walk the page before restoring the original scroll position',
+  );
+});
+
+test('CDP full-page screenshot compositor is statically imported for MV3 service workers', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, 'src/chrome/src/cdp/cdp-client.js'),
+    'utf8',
+  );
+  assert.match(source, /import \{ combineImages \} from '\.\/image-utils\.js';/);
+  assert.doesNotMatch(
+    source,
+    /import\(['"]\.\/image-utils\.js['"]\)/,
+    'MV3 service workers reject dynamic import() at runtime',
+  );
+});
+
+test('CDP full-page screenshots extend capture bounds when lazy content moves the footer', async () => {
+  const cdp = new CDPClient();
+  const captures = [];
+  let currentScrollY = 0;
+  let layoutHeight = 1400;
+  cdp.sendCommand = async (_tabId, method, params = {}) => {
+    if (method === 'Page.getLayoutMetrics') {
+      return {
+        cssVisualViewport: {
+          offsetX: 0,
+          offsetY: 0,
+          pageX: 0,
+          pageY: currentScrollY,
+          clientWidth: 800,
+          clientHeight: 600,
+          scale: 1,
+        },
+        cssContentSize: { x: 0, y: 0, width: 800, height: layoutHeight },
+      };
+    }
+    if (method === 'Page.captureScreenshot') {
+      captures.push(params.clip);
+      return { data: 'not-a-real-png' };
+    }
+    return {};
+  };
+  cdp.evaluate = async (_tabId, expression) => {
+    if (expression === 'window.devicePixelRatio') return { result: { value: 1 } };
+    const match = expression.match(/^window\.scrollTo\(0, (\d+)\)$/);
+    if (match) {
+      currentScrollY = Number(match[1]);
+      if (currentScrollY >= 600) layoutHeight = 2400;
+    }
+    return { result: { value: null } };
+  };
+
+  await cdp.captureFullPageScreenshot(42);
+
+  assert.equal(layoutHeight, 2400, 'the fixture should grow after the lazy-load scroll');
+  assert.equal(
+    Math.max(...captures.map(clip => clip.y + clip.height)),
+    2400,
+    'capture should extend through the final lazy-loaded height',
+  );
+  assert.deepEqual(captures.at(-1), { x: 0, y: 1800, width: 800, height: 600, scale: 1 });
+});
+
+test('CDP full-page screenshots freeze bounds on infinite-scroll pages', async () => {
+  const cdp = new CDPClient();
+  const captures = [];
+  let currentScrollY = 0;
+  let layoutHeight = 1200;
+  let heightAtFirstCapture = 0;
+  cdp.sendCommand = async (_tabId, method, params = {}) => {
+    if (method === 'Page.getLayoutMetrics') {
+      return {
+        cssVisualViewport: {
+          offsetX: 0,
+          offsetY: 0,
+          pageX: 0,
+          pageY: currentScrollY,
+          clientWidth: 800,
+          clientHeight: 600,
+          scale: 1,
+        },
+        cssContentSize: { x: 0, y: 0, width: 800, height: layoutHeight },
+      };
+    }
+    if (method === 'Page.captureScreenshot') {
+      if (captures.length === 0) heightAtFirstCapture = layoutHeight;
+      captures.push(params.clip);
+      return { data: 'not-a-real-png' };
+    }
+    return {};
+  };
+  cdp.evaluate = async (_tabId, expression) => {
+    if (expression === 'window.devicePixelRatio') return { result: { value: 1 } };
+    const match = expression.match(/^window\.scrollTo\(0, (\d+)\)$/);
+    if (match) {
+      currentScrollY = Number(match[1]);
+      if (currentScrollY >= layoutHeight - 600) layoutHeight += 600;
+    }
+    return { result: { value: null } };
+  };
+
+  const capture = await cdp.captureFullPageScreenshot(42);
+  const capturedHeight = Math.max(...captures.map(clip => clip.y + clip.height));
+
+  assert.equal(capturedHeight, heightAtFirstCapture, 'capture should freeze the discovered snapshot height');
+  assert.ok(layoutHeight > capturedHeight, 'the fixture should keep growing while the frozen snapshot is captured');
+  assert.ok(captures.length < 20, 'infinite scrolling should stop well before the generic tile limit');
+  assert.match(capture.warning, /infinite scrolling[\s\S]*bounded snapshot/i);
+});
+
+test('CDP bounded full-page metadata keeps frozen CSS bounds as the live document grows', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+  try {
+    globalThis.fetch = async () => ({ blob: async () => ({}) });
+    globalThis.createImageBitmap = async () => ({ width: 800, height: 600 });
+    globalThis.OffscreenCanvas = class {
+      getContext() {
+        return { drawImage() {} };
+      }
+      async convertToBlob() {
+        return {
+          arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+        };
+      }
+    };
+
+    const cdp = new CDPClient();
+    const captures = [];
+    let currentScrollY = 0;
+    let layoutHeight = 1200;
+    cdp.sendCommand = async (_tabId, method, params = {}) => {
+      if (method === 'Page.getLayoutMetrics') {
+        return {
+          cssVisualViewport: {
+            pageX: 0,
+            pageY: currentScrollY,
+            clientWidth: 800,
+            clientHeight: 600,
+          },
+          cssContentSize: { x: 0, y: 0, width: 800, height: layoutHeight },
+        };
+      }
+      if (method === 'Page.captureScreenshot') {
+        captures.push(params.clip);
+        return { data: 'not-a-real-png' };
+      }
+      return {};
+    };
+    cdp.evaluate = async (_tabId, expression) => {
+      if (expression === 'window.devicePixelRatio') return { result: { value: 1 } };
+      const match = expression.match(/^window\.scrollTo\(0, (\d+)\)$/);
+      if (match) {
+        currentScrollY = Number(match[1]);
+        if (currentScrollY >= layoutHeight - 600) layoutHeight += 600;
+      }
+      return { result: { value: null } };
+    };
+
+    const capture = await cdp.captureFullPageScreenshot(42);
+    const capturedHeight = Math.max(...captures.map(clip => clip.y + clip.height));
+
+    assert.ok(layoutHeight > capturedHeight, 'the live infinite document should outgrow the frozen capture');
+    assert.deepEqual(
+      capture.captureBounds,
+      { x: 0, y: 0, width: 800, height: capturedHeight },
+      'metadata should describe the frozen composed image rather than the later live document height',
+    );
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalCreateImageBitmap === undefined) delete globalThis.createImageBitmap;
+    else globalThis.createImageBitmap = originalCreateImageBitmap;
+    if (originalOffscreenCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = originalOffscreenCanvas;
+  }
+});
+
+test('CDP full-page screenshots report one adapter-aware infinite-scroll warning', async () => {
+  const cdp = new CDPClient();
+  const captures = [];
+  let currentScrollY = 0;
+  let layoutHeight = 1200;
+  let heightAtFirstCapture = 0;
+  let growthEvents = 0;
+  let growthsAtFirstCapture = 0;
+  cdp.sendCommand = async (_tabId, method, params = {}) => {
+    if (method === 'Page.getLayoutMetrics') {
+      return {
+        cssVisualViewport: {
+          offsetX: 0,
+          offsetY: 0,
+          pageX: 0,
+          pageY: currentScrollY,
+          clientWidth: 800,
+          clientHeight: 600,
+          scale: 1,
+        },
+        cssContentSize: { x: 0, y: 0, width: 800, height: layoutHeight },
+      };
+    }
+    if (method === 'Page.captureScreenshot') {
+      if (captures.length === 0) {
+        heightAtFirstCapture = layoutHeight;
+        growthsAtFirstCapture = growthEvents;
+      }
+      captures.push(params.clip);
+      return { data: 'not-a-real-png' };
+    }
+    return {};
+  };
+  cdp.evaluate = async (_tabId, expression) => {
+    if (expression === 'window.devicePixelRatio') return { result: { value: 1 } };
+    const match = expression.match(/^window\.scrollTo\(0, (\d+)\)$/);
+    if (match) {
+      currentScrollY = Number(match[1]);
+      if (currentScrollY >= layoutHeight - 600) {
+        layoutHeight += 600;
+        growthEvents++;
+      }
+    }
+    return { result: { value: null } };
+  };
+
+  const capture = await cdp.captureFullPageScreenshot(42, {
+    knownInfiniteScroll: true,
+    adapterName: 'twitter',
+  });
+  const capturedHeight = Math.max(...captures.map(clip => clip.y + clip.height));
+  const infiniteWarnings = capture.warning.match(/infinite scrolling/gi) || [];
+
+  assert.equal(capturedHeight, heightAtFirstCapture, 'known infinite pages should freeze after five expansions');
+  assert.equal(growthsAtFirstCapture, 5, 'known infinite discovery should allow exactly five expansions');
+  assert.ok(layoutHeight > capturedHeight, 'later infinite content should stay outside the frozen snapshot');
+  assert.equal(infiniteWarnings.length, 1, 'adapter and heuristic detection must not duplicate warnings');
+  assert.match(capture.warning, /twitter page is known to use infinite scrolling/i);
+  assert.match(capture.warning, /at most 5 content expansions[\s\S]*later content may not be included/i);
+});
+
+test('full-page image assembly reports first-tile fallback errors', async () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+  const warnings = [];
+  let fallbackBounds = null;
+  try {
+    globalThis.createImageBitmap = async () => ({ width: 10, height: 10 });
+    globalThis.OffscreenCanvas = class {
+      getContext() {
+        return { drawImage() {} };
+      }
+      async convertToBlob() {
+        throw new Error('canvas too large');
+      }
+    };
+    const firstTile = 'Zmlyc3QtdGlsZQ==';
+    const result = await combineImages(
+      [{ x: 0, y: 0, width: 10, height: 10, data: firstTile }],
+      10,
+      10,
+      1,
+      {
+        onWarning: warning => warnings.push(warning),
+        onFallback: bounds => { fallbackBounds = bounds; },
+      },
+    );
+    assert.equal(result, firstTile);
+    assert.match(warnings.join(' '), /canvas too large[\s\S]*first captured tile/i);
+    assert.deepEqual(fallbackBounds, { x: 0, y: 0, width: 10, height: 10 });
+  } finally {
+    if (originalCreateImageBitmap === undefined) delete globalThis.createImageBitmap;
+    else globalThis.createImageBitmap = originalCreateImageBitmap;
+    if (originalOffscreenCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = originalOffscreenCanvas;
+  }
+});
+
+test('user full-page screenshot responses preserve compositor fallback warnings', async () => {
+  const originalAttach = cdpClientCh.attach;
+  const originalCapture = cdpClientCh.captureFullPageScreenshot;
+  try {
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.captureFullPageScreenshot = async () => ({
+      data: 'Zmlyc3QtdGlsZQ==',
+      warning: 'Full-page screenshot assembly failed (canvas too large). Showing the first captured tile instead.',
+    });
+    const agent = new AgentCh({});
+    agent._bringToFrontForCapture = async () => {};
+    agent._withIndicatorsHidden = async (_tabId, capture) => capture();
+
+    const result = await agent.captureFullPageScreenshotForUser(42);
+    assert.equal(result.ok, true);
+    assert.equal(result.dataUrl, 'data:image/png;base64,Zmlyc3QtdGlsZQ==');
+    assert.match(result.warning, /canvas too large[\s\S]*first captured tile/i);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.captureFullPageScreenshot = originalCapture;
+  }
+});
+
+test('user full-page screenshots apply adapter capture policy without LLM adapter injection', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalCapture = cdpClientCh.captureFullPageScreenshot;
+  let receivedOptions = null;
+  try {
+    globalThis.chrome = {
+      ...(originalChrome || {}),
+      tabs: {
+        ...(originalChrome?.tabs || {}),
+        get: async (tabId) => {
+          assert.equal(tabId, 42);
+          return { id: tabId, url: 'https://x.com/home' };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.captureFullPageScreenshot = async (_tabId, options) => {
+      receivedOptions = options;
+      return { data: 'Zmlyc3QtdGlsZQ==', warning: null };
+    };
+    const agent = new AgentCh({});
+    agent.useSiteAdapters = false;
+    agent._bringToFrontForCapture = async () => {};
+    agent._withIndicatorsHidden = async (_tabId, capture) => capture();
+
+    const result = await agent.captureFullPageScreenshotForUser(42);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(receivedOptions, {
+      knownInfiniteScroll: true,
+      adapterName: 'twitter',
+    });
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.captureFullPageScreenshot = originalCapture;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
+test('agent full-page screenshot tool applies adapter capture policy without LLM adapter injection', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalCapture = cdpClientCh.captureFullPageScreenshot;
+  let receivedOptions = null;
+  let receivedRedactionOptions = null;
+  try {
+    globalThis.chrome = {
+      ...(originalChrome || {}),
+      tabs: {
+        ...(originalChrome?.tabs || {}),
+        get: async (tabId) => {
+          assert.equal(tabId, 42);
+          return { id: tabId, url: 'https://x.com/home' };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.captureFullPageScreenshot = async (_tabId, options) => {
+      receivedOptions = options;
+      return {
+        data: 'Zmlyc3QtdGlsZQ==',
+        warning: 'bounded infinite-scroll capture',
+        captureBounds: { x: 10, y: 20, width: 800, height: 3000 },
+      };
+    };
+    const agent = new AgentCh({
+      getActive: () => ({ supportsVision: true }),
+      getVisionProvider: async () => null,
+    });
+    agent.useSiteAdapters = false;
+    agent.screenshotRedaction = true;
+    agent._bringToFrontForCapture = async () => {};
+    agent._withIndicatorsHidden = async (_tabId, capture) => capture();
+    agent._shrinkImageForBudget = async (dataUrl) => ({ dataUrl, width: 400, height: 1500 });
+    agent._redactScreenshotDataUrl = async (_tabId, dataUrl, options) => {
+      receivedRedactionOptions = options;
+      return dataUrl;
+    };
+
+    const result = await agent.executeTool(42, 'full_page_screenshot', {});
+
+    assert.equal(result.success, true);
+    assert.equal(result.method, 'image_attach');
+    assert.equal(result.warning, 'bounded infinite-scroll capture');
+    assert.deepEqual(receivedOptions, {
+      knownInfiniteScroll: true,
+      adapterName: 'twitter',
+    });
+    assert.deepEqual(receivedRedactionOptions, {
+      coordinateSpace: 'page',
+      capturedCssBounds: { x: 10, y: 20, width: 800, height: 3000 },
+      imageWidth: 400,
+      imageHeight: 1500,
+    });
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.captureFullPageScreenshot = originalCapture;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
 });
 
 test('inspect_event_listeners resolves marked ref targets through CDP and always removes markers', async () => {

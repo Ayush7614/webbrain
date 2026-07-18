@@ -7,7 +7,7 @@ import { buildGithubStargazerProgressItems } from './observers/github-stargazers
 import { analyzeMastodonPage, mastodonHandoffInstruction, mastodonProgressGuard } from './observers/mastodon.js';
 import { isProgressActionAllowed, isProgressIntentActive, normalizeProgressAction, normalizeProgressIntent } from './progress-intent.js';
 import { cdpClient } from '../cdp/cdp-client.js';
-import { getActiveAdapter, UNIVERSAL_PREAMBLE } from './adapters.js';
+import { getActiveAdapter, getFullPageCapturePolicy, UNIVERSAL_PREAMBLE } from './adapters.js';
 import {
   fetchUrl,
   executeHttpSkillTool,
@@ -380,16 +380,30 @@ export class Agent {
     return { success: true, existed: true, note: 'scratchpad cleared' };
   }
 
+  async _getFullPageCapturePolicy(tabId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return getFullPageCapturePolicy(tab?.url) || {};
+    } catch {
+      // URL/policy lookup is an optimization. Capture still works without it,
+      // and runtime policy intentionally does not depend on LLM adapter notes.
+      return {};
+    }
+  }
+
   async captureFullPageScreenshotForUser(tabId) {
     if (!tabId) return { ok: false, error: 'No tab ID' };
     try {
+      const capturePolicy = await this._getFullPageCapturePolicy(tabId);
       await cdpClient.attach(tabId);
       await this._bringToFrontForCapture(tabId);
-      const imageData = await this._withIndicatorsHidden(tabId, () =>
-        cdpClient.captureFullPageScreenshot(tabId)
+      const capture = await this._withIndicatorsHidden(tabId, () =>
+        cdpClient.captureFullPageScreenshot(tabId, capturePolicy)
       );
+      const imageData = typeof capture === 'string' ? capture : capture?.data;
+      const warning = typeof capture === 'object' ? capture?.warning || null : null;
       if (!imageData) return { ok: false, error: 'Full-page screenshot returned no image data' };
-      return { ok: true, dataUrl: `data:image/png;base64,${imageData}` };
+      return { ok: true, dataUrl: `data:image/png;base64,${imageData}`, warning };
     } catch (e) {
       return { ok: false, error: e?.message || String(e) };
     }
@@ -3477,6 +3491,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * @param {number} [opts.offsetY=0]   Captured-area top in the page (CSS px).
    * @param {'viewport'|'page'} [opts.coordinateSpace='viewport']  Coordinate space the
    *   content-script rects are reported in.
+   * @param {{x:number,y:number,width:number,height:number}} [opts.capturedCssBounds]
+   *   Actual captured area in top-page CSS coordinates. This must be used for
+   *   bounded/partial full-page captures instead of the live document size.
    * @param {number} [opts.imageWidth]  Image width (px) for clamping.
    * @param {number} [opts.imageHeight] Image height (px) for clamping.
    * @returns {Promise<string>}
@@ -3491,7 +3508,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // at a non-1 DPR, or snapped to a window).
     let imageWidth = opts.imageWidth;
     let imageHeight = opts.imageHeight;
-    if (!(Number.isFinite(imageWidth) && Number.isFinite(imageHeight))) {
+    if (!(Number.isFinite(imageWidth) && imageWidth > 0 &&
+          Number.isFinite(imageHeight) && imageHeight > 0)) {
       try {
         const m = await fetch(dataUrl);
         const bmp = await createImageBitmap(await m.blob());
@@ -3532,13 +3550,27 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!resp) return dataUrl;
 
     // The captured CSS box (CSS px) in the SAME space as the element rects.
-    // Default to the image's own pixel size so scale==1 when the content
-    // script doesn't report a viewport (defensive — it always does).
-    const cssBox = resp?.viewport || { width: imageWidth, height: imageHeight };
+    // A bounded full-page capture can be shorter than the live document, so
+    // prefer its immutable capture bounds over the collector's live viewport.
+    const suppliedBounds = opts.capturedCssBounds;
+    const hasCapturedBounds = coordinateSpace === 'page' &&
+      Number.isFinite(suppliedBounds?.x) &&
+      Number.isFinite(suppliedBounds?.y) &&
+      Number.isFinite(suppliedBounds?.width) && suppliedBounds.width > 0 &&
+      Number.isFinite(suppliedBounds?.height) && suppliedBounds.height > 0;
+    const cssBox = hasCapturedBounds
+      ? suppliedBounds
+      : (resp?.viewport || { width: imageWidth, height: imageHeight });
     const cssW = Number.isFinite(cssBox.width) && cssBox.width > 0 ? cssBox.width : imageWidth;
     const cssH = Number.isFinite(cssBox.height) && cssBox.height > 0 ? cssBox.height : imageHeight;
     const scaleX = imageWidth / cssW;
     const scaleY = imageHeight / cssH;
+    const offsetX = hasCapturedBounds
+      ? suppliedBounds.x
+      : (Number.isFinite(opts.offsetX) ? opts.offsetX : 0);
+    const offsetY = hasCapturedBounds
+      ? suppliedBounds.y
+      : (Number.isFinite(opts.offsetY) ? opts.offsetY : 0);
 
     const regions = mergeRedactionFrameRegions(frameSnapshots);
     if (!regions.length) return dataUrl;
@@ -3546,8 +3578,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const imageRegions = mapRegionsToImage(regions, {
       scaleX,
       scaleY,
-      offsetX: 0,
-      offsetY: 0,
+      offsetX,
+      offsetY,
       imageWidth,
       imageHeight,
     });
@@ -9898,12 +9930,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     if (name === 'full_page_screenshot') {
       try {
+        const capturePolicy = await this._getFullPageCapturePolicy(tabId);
         await cdpClient.attach(tabId);
         await this._bringToFrontForCapture(tabId);
-        const imageData = await this._withIndicatorsHidden(tabId, () =>
-          cdpClient.captureFullPageScreenshot(tabId)
+        const capture = await this._withIndicatorsHidden(tabId, () =>
+          cdpClient.captureFullPageScreenshot(tabId, capturePolicy)
         );
+        const imageData = typeof capture === 'string' ? capture : capture?.data;
+        const captureWarning = typeof capture === 'object' ? capture?.warning || null : null;
+        const captureBounds = typeof capture === 'object' ? capture?.captureBounds || null : null;
+        if (!imageData) throw new Error('Full-page screenshot returned no image data');
         const rawUrl = `data:image/png;base64,${imageData}`;
+        const warningNote = captureWarning ? `\nWarning: ${captureWarning}` : '';
 
         // If the caller asked to save, do it with the RAW (uncompressed,
         // full-resolution) PNG — that's what the user actually wants on
@@ -9925,8 +9963,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           }
         }
 
-        // Full-page captures are the worst case for size — a 1920×8000
-        // document at native DPR easily blows past any provider's image
+        // Full-page captures are the worst case for size — a tall document
+        // at native DPR easily blows past any provider's image
         // budget. Always shrink to the token/byte budget. Dimensions come
         // from decoding the bitmap (we don't know the real doc size up
         // front the way we do for viewport captures).
@@ -9939,7 +9977,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // use page-coordinate rects from the content script.
         let modelDataUrl = shrunk.dataUrl;
         if (this.screenshotRedaction) {
-          modelDataUrl = await this._redactScreenshotDataUrl(tabId, shrunk.dataUrl, { coordinateSpace: 'page' });
+          modelDataUrl = await this._redactScreenshotDataUrl(tabId, shrunk.dataUrl, {
+            coordinateSpace: 'page',
+            capturedCssBounds: captureBounds,
+            imageWidth: shrunk.width,
+            imageHeight: shrunk.height,
+          });
         }
 
         // Check the planner/vision setup. A text-only model with no
@@ -9953,7 +9996,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             return {
               success: true,
               method: 'vision_describe',
-              description: `[Full-page screenshot described by vision model ${desc.model}, ${shrunk.width}×${shrunk.height} after budget fit]\n${desc.text}`,
+              description: `[Full-page screenshot described by vision model ${desc.model}, ${shrunk.width}×${shrunk.height} after budget fit]\n${desc.text}${warningNote}`,
+              warning: captureWarning || undefined,
               savedFile: savedFile || undefined,
             };
           }
@@ -9962,7 +10006,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return {
             success: true,
             method: 'image_attach',
-            description: `Full page screenshot captured and fit to vision budget (${shrunk.width}×${shrunk.height}, ${modelDataUrl.length} base64 chars)`,
+            description: `Full page screenshot captured and fit to vision budget (${shrunk.width}×${shrunk.height}, ${modelDataUrl.length} base64 chars)${warningNote}`,
+            warning: captureWarning || undefined,
             savedFile: savedFile || undefined,
             _attachImage: modelDataUrl,
           };
@@ -9971,7 +10016,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return {
             success: true,
             method: 'save_only',
-            description: `Full-page screenshot saved to ${savedFile.filename}.`,
+            description: `Full-page screenshot saved to ${savedFile.filename}.${warningNote}`,
+            warning: captureWarning || undefined,
             savedFile,
           };
         }
