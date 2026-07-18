@@ -23972,6 +23972,79 @@ test('restored item-scoped classifier requirements keep completion evidence chec
   }
 });
 
+test('runtime-acted requirements can resume with one fresh observation each', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 23268;
+    const sessionId = `${AgentClass.name}-acted-continuation`;
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Continue processing the recorded targets.' },
+    ]);
+    const ids = ['runtime-one', 'runtime-two', 'model-only'];
+    const seeded = agent._progressUpdate(tabId, {
+      items: ids.map(id => ({
+        id,
+        label: id,
+        action: 'process_item',
+        status: 'pending',
+        fields: {
+          completionRequirement: true,
+          classifierTarget: true,
+        },
+      })),
+    }, { source: 'classifier', sessionId });
+    assert.equal(seeded.success, true, `${AgentClass.name}: continuation setup failed`);
+    for (const id of ids.slice(0, 2)) {
+      const acted = agent._progressUpdate(tabId, {
+        items: [{ id, status: 'acted' }],
+      }, { source: 'auto', sessionId });
+      assert.equal(acted.success, true, `${AgentClass.name}: runtime action provenance setup failed`);
+    }
+    const modelActed = agent._progressUpdate(tabId, {
+      items: [{ id: 'model-only', status: 'acted' }],
+    }, { sessionId });
+    assert.equal(modelActed.success, true, `${AgentClass.name}: model acted setup failed`);
+
+    agent._beginCompletionInvariant(tabId);
+    agent._recordCompletionToolResult(tabId, 'read_page', {}, { success: true, content: 'runtime-one is complete' });
+    const completedOne = agent._progressUpdate(tabId, {
+      items: [{ id: 'runtime-one', status: 'processed' }],
+    }, { sessionId });
+    assert.equal(completedOne.success, true, `${AgentClass.name}: trusted acted row could not close after a continuation read`);
+
+    const reusedObservation = agent._progressUpdate(tabId, {
+      items: [{ id: 'runtime-two', status: 'processed' }],
+    }, { sessionId });
+    assert.equal(reusedObservation.success, false, `${AgentClass.name}: one continuation read closed multiple acted rows`);
+    assert.equal(reusedObservation.completionInvariant, true);
+
+    const sameBatchStart = agent.completionInvariants.get(tabId);
+    agent._recordCompletionToolResult(tabId, 'read_page', {}, { success: true, content: 'runtime-two is complete' });
+    const sameBatchCompletion = await agent.executeTool(
+      tabId,
+      'progress_update',
+      { items: [{ id: 'runtime-two', status: 'processed' }], sessionId },
+      null,
+      { completionBatchStartState: sameBatchStart },
+    );
+    assert.equal(sameBatchCompletion.success, false, `${AgentClass.name}: same-batch continuation read closed an acted row`);
+    assert.equal(sameBatchCompletion.completionInvariant, true);
+    const completedTwo = agent._progressUpdate(tabId, {
+      items: [{ id: 'runtime-two', status: 'processed' }],
+    }, { sessionId });
+    assert.equal(completedTwo.success, true, `${AgentClass.name}: prior-turn continuation read could not close the second acted row`);
+
+    agent._recordCompletionToolResult(tabId, 'read_page', {}, { success: true, content: 'model-only claims completion' });
+    const fakeActedCompletion = agent._progressUpdate(tabId, {
+      items: [{ id: 'model-only', status: 'processed' }],
+    }, { sessionId });
+    assert.equal(fakeActedCompletion.success, false, `${AgentClass.name}: model-authored acted row used continuation evidence`);
+    assert.equal(fakeActedCompletion.completionInvariant, true);
+  }
+});
+
 test('progress session changes remove stale pinned ledger prompts', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });

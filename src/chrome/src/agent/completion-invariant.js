@@ -240,11 +240,26 @@ export function hasUnconsumedCompletionObservation(state) {
   return actionSequence > consumedActionSequence && observationSequence > consumedSequence;
 }
 
+export function hasUnconsumedCompletionObservationResult(state) {
+  const actionSequence = Number(state?.lastAction?.sequence || 0);
+  const observationSequence = Number(state?.lastObservation?.sequence || 0);
+  const consumedSequence = Number(state?.consumedObservationSequence || 0);
+  return observationSequence > actionSequence && observationSequence > consumedSequence;
+}
+
 export function consumeCompletionObservation(state) {
   if (!hasUnconsumedCompletionObservation(state)) return state;
   return {
     ...state,
     consumedActionSequence: Number(state.lastAction?.sequence || 0),
+    consumedObservationSequence: Number(state.lastObservation?.sequence || 0),
+  };
+}
+
+export function consumeCompletionObservationResult(state) {
+  if (!hasUnconsumedCompletionObservationResult(state)) return state;
+  return {
+    ...state,
     consumedObservationSequence: Number(state.lastObservation?.sequence || 0),
   };
 }

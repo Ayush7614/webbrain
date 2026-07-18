@@ -6,7 +6,7 @@ import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isBlockedLe
 import { buildGithubStargazerProgressItems } from './observers/github-stargazers.js';
 import { analyzeMastodonPage, mastodonHandoffInstruction, mastodonProgressGuard } from './observers/mastodon.js';
 import { isProgressActionAllowed, isProgressIntentActive, normalizeProgressAction, normalizeProgressIntent } from './progress-intent.js';
-import { completionDoneBlock, completionPlainFinalBlock, consumeCompletionObservation, createCompletionInvariantState, hasUnconsumedCompletionObservation, recordCompletionToolResult } from './completion-invariant.js';
+import { completionDoneBlock, completionPlainFinalBlock, consumeCompletionObservation, consumeCompletionObservationResult, createCompletionInvariantState, hasUnconsumedCompletionObservation, hasUnconsumedCompletionObservationResult, recordCompletionToolResult } from './completion-invariant.js';
 import { getActiveAdapter, UNIVERSAL_PREAMBLE } from './adapters.js';
 import {
   fetchUrl,
@@ -303,6 +303,15 @@ export class Agent {
     const state = this.completionInvariants.get(tabId);
     if (!state) return false;
     const next = consumeCompletionObservation(state);
+    if (next === state) return false;
+    this.completionInvariants.set(tabId, next);
+    return true;
+  }
+
+  _consumeCompletionObservationResult(tabId) {
+    const state = this.completionInvariants.get(tabId);
+    if (!state) return false;
+    const next = consumeCompletionObservationResult(state);
     if (next === state) return false;
     this.completionInvariants.set(tabId, next);
     return true;
@@ -6240,16 +6249,24 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const currentCompletionState = this.completionInvariants.get(tabId);
     const hasNewBatchAction = hasBatchStartState
       && Number(currentCompletionState?.lastAction?.sequence || 0) > Number(evidenceState?.sequence || 0);
-    if (evidenceRequirementIds.length
-      && (
-        !hasUnconsumedCompletionObservation(evidenceState)
-        || !hasUnconsumedCompletionObservation(currentCompletionState)
-        || hasNewBatchAction
-      )) {
+    const hasCurrentRunEvidence = evidenceRequirementIds.length
+      && hasUnconsumedCompletionObservation(evidenceState)
+      && hasUnconsumedCompletionObservation(currentCompletionState)
+      && !hasNewBatchAction;
+    const persistedActedRequirement = terminalRequirements.find(({ item, row }) => (
+      String(item?.status || '').toLowerCase() === 'processed'
+      && String(row?.status || '').toLowerCase() === 'acted'
+      && String(row?.source || '').toLowerCase() === 'auto'
+    ));
+    const hasPersistedActionEvidence = !!persistedActedRequirement
+      && hasUnconsumedCompletionObservationResult(evidenceState)
+      && hasUnconsumedCompletionObservationResult(currentCompletionState)
+      && !hasNewBatchAction;
+    if (evidenceRequirementIds.length && !hasCurrentRunEvidence && !hasPersistedActionEvidence) {
       return {
         success: false,
         completionInvariant: true,
-        error: 'Classifier-seeded completion requirements can be marked processed only after a consequential action and a successful explicit observation whose result was available on a prior assistant turn. Use skipped or failed for transparent non-success outcomes.',
+        error: 'Classifier-seeded completion requirements can be marked processed only after a consequential action and a successful explicit observation whose result was available on a prior assistant turn. A runtime-recorded acted row may instead use one fresh continuation observation. Use skipped or failed for transparent non-success outcomes.',
         ids: evidenceRequirementIds.slice(0, 20),
       };
     }
@@ -6301,7 +6318,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!result.changed) {
       return { success: false, error: 'progress_update: no valid items were provided. Each item needs a stable id.' };
     }
-    if (evidenceRequirementIds.length) this._consumeCompletionObservation(tabId);
+    if (evidenceRequirementIds.length) {
+      if (hasCurrentRunEvidence) this._consumeCompletionObservation(tabId);
+      else this._consumeCompletionObservationResult(tabId);
+    }
     this.progressLedgers.set(tabId, result.rows);
     const adoption = sessionId
       ? this._adoptUnscopedProgressRows(tabId, sessionId, { allowReopen: args.reopen === true, taskKey })
