@@ -25330,6 +25330,50 @@ test('same-batch observation cannot clear debt that existed at batch start', () 
   }
 });
 
+test('blocked completion skips stale calls that follow in the same batch', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({
+      getActive: () => ({ contextWindow: 128000, supportsVision: false }),
+      getVisionProvider: async () => null,
+    });
+    const tabId = 24816;
+    const messages = [];
+    agent.conversationModes.set(tabId, 'act');
+    agent._skipPermissionGate = true;
+    agent._ensureGateSetting = async () => false;
+    agent._persist = () => {};
+    const token = agent._beginCompletionInvariant(tabId);
+    agent._recordCompletionToolResult(tabId, 'click_ax', { ref_id: 'initial_action' }, { success: true, verified: true });
+    let staleClicks = 0;
+    agent.executeTool = async (_toolTabId, name) => {
+      if (name === 'click_ax') staleClicks++;
+      return { success: true, verified: true };
+    };
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'blocked_done', function: { name: 'done', arguments: JSON.stringify({ summary: 'Done.', outcome: 'success' }) } },
+        { id: 'stale_click', function: { name: 'click_ax', arguments: JSON.stringify({ ref_id: 'must_not_run' }) } },
+      ],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['done', 'click_ax']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${AgentClass.name}: blocked completion did not request a fresh turn`);
+    assert.equal(staleClicks, 0, `${AgentClass.name}: stale call after blocked completion was executed`);
+    const staleResult = messages.find(message => message.tool_call_id === 'stale_click');
+    assert.match(String(staleResult?.content || ''), /"skipped":true/, `${AgentClass.name}: stale call did not receive a synthetic result`);
+    assert.match(String(staleResult?.content || ''), /fresh verification turn/, `${AgentClass.name}: stale skip reason was not explicit`);
+
+    agent._clearCompletionInvariant(tabId, token);
+  }
+});
+
 test('done_json is blocked before schema handling while verification debt is open', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({

@@ -2168,8 +2168,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             });
           }
           onUpdate('warning', { message: 'Runtime completion invariant blocked an unverified or ambiguous completion.' });
+          this._appendSyntheticToolResults(
+            tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
+            () => ({ success: false, skipped: true, error: 'skipped: blocked completion requires a fresh verification turn' })
+          );
           this._persist(tabId);
-          continue;
+          return { action: 'continue' };
         }
       }
 
