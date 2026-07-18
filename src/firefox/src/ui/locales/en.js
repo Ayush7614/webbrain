@@ -450,7 +450,7 @@ export default {
   'st.display.api_mutation_observer.label': 'API mutation observer',
   'st.display.api_mutation_observer.desc': 'Observe same-tab XHR/fetch request URLs and methods so WebBrain can detect repeated UI actions and suggest API shortcut patterns. Off by default; enable only while investigating shortcut behavior or latency.',
   'st.display.plan_before_act.label': 'Plan before Act',
-  'st.display.plan_before_act.desc': 'In Act and Dev modes, optionally generate a structured plan before tools run. Try mode is the default: it continues without a pinned plan if planning fails; strict mode cancels instead. Adds one LLM call per action turn while planning is on.',
+  'st.display.plan_before_act.desc': 'Act and Dev always run a structured intent check before tools. Try (default) also builds full plans but may reuse a recently approved plan for a short follow-up; Strict builds a full plan every turn. If intent or planning remains invalid after one repair, both stop before tools and ask for clarification.',
   'st.display.plan_before_act.try': 'Try planning (default)',
   'st.display.plan_before_act.strict': 'Strict planning',
   'st.display.plan_before_act.off': 'Off',

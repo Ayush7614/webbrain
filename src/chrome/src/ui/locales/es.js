@@ -630,7 +630,7 @@ export default {
   'st.display.api_mutation_observer.label': 'Observador de mutaciones de API',
   'st.display.api_mutation_observer.desc': 'Observa las URLs y métodos de peticiones XHR/fetch en la misma pestaña para que WebBrain pueda detectar acciones repetidas de la interfaz y sugerir patrones de acceso directo por API. Desactivado por defecto; actívalo solo mientras investigas comportamientos de acceso directo o latencia.',
   'st.display.plan_before_act.label': 'Planificar antes de actuar',
-  'st.display.plan_before_act.desc': 'En modo Actuar, genera opcionalmente un plan estructurado antes de ejecutar las herramientas. El modo Intento es el predeterminado: continúa sin un plan fijo si la planificación falla; el modo Estricto cancela en su lugar. Añade una llamada al LLM por cada turno de Actuar mientras la planificación está activada.',
+  'st.display.plan_before_act.desc': 'Los modos Actuar y Dev siempre ejecutan una comprobación estructurada de intención antes de las herramientas. Intentar (predeterminado) también crea planes completos, pero puede reutilizar un plan aprobado recientemente para un seguimiento breve; Estricto crea un plan completo en cada turno. Si la intención o el plan siguen siendo inválidos tras una reparación, ambos se detienen antes de usar herramientas y piden una aclaración.',
   'st.display.plan_before_act.try': 'Intentar planificar (por defecto)',
   'st.display.plan_before_act.strict': 'Planificación estricta',
   'st.display.plan_before_act.off': 'Desactivado',

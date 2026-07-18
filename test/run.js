@@ -10491,7 +10491,9 @@ test('sidepanel suppresses streamed raw tool-call text before rendering tool ste
     assert.doesNotMatch(panel, /dataset\.streamedAssistantText\s*=/, `${label}: streamed text must not be serialized as a data attribute`);
     assert.match(panel, /getStreamedAssistantText\(textEl\) === String\(res\.content\)[\s\S]*?renderAssistantTextUpdate\(assistantEl, res\.content\);/, `${label}: completed streams should format the visible final text in place`);
     assert.match(panel, /clearAssistantTextStreamState\(assistantEl\);/, `${label}: run completion should clear transient streamed-text state before persistence`);
-    assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);/, `${label}: final text should format an already visible stream instead of appending a duplicate`);
+    assert.match(panel, /case 'text':[\s\S]*?renderAssistantTextUpdate\(currentAssistantEl, data\.content, \{ replace: data\.replace === true \}\);/, `${label}: text updates should forward explicit replacement requests`);
+    assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content, options = \{\}\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?if \(options\.replace === true\) \{[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);[\s\S]*?streamedAssistantTextByEl\.set\(textEl, String\(content\)\);[\s\S]*?\} else if \(verboseMode/, `${label}: explicit replacements should overwrite verbose streamed text and dedupe the completion event`);
+    assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content, options = \{\}\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);/, `${label}: final text should format an already visible stream instead of appending a duplicate`);
     const start = panel.indexOf("case 'tool_call':");
     const end = panel.indexOf("case 'tool_result':", start);
     assert.notEqual(start, -1, `${label}: tool_call handler missing`);
@@ -26337,6 +26339,7 @@ test('streamed repeated plan-only output replaces rejected deltas with the failu
     assert.match(final, /No successful action was verified/, `${AgentClass.name}: repeated streamed plan was accepted`);
     const finalText = updates.filter(update => update.type === 'text').at(-1);
     assert.equal(finalText?.data?.content, final, `${AgentClass.name}: streamed failure did not replace rejected plan deltas`);
+    assert.equal(finalText?.data?.replace, true, `${AgentClass.name}: streamed failure lacked a forced-replace signal`);
   }
 });
 
@@ -30315,7 +30318,9 @@ test('plan before act: try is default while explicit off is preserved', () => {
     'src/firefox/src/ui/locales/en.js',
   ]) {
     const locale = fs.readFileSync(path.join(ROOT, file), 'utf8');
-    assert.match(locale, /Try mode is the default/, `${file} should describe try planning as the default`);
+    assert.match(locale, /Try \(default\).*may reuse a recently approved plan for a short follow-up/, `${file} should describe try planning as the default with short-follow-up reuse`);
+    assert.match(locale, /If intent or planning remains invalid after one repair, both stop before tools and ask for clarification/, `${file} should describe the shared fail-closed intent behavior`);
+    assert.doesNotMatch(locale, /continues without a pinned plan if planning fails/, `${file} should not promise an unsafe fallback after invalid intent`);
     assert.match(locale, /'st\.display\.plan_before_act\.try': 'Try planning \(default\)'/, `${file} should label try planning as default`);
     assert.match(locale, /'st\.display\.plan_before_act\.off': 'Off'/, `${file} should not label off as default`);
     assert.doesNotMatch(locale, /plan_before_act\.desc[^\n]*Off by default/, `${file} should not describe plan-before-act as off by default`);

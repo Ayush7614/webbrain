@@ -4973,9 +4973,10 @@ function handleAgentUpdateMessage(msg) {
     case 'text':
       // Empty content means "the model returned nothing new at this step".
       // Don't wipe any previously-rendered assistant text — earlier steps
-      // may already have put useful intermediate prose in the bubble.
+      // may already have put useful intermediate prose in the bubble, unless
+      // the agent explicitly rejects and replaces streamed terminal text.
       if (currentAssistantEl && data.content) {
-        renderAssistantTextUpdate(currentAssistantEl, data.content);
+        renderAssistantTextUpdate(currentAssistantEl, data.content, { replace: data.replace === true });
       }
       break;
 
@@ -5921,7 +5922,7 @@ function clearAssistantTextStreamState(assistantEl) {
   delete textEl.dataset.suppressToolCallStream;
 }
 
-function renderAssistantTextUpdate(assistantEl, content) {
+function renderAssistantTextUpdate(assistantEl, content, options = {}) {
   const textEl = assistantEl.querySelector('.message-text');
   if (!textEl) return;
 
@@ -5943,7 +5944,12 @@ function renderAssistantTextUpdate(assistantEl, content) {
   const streamedText = getStreamedAssistantText(textEl);
   const isDuplicateStreamFinal = streamedText && streamedText === String(content);
 
-  if (verboseMode && !isDuplicateStreamFinal) {
+  if (options.replace === true) {
+    // A rejected streamed terminal must replace its already-rendered deltas
+    // even in Verbose mode; appending would leave the invalid plan visible.
+    textEl.innerHTML = formatMarkdown(content);
+    streamedAssistantTextByEl.set(textEl, String(content));
+  } else if (verboseMode && !isDuplicateStreamFinal) {
     // Verbose mode: append each non-streamed turn as its own paragraph so
     // intermediate prose is preserved alongside the steps log. Streaming
     // finals are already visible live, so format the existing stream instead

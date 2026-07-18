@@ -10761,7 +10761,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           messages.push({ role: 'assistant', content: planOnlyDecision.failure });
           // Replace any rejected plan text already emitted as streaming deltas
           // so the visible terminal content matches the failed run result.
-          onUpdate('text', { content: planOnlyDecision.failure });
+          onUpdate('text', { content: planOnlyDecision.failure, replace: true });
           onUpdate('warning', { message: planOnlyDecision.failure });
           this._persist(tabId);
           return finish(planOnlyDecision.failure, planOnlyDecision.status || 'plan_only_output');

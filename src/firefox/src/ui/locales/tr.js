@@ -626,7 +626,7 @@ export default {
   'st.display.api_mutation_observer.label': 'API mutasyon gözlemcisi',
   'st.display.api_mutation_observer.desc': 'WebBrain\'in tekrarlanan UI eylemlerini tespit etmesi ve API kısayol kalıpları önermesi için aynı sekmedeki XHR/fetch istek URL\'lerini ve yöntemlerini gözlemle. Varsayılan olarak kapalı; yalnızca kısayol davranışını veya gecikmeyi araştırırken etkinleştir.',
   'st.display.plan_before_act.label': 'Eylemden önce planla',
-  'st.display.plan_before_act.desc': 'Aktif modunda, araçlar çalışmadan önce isteğe bağlı olarak yapılandırılmış bir plan oluştur. Dene modu varsayılandır: planlama başarısız olursa sabit bir plan olmadan devam eder; katı mod iptal eder. Planlama açıkken her Aktif turda bir LLM çağrısı ekler.',
+  'st.display.plan_before_act.desc': 'Aktif ve Dev modları araçlardan önce her zaman yapılandırılmış bir niyet kontrolü çalıştırır. Dene (varsayılan) ayrıca tam planlar oluşturur ancak kısa bir takipte yakın zamanda onaylanmış planı yeniden kullanabilir; Katı her turda tam plan oluşturur. Niyet veya planlama bir onarımdan sonra hâlâ geçersizse iki mod da araçlardan önce durur ve açıklama ister.',
   'st.display.plan_before_act.try': 'Planlamayı dene (varsayılan)',
   'st.display.plan_before_act.strict': 'Katı planlama',
   'st.display.plan_before_act.off': 'Kapalı',

@@ -621,7 +621,7 @@ export default {
   'st.display.api_mutation_observer.label': 'API変更オブザーバー',
   'st.display.api_mutation_observer.desc': '同じタブの XHR/fetch リクエスト URL とメソッドを監視し、WebBrain が繰り返しの UI アクションを検出して API ショートカットパターンを提案できるようにします。デフォルトではオフ。ショートカット動作やレイテンシの調査中のみ有効にしてください。',
   'st.display.plan_before_act.label': '実行前に計画',
-  'st.display.plan_before_act.desc': 'Act モードで、ツール実行前にオプションで構造化された計画を生成します。試行モードがデフォルトです。計画が失敗しても固定計画なしで続行し、厳格モードは代わりにキャンセルします。計画がオンの間、Act ターンごとに 1 回の LLM 呼び出しが追加されます。',
+  'st.display.plan_before_act.desc': 'Act と Dev はツール実行前に必ず構造化された意図確認を行います。試行（デフォルト）は完全な計画も作成しますが、短いフォローアップでは直近に承認された計画を再利用できます。厳格は毎ターン完全な計画を作成します。意図または計画が1回の修復後も無効な場合、どちらもツール実行前に停止して確認を求めます。',
   'st.display.plan_before_act.try': '計画を試す（デフォルト）',
   'st.display.plan_before_act.strict': '厳格な計画',
   'st.display.plan_before_act.off': 'オフ',
