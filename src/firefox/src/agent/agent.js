@@ -151,6 +151,7 @@ export class Agent {
     this.planReviewConfidenceThreshold = PLAN_REVIEW_CONFIDENCE_DEFAULT;
     this._pendingPlans = new Map();
     this._planExecutionGuards = new Map(); // tabId → current run's plan-only terminal recovery state
+    this._continuationExecutionEvidence = new Map(); // tabId → app-owned evidence carried only by continueProcessing()
     // Strict secret-handling mode — see chrome/agent.js for rationale.
     // Default off; user opts in via Settings → "Strict secret handling".
     this.strictSecretMode = false;
@@ -6701,14 +6702,25 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const enabled = this._isActionMode(mode)
       && runOptions?.cloudRun !== true
       && requestKind === 'execute';
+    const requiresStateChange = gateOutcome?.requiresStateChange === true;
+    const carried = runOptions?.trustedContinuation === true
+      ? this._continuationExecutionEvidence.get(tabId)
+      : null;
+    this._continuationExecutionEvidence.delete(tabId);
+    const carryMatches = enabled
+      && carried?.requestKind === 'execute'
+      && carried.requiresStateChange === requiresStateChange
+      && carried.conversationId === (this.conversationIds.get(tabId) || null);
     const state = {
       enabled,
       requestKind,
-      requiresStateChange: gateOutcome?.requiresStateChange === true,
+      requiresStateChange,
       allowsPlannerShapedResult: gateOutcome?.allowsPlannerShapedResult === true,
       approvedPlan: this._hasApprovedExecutionPlan(this.conversations.get(tabId) || []),
-      successfulTaskToolCalls: 0,
-      successfulConsequentialToolCalls: 0,
+      // Only the app-owned Continue action can carry verified evidence from
+      // the immediately preceding run; ordinary user turns always start at 0.
+      successfulTaskToolCalls: carryMatches ? carried.successfulTaskToolCalls : 0,
+      successfulConsequentialToolCalls: carryMatches ? carried.successfulConsequentialToolCalls : 0,
       recoveryAttempted: false,
     };
     this._planExecutionGuards.set(tabId, state);
@@ -9672,7 +9684,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * Continue processing from where we left off (after max steps).
    */
   async continueProcessing(tabId, onUpdate = () => {}, mode = 'ask') {
-    return this.processMessage(tabId, 'Please continue from where you left off.', onUpdate, mode);
+    return this.processMessage(
+      tabId,
+      'Please continue from where you left off.',
+      onUpdate,
+      mode,
+      [],
+      { trustedContinuation: true },
+    );
   }
 
   // ── Deep verbose / debug log ──────────────────────────────────────────
@@ -9840,6 +9859,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     this._resetActiveSkillsForRun(tabId, { refreshPrompt: false });
     this._clearLoopState(tabId);
+    if (runOptions?.trustedContinuation !== true) this._continuationExecutionEvidence.delete(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
     if (runOptions.cloudRun) {
@@ -9849,6 +9869,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageInner(tabId, userMessage, onUpdate, mode, attachments, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
+      const guard = this._planExecutionGuards.get(tabId);
+      if (guard?.enabled && (guard.successfulTaskToolCalls > 0 || guard.successfulConsequentialToolCalls > 0)) {
+        this._continuationExecutionEvidence.set(tabId, {
+          requestKind: guard.requestKind,
+          requiresStateChange: guard.requiresStateChange,
+          successfulTaskToolCalls: guard.successfulTaskToolCalls,
+          successfulConsequentialToolCalls: guard.successfulConsequentialToolCalls,
+          conversationId: this.conversationIds.get(tabId) || null,
+        });
+      } else {
+        this._continuationExecutionEvidence.delete(tabId);
+      }
       this._planExecutionGuards.delete(tabId);
       this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {

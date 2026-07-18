@@ -23129,6 +23129,85 @@ test('planner-bypassed managed cloud runs never enable the execution guard', () 
   }
 });
 
+test('trusted continuation carries consequential evidence without repeating the mutation', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const responses = [
+      {
+        content: null,
+        toolCalls: [{
+          id: `continuation_mutation_${index}`,
+          function: { name: 'click_ax', arguments: JSON.stringify({ ref_id: 'ref_submit' }) },
+        }],
+      },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: `continuation_verify_${index}`,
+            function: { name: 'read_page', arguments: '{}' },
+          },
+          {
+            id: `continuation_done_${index}`,
+            function: {
+              name: 'done',
+              arguments: JSON.stringify({ summary: 'Prior mutation verified.', outcome: 'success' }),
+            },
+          },
+        ],
+      },
+    ];
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        const next = responses.shift();
+        assert.ok(next, `${AgentClass.name}: continuation requested an unexpected model turn`);
+        return next;
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8644 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    agent.conversationIds.set(tabId, `continuation_conv_${index}`);
+    agent._maybeRunPlannerGate = async () => ({
+      proceed: true,
+      requestKind: 'execute',
+      requiresStateChange: true,
+    });
+    const toolCalls = [];
+    agent.executeTool = async (_toolTabId, name, args) => {
+      toolCalls.push(name);
+      if (name === 'click_ax') return { success: true };
+      if (name === 'read_page') return { success: true, text: 'The submitted state is visible.' };
+      if (name === 'done') return { done: true, summary: args.summary, outcome: args.outcome };
+      throw new Error(`unexpected tool ${name}`);
+    };
+
+    agent.maxSteps = 1;
+    await agent.processMessage(tabId, 'Submit the form and verify it.', () => {}, 'act');
+    assert.equal(
+      agent._continuationExecutionEvidence.get(tabId)?.successfulConsequentialToolCalls,
+      1,
+      `${AgentClass.name}: first run did not preserve mutation evidence`,
+    );
+
+    agent.maxSteps = 3;
+    const final = await agent.continueProcessing(tabId, () => {}, 'act');
+
+    assert.equal(final, 'Prior mutation verified.', `${AgentClass.name}: continuation rejected prior mutation evidence`);
+    assert.deepEqual(
+      toolCalls,
+      ['click_ax', 'read_page', 'done'],
+      `${AgentClass.name}: continuation repeated a consequential action`,
+    );
+    assert.equal(responses.length, 0, `${AgentClass.name}: continuation entered recovery`);
+  }
+});
+
 test('execution evidence ignores failed, denied, skipped, blocked, and unknown outcomes', () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
     const agent = new AgentClass({});
