@@ -924,6 +924,22 @@ const DONE_TOOL_WITH_OUTCOME = {
   },
 };
 
+const DONE_TOOL_COMPACT_WITH_OUTCOME = {
+  type: 'function',
+  function: {
+    name: 'done',
+    description: 'End this run. Use success only after verified completion, partial for useful incomplete work, and failed for a real blocker or exhausted alternatives.',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'Concise result or blocker summary.' },
+        outcome: DONE_OUTCOME_PROPERTY,
+      },
+      required: DONE_REQUIRED_WITH_OUTCOME,
+    },
+  },
+};
+
 /**
  * Strict-mode replacement for the `done` tool. See chrome/agent/tools.js for
  * the rationale — webbrain runs as a personal-computer tool so the default
@@ -954,6 +970,22 @@ const DONE_TOOL_STRICT_WITH_OUTCOME = {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'Summary of what was accomplished. Must NOT contain credentials, passwords, API keys, tokens, OTPs, or any secret the user provided or that you read from a password field.' },
+        outcome: DONE_OUTCOME_PROPERTY,
+      },
+      required: DONE_REQUIRED_WITH_OUTCOME,
+    },
+  },
+};
+
+const DONE_TOOL_COMPACT_STRICT_WITH_OUTCOME = {
+  type: 'function',
+  function: {
+    name: 'done',
+    description: 'End this run. Use success only after verified completion, partial for useful incomplete work, and failed for a real blocker or exhausted alternatives. Never include credentials or secrets in the summary.',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'Concise result or blocker summary without credentials or secrets.' },
         outcome: DONE_OUTCOME_PROPERTY,
       },
       required: DONE_REQUIRED_WITH_OUTCOME,
@@ -1021,11 +1053,13 @@ export function getToolsForMode(mode, opts = {}) {
   }
   const useDoneJson = normalizedMode === 'act' && tier === 'full' && opts.cloudRun === true && !!opts.outputSchema;
   if (useDoneJson) return base.map(tool => (tool.function.name === 'done' ? DONE_JSON_TOOL : tool));
-  const useOutcomeDone = normalizedMode !== 'ask' && tier !== 'compact';
+  const useOutcomeDone = normalizedMode !== 'ask';
   if (!opts.strictSecretMode && !useOutcomeDone) return base;
   const replacement = opts.strictSecretMode
-    ? (useOutcomeDone ? DONE_TOOL_STRICT_WITH_OUTCOME : DONE_TOOL_STRICT)
-    : DONE_TOOL_WITH_OUTCOME;
+    ? (useOutcomeDone
+      ? (tier === 'compact' ? DONE_TOOL_COMPACT_STRICT_WITH_OUTCOME : DONE_TOOL_STRICT_WITH_OUTCOME)
+      : DONE_TOOL_STRICT)
+    : (tier === 'compact' ? DONE_TOOL_COMPACT_WITH_OUTCOME : DONE_TOOL_WITH_OUTCOME);
   return base.map(t => (t.function.name === 'done' ? replacement : t));
 }
 
@@ -1056,8 +1090,8 @@ RULES:
 8. Interact through the visible UI. Do not call APIs directly for actions that create, modify, delete, send, submit, buy, transfer, post, or publish.
 9. If stuck after 2 attempts, try a different tool or route. Never repeat the same failing action 3 times.
 10. For loop tasks, keep using tools in this run; never say "I'll continue" unless you are actually making more tool calls.
-11. You cannot schedule, sleep, set timers, or check back later in compact mode. If something must wait for an external event, call done({summary:"..."}) with the current state and ask the user to re-invoke you.
-12. When the task is complete, call done({summary:"..."}). Verify success first.
+11. You cannot schedule, sleep, set timers, or check back later in compact mode. If something must wait for an external event, call done({summary:"...", outcome:"partial"}) with the current state and ask the user to re-invoke you.
+12. When the task is complete, call done({summary:"...", outcome:"success"}). Verify success first.
 13. If the user wants a page image inserted into chat, tell them to type \`/screenshot\` for the visible viewport.
 14. Recording is not supported in the Firefox build. Do not call or invent recording tools.
 
@@ -1085,7 +1119,7 @@ TOOLS - use only these:
 - scratchpad_write({text}): Save notes that persist across steps.
 - progress_update({items}) / progress_read({status}): Structured progress ledger for the active repeated item/action task. On GitHub stargazers, only "Follow USER" buttons are follow targets when following is allowed by the task; "Unfollow USER" means skip/already followed unless the ledger shows acted.
 - clarify({question, options?}): Ask the user only when materially blocked or ambiguous. Unanswered clarifies auto-select options[0] after timeout (source=timeout is not user approval for high-risk steps; source=auto Instant is intentional auto-approve).
-- done({summary}): Signal completion.
+- done({summary, outcome}): Signal success, partial progress, or a failed blocker.
 
 PATTERN:
 1. get_accessibility_tree({filter:"visible"}) -> find ref_ids

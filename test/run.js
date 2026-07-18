@@ -5862,7 +5862,7 @@ test('offscreen cloud bridge ignores asynchronous close events from replaced soc
   assert.equal(replacement.sent.filter(message => message.type === 'hello').length, 1, 'replacement socket should remain current and announce itself');
 });
 
-test('getToolsForMode: `done` outcome is exposed only in full and mid action modes', () => {
+test('getToolsForMode: `done` outcome is exposed in every action tier', () => {
   for (const [label, getTools] of [
     ['chrome', getToolsForModeCh],
     ['firefox', getToolsForModeFx],
@@ -5872,12 +5872,12 @@ test('getToolsForMode: `done` outcome is exposed only in full and mid action mod
       ['ask strict', getTools('ask', { strictSecretMode: true }), false],
       ['act full', getTools('act'), true],
       ['act mid', getTools('act', { tier: 'mid' }), true],
-      ['act compact', getTools('act', { tier: 'compact' }), false],
+      ['act compact', getTools('act', { tier: 'compact' }), true],
       ['dev full', getTools('dev'), true],
       ['dev mid', getTools('dev', { tier: 'mid' }), true],
       ['act strict full', getTools('act', { strictSecretMode: true }), true],
       ['act strict mid', getTools('act', { tier: 'mid', strictSecretMode: true }), true],
-      ['act strict compact', getTools('act', { tier: 'compact', strictSecretMode: true }), false],
+      ['act strict compact', getTools('act', { tier: 'compact', strictSecretMode: true }), true],
       ['dev strict full', getTools('dev', { strictSecretMode: true }), true],
       ['dev strict mid', getTools('dev', { tier: 'mid', strictSecretMode: true }), true],
     ]) {
@@ -5901,7 +5901,8 @@ test('getToolsForMode: `done` outcome is exposed only in full and mid action mod
     ['firefox', SYSTEM_PROMPT_ASK_FX, SYSTEM_PROMPT_ACT_COMPACT_FX, SYSTEM_PROMPT_ACT_FX, SYSTEM_PROMPT_ACT_MID_FX],
   ]) {
     assert.doesNotMatch(askPrompt, /done\(\{summary,\s*outcome/i, `[${label}] ask prompt should not teach outcome`);
-    assert.doesNotMatch(compactPrompt, /done\(\{summary,\s*outcome|outcome:"/i, `[${label}] compact prompt should not teach outcome`);
+    assert.match(compactPrompt, /done\(\{summary[\s\S]{0,80}outcome:"success"/i, `[${label}] compact prompt should teach structured success`);
+    assert.match(compactPrompt, /outcome:"partial"/i, `[${label}] compact prompt should teach structured blockers`);
     assert.match(fullPrompt, /done\(\{summary,\s*outcome/i, `[${label}] full act prompt should teach outcome`);
     assert.match(midPrompt, /done\(\{summary,\s*outcome/i, `[${label}] mid act prompt should teach outcome`);
   }
@@ -22996,6 +22997,58 @@ test('Act rejects plan-only done summaries even after a successful read', async 
     assert.ok(
       agent.conversations.get(tabId).some(message => message.role === 'tool' && /"planOnlyTerminal":true/.test(String(message.content || ''))),
       `${AgentClass.name}: plan-shaped done after read was not blocked`,
+    );
+  }
+});
+
+test('Compact Act accepts structured failed done for a real blocker', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const blocker = 'The required button is not present on this page.';
+    let calls = 0;
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'compact',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        calls++;
+        return {
+          content: null,
+          toolCalls: [
+            {
+              id: `compact_blocker_read_${index}`,
+              function: { name: 'read_page', arguments: '{}' },
+            },
+            {
+              id: `compact_blocker_done_${index}`,
+              function: {
+                name: 'done',
+                arguments: JSON.stringify({ summary: blocker, outcome: 'failed' }),
+              },
+            },
+          ],
+        };
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8623 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    agent._maybeRunPlannerGate = async () => ({
+      proceed: true,
+      requestKind: 'execute',
+      requiresStateChange: true,
+    });
+
+    const final = await agent.processMessage(tabId, 'Click the required button.', () => {}, 'act');
+
+    assert.equal(final, blocker, `${AgentClass.name}: compact blocker was rejected`);
+    assert.equal(calls, 1, `${AgentClass.name}: compact blocker triggered a recovery turn`);
+    assert.equal(
+      agent.conversations.get(tabId).some(message => message.role === 'tool' && /"planOnlyTerminal":true/.test(String(message.content || ''))),
+      false,
+      `${AgentClass.name}: compact failed done was marked plan-only`,
     );
   }
 });
