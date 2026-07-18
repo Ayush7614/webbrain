@@ -6802,7 +6802,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       && /\b(?:refus|will not|do not proceed|unauthorized|illegal|fraud|theft|unsafe|cannot assist|can't assist)\b/i.test(text);
   }
 
-  _looksLikePlanOnlyTerminal(content, state = {}) {
+  _looksLikePlanOnlyTerminal(content, state = {}, { ignoreFuturePromise = false } = {}) {
     const text = String(content || '').trim();
     if (!text) return false;
     const object = extractFirstJsonObject(text);
@@ -6825,10 +6825,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     const futurePromise = /\b(?:i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|i plan to|i intend to)\b/i.test(text);
     const planHeading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:execution plan|action plan|proposed plan|plan|steps|workflow)\s*[:\n]/i.test(text);
-    if (state.allowsPlannerShapedResult === true && (futurePromise || planHeading)) return false;
+    const prosePlannerSignal = (!ignoreFuturePromise && futurePromise) || planHeading;
+    if (state.allowsPlannerShapedResult === true && prosePlannerSignal) return false;
     // Planner signals take precedence over incidental progress words in mixed
     // responses such as "I opened the page. Plan: ...".
-    if (futurePromise || planHeading) return true;
+    if (prosePlannerSignal) return true;
     return false;
   }
 
@@ -6836,7 +6837,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const state = this._planExecutionGuards.get(tabId);
     if (!state?.enabled) return null;
     if (!viaDone && this._isSafetyRefusalTerminal(content)) return null;
-    const looksPlanOnly = this._looksLikePlanOnlyTerminal(content, state);
+    const terminalFailure = viaDone && (outcome === 'partial' || outcome === 'failed');
+    // A structured failure may naturally say "I will need credentials".
+    // Ignore only that prose-promise heuristic; explicit planner/policy shapes
+    // and plan headings remain invalid even for failed/partial done calls.
+    const looksPlanOnly = this._looksLikePlanOnlyTerminal(
+      content,
+      state,
+      { ignoreFuturePromise: terminalFailure },
+    );
     if (!viaDone && !looksPlanOnly) {
       const reported = String(content || '').trim().slice(0, 4000);
       return {
@@ -6844,7 +6853,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         status: 'unverified_output',
       };
     }
-    const terminalFailure = viaDone && (outcome === 'partial' || outcome === 'failed');
     const missingEvidence = !terminalFailure && !this._executionEvidenceSatisfied(state);
     // Every ordinary Act/Dev terminal is invalid: successful completion must
     // come through done. A done call is invalid only when it is plan-shaped or

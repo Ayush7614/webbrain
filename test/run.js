@@ -23053,6 +23053,33 @@ test('Compact Act accepts structured failed done for a real blocker', async () =
   }
 });
 
+test('structured blockers may describe future requirements without becoming plans', () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const agent = new AgentClass({});
+    const tabId = 8629 + index;
+    agent._startPlanExecutionGuard(tabId, 'act', {
+      requestKind: 'execute',
+      requiresStateChange: true,
+    });
+    const blocker = 'I will need the missing credentials before I can continue.';
+
+    assert.equal(
+      agent._planOnlyTerminalDecision(tabId, blocker, { viaDone: true, outcome: 'failed' }),
+      null,
+      `${AgentClass.name}: structured blocker was mistaken for a promise to execute`,
+    );
+    assert.equal(
+      agent._planOnlyTerminalDecision(
+        tabId,
+        `${blocker}\n\nPlan:\n1. Wait for credentials.\n2. Apply the change.`,
+        { viaDone: true, outcome: 'failed' },
+      )?.retry,
+      true,
+      `${AgentClass.name}: failed outcome bypassed an explicit plan heading`,
+    );
+  }
+});
+
 test('empty-step planner JSON remains plan-only after successful task evidence', () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
     const agent = new AgentClass({});
