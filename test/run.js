@@ -6530,10 +6530,18 @@ test('test/llm payload builders support Dev mode and preserve Ask cleanup', () =
   }
   assert.equal(firefoxDevMidNames.has('shadow_dom_query'), false, 'firefox dev mid must not invent Chrome-only shadow_dom_query');
 
-  assert.throws(
-    () => buildLlmPayload({ ...baseCase, mode: 'dev' }, { browser: 'chrome', tier: 'compact', useSiteAdapters: false }),
-    /Dev mode requires a Mid or Full prompt tier/
-  );
+  for (const browser of ['chrome', 'firefox']) {
+    const devCompact = buildLlmPayload(
+      { ...baseCase, mode: 'dev' },
+      { browser, tier: 'compact', useSiteAdapters: false },
+    );
+    const names = new Set(devCompact.tools.map(tool => tool.function.name));
+    assert.match(devCompact.messages[0].content, /DEV MODE APPENDIX/, `${browser} compact Dev prompt missing appendix`);
+    for (const name of ['read_page_source', 'inspect_element_styles', 'execute_js']) {
+      assert.equal(names.has(name), true, `${browser} compact Dev should include ${name}`);
+    }
+    assert.equal(names.has('hover'), false, `${browser} compact Dev should not inherit full-only hover`);
+  }
 
   const chromeAsk = buildLlmPayload({ ...baseCase, mode: 'ask' }, {
     browser: 'chrome',
@@ -11639,7 +11647,8 @@ test('sidepanel switches Act and Dev without native confirmation dialogs', () =>
     assert.notEqual(ensureStart, -1, `${label}: ensureActMode missing`);
     const ensureBody = panel.slice(ensureStart, panel.indexOf('\n}\n\nmodeAskBtn.addEventListener', ensureStart) + 2);
     assert.match(ensureBody, /async function ensureActMode\(\) \{[\s\S]*?setMode\('act'\);[\s\S]*?return true;/, `${label}: Act should switch directly`);
-    assert.match(ensureBody, /async function ensureDevMode\(\) \{[\s\S]*?get_active_prompt_tier[\s\S]*?setMode\('dev'\);[\s\S]*?return true;/, `${label}: Dev should retain its tier guard and switch directly`);
+    assert.match(ensureBody, /async function ensureDevMode\(\) \{[\s\S]*?setMode\('dev'\);[\s\S]*?return true;/, `${label}: Dev should switch directly for every prompt tier`);
+    assert.doesNotMatch(ensureBody, /get_active_prompt_tier|compact_blocked/, `${label}: compact Dev should not be blocked in the sidepanel`);
     assert.doesNotMatch(ensureBody, /actConfirmed|devConfirmed|\bconfirm\s*\(/, `${label}: mode switching should not depend on native confirmation dialogs`);
     assert.match(
       panel,
@@ -25258,6 +25267,16 @@ test('non-stream and stream runs block plain finals and unverified success until
         updates.filter(update => update.type === 'warning' && /completion invariant/i.test(update.data?.message || '')).length >= 2,
         `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: plain-final and debt blocks were not both surfaced`,
       );
+      if (streaming) {
+        assert.ok(
+          updates.some(update => (
+            update.type === 'text'
+            && update.data?.replace === true
+            && !String(update.data?.content || '').trim()
+          )),
+          `${AgentClass.name}: rejected streamed completion text was not cleared`,
+        );
+      }
       assert.ok(
         agent.conversations.get(tabId).some(message => message.role === 'tool' && /"completionInvariant":true/.test(message.content || '')),
         `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: unverified done block was not persisted`,

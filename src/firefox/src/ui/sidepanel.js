@@ -6648,18 +6648,6 @@ async function ensureActMode() {
 
 async function ensureDevMode() {
   if (agentMode === 'dev') return true;
-  try {
-    const tierInfo = await sendToBackground('get_active_prompt_tier');
-    if (tierInfo?.tier === 'compact') {
-      addMessage('system', systemHtml(tSystemHtml('sp.mode.dev.compact_blocked', {
-        provider: tierInfo.name || tierInfo.providerId || 'active provider',
-      })));
-      return false;
-    }
-  } catch (e) {
-    // The agent also enforces this; keep the UI usable if the background
-    // restarted between lookup and send.
-  }
   setMode('dev');
   return true;
 }

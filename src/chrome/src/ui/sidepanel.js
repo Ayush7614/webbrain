@@ -7119,18 +7119,6 @@ async function ensureActMode() {
 
 async function ensureDevMode() {
   if (agentMode === 'dev') return true;
-  try {
-    const tierInfo = await sendToBackground('get_active_prompt_tier');
-    if (tierInfo?.tier === 'compact') {
-      addMessage('system', systemHtml(tSystemHtml('sp.mode.dev.compact_blocked', {
-        provider: tierInfo.name || tierInfo.providerId || 'active provider',
-      })));
-      return false;
-    }
-  } catch (e) {
-    // The agent also enforces this server-side; don't block Dev on a stale
-    // sidepanel/background lookup failure.
-  }
   setMode('dev');
   return true;
 }

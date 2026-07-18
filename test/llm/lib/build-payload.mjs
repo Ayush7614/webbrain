@@ -68,9 +68,8 @@ export function isActionMode(mode) {
 }
 
 export function assertRunnableModeTier(mode, tier) {
-  if (mode === 'dev' && tier === 'compact') {
-    throw new Error('Dev mode requires a Mid or Full prompt tier; Compact-tier Dev is blocked.');
-  }
+  normalizeMode(mode);
+  normalizeTier(tier);
 }
 
 export const DEFAULT_BROWSER = 'chrome';

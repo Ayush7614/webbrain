@@ -14903,6 +14903,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (plainFinalBlocks.length) {
           messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems, reasoningContent, provider));
           messages.push({ role: 'user', content: plainFinalBlocks.join('\n\n') });
+          if (completionFinalBlock) onUpdate('text', { content: '', replace: true });
           onUpdate('warning', { message: completionFinalBlock ? 'Runtime completion invariant requires an explicit done outcome.' : 'Progress ledger has unresolved rows; continuing.' });
           this._persist(tabId);
           continue;
