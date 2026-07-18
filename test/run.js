@@ -6229,6 +6229,45 @@ test('completion invariant state machine enforces post-action observation with C
     state = invariant.recordCompletionToolResult(state, 'inspect_element_styles', {}, { success: true, styles: {} });
     assert.equal(state.verificationDebt, false, `${label}: read-only Dev inspection did not clear debt`);
 
+    let screenshotState = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-saved-screenshot`),
+      'click_ax',
+      { ref_id: 'ref_11' },
+      { success: true, verified: true },
+    );
+    screenshotState = invariant.recordCompletionToolResult(
+      screenshotState,
+      'screenshot',
+      { save: true },
+      {
+        success: true,
+        method: 'save_only',
+        description: 'Screenshot saved; the active model cannot see it.',
+        savedFile: { filename: 'capture.png' },
+      },
+    );
+    assert.equal(screenshotState.verificationDebt, true, `${label}: saved-only screenshot cleared debt without model-visible evidence`);
+    screenshotState = invariant.recordCompletionToolResult(
+      screenshotState,
+      'screenshot',
+      {},
+      { success: true, method: 'vision_describe', description: 'The cart shows two items.' },
+    );
+    assert.equal(screenshotState.verificationDebt, false, `${label}: vision-described screenshot did not clear debt`);
+    screenshotState = invariant.recordCompletionToolResult(
+      screenshotState,
+      'set_field',
+      { ref_id: 'ref_12', text: '3' },
+      { success: true },
+    );
+    screenshotState = invariant.recordCompletionToolResult(
+      screenshotState,
+      'full_page_screenshot',
+      {},
+      { success: true, method: 'image_attach', description: 'Captured.', _attachImage: 'data:image/png;base64,AA==' },
+    );
+    assert.equal(screenshotState.verificationDebt, false, `${label}: attached screenshot did not clear debt`);
+
     state = invariant.recordCompletionToolResult(state, 'new_tab', { url: 'https://example.com' }, { success: true });
     assert.equal(state.verificationDebt, true, `${label}: new-tab navigation did not open debt`);
     state = invariant.recordCompletionToolResult(state, 'fetch_url', { url: 'https://example.com', method: 'GET' }, { success: true });

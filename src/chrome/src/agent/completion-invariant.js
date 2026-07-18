@@ -165,7 +165,10 @@ export function isCompletionObservationTool(name, args = {}, result) {
     return false;
   }
   if (name === 'screenshot' || name === 'full_page_screenshot') {
-    return !!(result._attachImage || result.description || result.image || result.dataUrl);
+    if (result.method === 'save_only') return false;
+    if (result.method === 'vision_describe') return !!result.description;
+    if (result.method === 'image_attach') return !!result._attachImage;
+    return !!(result._attachImage || result.image || result.dataUrl);
   }
   return true;
 }
