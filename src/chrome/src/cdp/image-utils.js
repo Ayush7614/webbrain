@@ -15,16 +15,15 @@
  *
  * @param {Array<{x:number,y:number,width:number,height:number,data:string}>} tiles
  *   Base64 PNG tiles with CSS-pixel positions. Coordinates are in CSS
- *   pixels; the tile's bitmap is at native surface resolution
- *   (CSS × dpr).
+ *   pixels; the tile's bitmap resolution is CSS × dpr.
  * @param {number} cssWidth   Total content width in CSS pixels.
  * @param {number} cssHeight  Total content height in CSS pixels.
- * @param {number} [dpr=2]    Device pixel ratio used when the tiles were
- *   captured. captureFullPageScreenshot pins this at 2.
+ * @param {number} [dpr=1]    Pixel scale used when the tiles were captured.
+ *   The caller passes the page's current devicePixelRatio for native output.
  * @returns {Promise<string>} Combined image as base64 PNG (no data: prefix),
  *   matching the return shape the caller expects.
  */
-export async function combineImages(tiles, cssWidth, cssHeight, dpr = 2) {
+export async function combineImages(tiles, cssWidth, cssHeight, dpr = 1) {
   if (!Array.isArray(tiles) || tiles.length === 0) return '';
 
   // Decode every tile in parallel. Bad tiles are dropped rather than

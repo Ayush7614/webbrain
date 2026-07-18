@@ -15095,65 +15095,65 @@ test('CDP evaluate forwards a bounded Runtime timeout', async () => {
   assert.equal(evaluation.params.awaitPromise, true);
 });
 
-test('CDP full-page screenshots send required metrics and honor evaluated page bounds', async () => {
+test('CDP full-page screenshots tile the actual viewport without device emulation', async () => {
   const cdp = new CDPClient();
   const commands = [];
   const evaluations = [];
   cdp.sendCommand = async (tabId, method, params = {}) => {
     commands.push({ tabId, method, params });
+    if (method === 'Page.getLayoutMetrics') {
+      return {
+        cssVisualViewport: {
+          offsetX: 0,
+          offsetY: 0,
+          pageX: 17,
+          pageY: 29,
+          clientWidth: 1280,
+          clientHeight: 720,
+          scale: 1,
+        },
+        cssContentSize: { x: 0, y: 0, width: 1280, height: 1500 },
+      };
+    }
     if (method === 'Page.captureScreenshot') return { data: 'not-a-real-png' };
     return {};
   };
   cdp.evaluate = async (tabId, expression) => {
     evaluations.push({ tabId, expression });
-    if (expression.includes('contentWidth')) {
-      return {
-        result: {
-          value: {
-            width: 1920,
-            height: 1080,
-            scrollX: 17,
-            scrollY: 29,
-            contentWidth: 1920,
-            contentHeight: 1200,
-            scale: 1,
-          },
-        },
-      };
+    if (expression === 'window.devicePixelRatio') {
+      return { result: { value: 1.5 } };
     }
     return { result: { value: null } };
   };
 
   await cdp.captureFullPageScreenshot(42);
 
-  const metrics = commands.filter(command => command.method === 'Emulation.setDeviceMetricsOverride');
-  assert.equal(metrics.length, 3, 'initial viewport plus two vertical tiles should be configured');
+  assert.equal(
+    commands.some(command => command.method.startsWith('Emulation.')),
+    false,
+    'full-page capture should not override the user viewport',
+  );
+  const captures = commands.filter(command => command.method === 'Page.captureScreenshot');
+  assert.equal(captures.length, 3, 'the actual 1280x720 viewport should produce three vertical tiles');
   assert.deepEqual(
-    metrics.map(command => ({
-      width: command.params.width,
-      height: command.params.height,
-      screenWidth: command.params.screenWidth,
-      screenHeight: command.params.screenHeight,
-    })),
+    captures.map(command => command.params.clip),
     [
-      { width: 1920, height: 1080, screenWidth: 1920, screenHeight: 1080 },
-      { width: 1920, height: 1080, screenWidth: 1920, screenHeight: 1080 },
-      { width: 1920, height: 120, screenWidth: 1920, screenHeight: 120 },
+      { x: 0, y: 0, width: 1280, height: 720, scale: 1.5 },
+      { x: 0, y: 720, width: 1280, height: 720, scale: 1.5 },
+      { x: 0, y: 1440, width: 1280, height: 60, scale: 1.5 },
     ],
   );
-  assert.equal(
-    commands.filter(command => command.method === 'Page.captureScreenshot').length,
-    2,
-    'the Runtime.evaluate result should drive capture beyond the first viewport',
-  );
-  assert.equal(
-    commands.at(-1)?.method,
-    'Emulation.clearDeviceMetricsOverride',
-    'device metrics should be cleared after capture',
-  );
-  assert.ok(
-    evaluations.some(({ expression }) => expression === 'window.scrollTo(17, 29)'),
-    'the original page scroll should be restored',
+  assert.ok(captures.every(command => command.params.captureBeyondViewport === true));
+  assert.deepEqual(
+    evaluations.map(({ expression }) => expression),
+    [
+      'window.devicePixelRatio',
+      'window.scrollTo(0, 0)',
+      'window.scrollTo(0, 720)',
+      'window.scrollTo(0, 1440)',
+      'window.scrollTo(17, 29)',
+    ],
+    'capture should trigger lazy loading tile-by-tile and restore the original scroll position',
   );
 });
 
