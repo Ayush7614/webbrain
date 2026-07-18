@@ -20,7 +20,10 @@
  * @param {number} cssHeight  Total content height in CSS pixels.
  * @param {number} [dpr=1]    Pixel scale used when the tiles were captured.
  *   The caller passes the page's current devicePixelRatio for native output.
- * @param {{onWarning?:(message:string)=>void}} [options]
+ * @param {{
+ *   onWarning?:(message:string)=>void,
+ *   onFallback?:(bounds:{x:number,y:number,width:number,height:number})=>void
+ * }} [options]
  *   Receives best-effort fallback details without suppressing the returned image.
  * @returns {Promise<string>} Combined image as base64 PNG (no data: prefix),
  *   matching the return shape the caller expects.
@@ -33,6 +36,17 @@ export async function combineImages(tiles, cssWidth, cssHeight, dpr = 1, options
   const firstTile = () => tiles[0]?.data || '';
   const assemblyFallback = (reason) => {
     warn(`Full-page screenshot assembly failed (${reason}). Showing the first captured tile instead.`);
+    const tile = tiles[0];
+    if (tile) {
+      try {
+        options?.onFallback?.({
+          x: Number(tile.x) || 0,
+          y: Number(tile.y) || 0,
+          width: Number(tile.width) || 0,
+          height: Number(tile.height) || 0,
+        });
+      } catch {}
+    }
     return firstTile();
   };
 

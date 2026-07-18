@@ -3491,6 +3491,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * @param {number} [opts.offsetY=0]   Captured-area top in the page (CSS px).
    * @param {'viewport'|'page'} [opts.coordinateSpace='viewport']  Coordinate space the
    *   content-script rects are reported in.
+   * @param {{x:number,y:number,width:number,height:number}} [opts.capturedCssBounds]
+   *   Actual captured area in top-page CSS coordinates. This must be used for
+   *   bounded/partial full-page captures instead of the live document size.
    * @param {number} [opts.imageWidth]  Image width (px) for clamping.
    * @param {number} [opts.imageHeight] Image height (px) for clamping.
    * @returns {Promise<string>}
@@ -3505,7 +3508,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // at a non-1 DPR, or snapped to a window).
     let imageWidth = opts.imageWidth;
     let imageHeight = opts.imageHeight;
-    if (!(Number.isFinite(imageWidth) && Number.isFinite(imageHeight))) {
+    if (!(Number.isFinite(imageWidth) && imageWidth > 0 &&
+          Number.isFinite(imageHeight) && imageHeight > 0)) {
       try {
         const m = await fetch(dataUrl);
         const bmp = await createImageBitmap(await m.blob());
@@ -3546,13 +3550,27 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!resp) return dataUrl;
 
     // The captured CSS box (CSS px) in the SAME space as the element rects.
-    // Default to the image's own pixel size so scale==1 when the content
-    // script doesn't report a viewport (defensive — it always does).
-    const cssBox = resp?.viewport || { width: imageWidth, height: imageHeight };
+    // A bounded full-page capture can be shorter than the live document, so
+    // prefer its immutable capture bounds over the collector's live viewport.
+    const suppliedBounds = opts.capturedCssBounds;
+    const hasCapturedBounds = coordinateSpace === 'page' &&
+      Number.isFinite(suppliedBounds?.x) &&
+      Number.isFinite(suppliedBounds?.y) &&
+      Number.isFinite(suppliedBounds?.width) && suppliedBounds.width > 0 &&
+      Number.isFinite(suppliedBounds?.height) && suppliedBounds.height > 0;
+    const cssBox = hasCapturedBounds
+      ? suppliedBounds
+      : (resp?.viewport || { width: imageWidth, height: imageHeight });
     const cssW = Number.isFinite(cssBox.width) && cssBox.width > 0 ? cssBox.width : imageWidth;
     const cssH = Number.isFinite(cssBox.height) && cssBox.height > 0 ? cssBox.height : imageHeight;
     const scaleX = imageWidth / cssW;
     const scaleY = imageHeight / cssH;
+    const offsetX = hasCapturedBounds
+      ? suppliedBounds.x
+      : (Number.isFinite(opts.offsetX) ? opts.offsetX : 0);
+    const offsetY = hasCapturedBounds
+      ? suppliedBounds.y
+      : (Number.isFinite(opts.offsetY) ? opts.offsetY : 0);
 
     const regions = mergeRedactionFrameRegions(frameSnapshots);
     if (!regions.length) return dataUrl;
@@ -3560,8 +3578,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const imageRegions = mapRegionsToImage(regions, {
       scaleX,
       scaleY,
-      offsetX: 0,
-      offsetY: 0,
+      offsetX,
+      offsetY,
       imageWidth,
       imageHeight,
     });
@@ -9920,6 +9938,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         );
         const imageData = typeof capture === 'string' ? capture : capture?.data;
         const captureWarning = typeof capture === 'object' ? capture?.warning || null : null;
+        const captureBounds = typeof capture === 'object' ? capture?.captureBounds || null : null;
         if (!imageData) throw new Error('Full-page screenshot returned no image data');
         const rawUrl = `data:image/png;base64,${imageData}`;
         const warningNote = captureWarning ? `\nWarning: ${captureWarning}` : '';
@@ -9958,7 +9977,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // use page-coordinate rects from the content script.
         let modelDataUrl = shrunk.dataUrl;
         if (this.screenshotRedaction) {
-          modelDataUrl = await this._redactScreenshotDataUrl(tabId, shrunk.dataUrl, { coordinateSpace: 'page' });
+          modelDataUrl = await this._redactScreenshotDataUrl(tabId, shrunk.dataUrl, {
+            coordinateSpace: 'page',
+            capturedCssBounds: captureBounds,
+            imageWidth: shrunk.width,
+            imageHeight: shrunk.height,
+          });
         }
 
         // Check the planner/vision setup. A text-only model with no

@@ -649,6 +649,11 @@ export class CDPClient {
    * Take a pixel-perfect screenshot of the full page.
    * @param {number} tabId
    * @param {{knownInfiniteScroll?:boolean,adapterName?:string}} [options]
+   * @returns {Promise<{
+   *   data:string,
+   *   warning:string|null,
+   *   captureBounds:{x:number,y:number,width:number,height:number}
+   * }>} Capture bounds are CSS pixels in top-page coordinates.
    */
   async captureFullPageScreenshot(tabId, options = {}) {
     await this.sendCommand(tabId, 'Page.enable');
@@ -791,10 +796,21 @@ export class CDPClient {
         ? Math.max(...tiles.map(tile => tile.y + tile.height))
         : contentHeight;
 
+      let outputBounds = { x: 0, y: 0, width: assembledWidth, height: assembledHeight };
       const data = await combineImages(tiles, assembledWidth, assembledHeight, deviceScale, {
         onWarning: warning => warnings.push(warning),
+        onFallback: bounds => { outputBounds = bounds; },
       });
-      return { data, warning: warnings.join(' ') || null };
+      return {
+        data,
+        warning: warnings.join(' ') || null,
+        captureBounds: {
+          x: contentX + outputBounds.x,
+          y: contentY + outputBounds.y,
+          width: outputBounds.width,
+          height: outputBounds.height,
+        },
+      };
     } finally {
       await this.evaluate(tabId, `window.scrollTo(${originalScrollX}, ${originalScrollY})`).catch(() => {});
     }
