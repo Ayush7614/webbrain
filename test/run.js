@@ -6096,7 +6096,7 @@ test('completion invariant state machine enforces post-action observation with C
       ['scroll', {}],
       ['hover', {}],
       ['highlight_element', {}],
-      ['resize_window', {}],
+      ['resize_window', {}], // v1 contract: viewport setup is non-consequential
       ['scratchpad_write', {}],
       ['progress_update', {}],
       ['press_keys', { keys: ['TAB', 'ESCAPE'] }],
@@ -6188,7 +6188,9 @@ test('completion invariant state machine enforces post-action observation with C
     state = invariant.recordCompletionToolResult(state, 'set_field', { ref_id: 'ref_9', text: '2' }, { success: true });
     assert.equal(state.verificationDebt, true, `${label}: later action did not reopen debt`);
     state = invariant.recordCompletionToolResult(state, 'inspect_event_listeners', {}, { success: true, listeners: [] });
-    assert.equal(state.verificationDebt, false, `${label}: Dev inspection did not clear debt`);
+    assert.equal(state.verificationDebt, true, `${label}: DOM-marking event inspection incorrectly cleared debt`);
+    state = invariant.recordCompletionToolResult(state, 'inspect_element_styles', {}, { success: true, styles: {} });
+    assert.equal(state.verificationDebt, false, `${label}: read-only Dev inspection did not clear debt`);
 
     state = invariant.recordCompletionToolResult(state, 'new_tab', { url: 'https://example.com' }, { success: true });
     assert.equal(state.verificationDebt, true, `${label}: new-tab navigation did not open debt`);

@@ -26,6 +26,8 @@ const NAVIGATION_ACTION_TOOLS = new Set([
   'go_forward',
 ]);
 
+// Intentionally excluded from action debt: resize_window is transient viewport
+// setup, not a consequential task-result mutation in the v1 runtime contract.
 const DOWNLOAD_ACTION_TOOLS = new Set([
   'download_files',
   'download_file',
@@ -44,7 +46,6 @@ const OBSERVATION_TOOLS = new Set([
   'iframe_read',
   'wait_for_element',
   'inspect_element_styles',
-  'inspect_event_listeners',
   'read_console',
   'inspect_network_requests',
   'get_shadow_dom',
@@ -55,6 +56,9 @@ const OBSERVATION_TOOLS = new Set([
   'list_downloads',
   'read_downloaded_file',
 ]);
+// inspect_event_listeners briefly marks the live DOM to resolve refs. Treating
+// that implementation-level mutation as verification would let it clear debt
+// without observing the requested post-action state.
 
 const DONE_OUTCOMES = new Set(['success', 'partial', 'failed']);
 
