@@ -6825,11 +6825,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     const futurePromise = /\b(?:i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|i plan to|i intend to)\b/i.test(text);
     const planHeading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:execution plan|action plan|proposed plan|plan|steps|workflow)\s*[:\n]/i.test(text);
-    const prosePlannerSignal = (!ignoreFuturePromise && futurePromise) || planHeading;
-    if (state.allowsPlannerShapedResult === true && prosePlannerSignal) return false;
-    // Planner signals take precedence over incidental progress words in mixed
-    // responses such as "I opened the page. Plan: ...".
-    if (prosePlannerSignal) return true;
+    // A requested planner-shaped result may exempt its heading, never a fresh
+    // promise to act. Planner signals also beat incidental progress wording.
+    if (!ignoreFuturePromise && futurePromise) return true;
+    if (planHeading) return state.allowsPlannerShapedResult !== true;
     return false;
   }
 

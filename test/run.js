@@ -23140,6 +23140,17 @@ test('explicit planner-shaped result intent preserves requested JSON and Markdow
         `${AgentClass.name}: explicitly requested planner-shaped result was rejected after successful task evidence`,
       );
     }
+    const promisedResult = 'Steps:\n1. Next, I will submit the form.';
+    assert.equal(
+      agent._looksLikePlanOnlyTerminal(promisedResult, state),
+      true,
+      `${AgentClass.name}: requested heading exemption also disabled the future-promise guard`,
+    );
+    assert.equal(
+      agent._planOnlyTerminalDecision(tabId, promisedResult, { viaDone: true })?.retry,
+      true,
+      `${AgentClass.name}: requested planner-shaped result accepted a fresh promise to act`,
+    );
   }
 });
 
