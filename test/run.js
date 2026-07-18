@@ -22635,6 +22635,7 @@ function planOnlyTerminalFixture() {
   return JSON.stringify({
     request_kind: 'execute',
     requires_state_change: false,
+    allows_planner_shaped_result: false,
     summary: 'Open the current page and collect the requested details.',
     confidence: 0.91,
     steps: [
@@ -22660,6 +22661,7 @@ function planOnlyTerminalFixture() {
 function plannerIntentFixture({
   requestKind = 'execute',
   requiresStateChange = false,
+  allowsPlannerShapedResult = false,
   locale = 'en',
   localizedSummary = 'Carry out the requested task.',
   localizedSteps = ['Inspect the current state.', 'Complete the requested task.'],
@@ -22668,6 +22670,7 @@ function plannerIntentFixture({
   return JSON.stringify({
     request_kind: requestKind,
     requires_state_change: requiresStateChange,
+    allows_planner_shaped_result: allowsPlannerShapedResult,
     summary: requestKind === 'clarify'
       ? 'Ask the user for the missing information.'
       : 'Handle the requested task.',
@@ -23026,6 +23029,36 @@ test('empty-step planner JSON remains plan-only after successful task evidence',
   }
 });
 
+test('explicit planner-shaped result intent preserves requested structured JSON', () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const agent = new AgentClass({});
+    const tabId = 8627 + index;
+    const state = agent._startPlanExecutionGuard(tabId, 'act', {
+      requestKind: 'execute',
+      requiresStateChange: false,
+      allowsPlannerShapedResult: true,
+    });
+    agent._markPlanExecutionToolCall(tabId, 'read_page', { success: true });
+    const requestedResult = JSON.stringify({
+      summary: 'Three matching records were found.',
+      confidence: 0.98,
+      steps: [],
+      risks: [],
+    });
+
+    assert.equal(
+      agent._looksLikePlanOnlyTerminal(requestedResult, state),
+      false,
+      `${AgentClass.name}: explicitly requested JSON was classified as leaked planner output`,
+    );
+    assert.equal(
+      agent._planOnlyTerminalDecision(tabId, requestedResult, { viaDone: true }),
+      null,
+      `${AgentClass.name}: explicitly requested JSON was rejected after successful task evidence`,
+    );
+  }
+});
+
 test('execution evidence ignores failed, denied, skipped, blocked, and unknown outcomes', () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
     const agent = new AgentClass({});
@@ -23205,6 +23238,75 @@ test('planner intent routes plan-only questions across languages without an inpu
         );
         assert.equal(guard.enabled, false, `${AgentClass.name}: plan-only intent enabled execution guard`);
       }
+    }
+  });
+});
+
+test('planner intent carries explicit planner-shaped result authorization', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+      const agent = new AgentClass({ getActive: () => ({ name: 'intent-test', model: 'intent-test' }) });
+      agent._chatWithCostAllowance = async () => ({
+        content: plannerIntentFixture({
+          requestKind: 'execute',
+          requiresStateChange: false,
+          allowsPlannerShapedResult: true,
+          localizedSummary: 'Read the page and return the requested JSON object.',
+        }),
+      });
+      const tabId = 8690 + index;
+      const gate = await agent._runPlannerIntentGate(
+        tabId,
+        { role: 'user', content: 'Return JSON with summary, steps, risks, and confidence fields.' },
+        () => {},
+        null,
+        null,
+        '',
+        { tabUrl: 'https://example.com', tabTitle: 'Example' },
+        'act',
+        { locale: 'en' },
+      );
+
+      assert.equal(gate.proceed, true, `${AgentClass.name}: structured-result request did not execute`);
+      assert.equal(gate.allowsPlannerShapedResult, true, `${AgentClass.name}: structured-result authorization was dropped`);
+      assert.equal(
+        agent._startPlanExecutionGuard(tabId, 'act', gate).allowsPlannerShapedResult,
+        true,
+        `${AgentClass.name}: execution guard dropped structured-result authorization`,
+      );
+    }
+  });
+});
+
+test('full planner carries explicit planner-shaped result authorization', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+      const tabId = 8694 + index;
+      const agent = new AgentClass({ getActive: () => ({ name: 'planner-test', model: 'planner-test' }) });
+      agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+      agent.setScheduledRunPolicy(tabId, {
+        requireConsequentialConfirmation: false,
+        autoApprovePlanReview: true,
+      });
+      agent._chatWithCostAllowance = async () => ({
+        content: plannerFixtureJson({ allows_planner_shaped_result: true }),
+      });
+
+      const gate = await agent._runPlannerGate(
+        tabId,
+        { role: 'user', content: 'Return JSON with summary, steps, risks, and confidence fields.' },
+        () => {},
+        null,
+        null,
+        '',
+        { tabUrl: 'https://example.com', tabTitle: 'Example' },
+        'try',
+        'act',
+        { locale: 'en' },
+      );
+
+      assert.equal(gate.proceed, true, `${AgentClass.name}: full planner blocked structured result`);
+      assert.equal(gate.allowsPlannerShapedResult, true, `${AgentClass.name}: full planner dropped structured-result authorization`);
     }
   });
 });
@@ -27208,6 +27310,7 @@ function plannerFixtureJson(overrides = {}) {
   return JSON.stringify({
     request_kind: 'execute',
     requires_state_change: false,
+    allows_planner_shaped_result: false,
     summary: 'Open the page and collect visible account links',
     confidence: 0.75,
     steps: [{ id: '1', action: 'Read the current page', tools: ['read_page'] }],

@@ -4118,6 +4118,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       proceed: true,
       requestKind: gate.requestKind || 'execute',
       requiresStateChange: gate.requiresStateChange === true,
+      allowsPlannerShapedResult: gate.allowsPlannerShapedResult === true,
     };
   }
 
@@ -4255,6 +4256,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         proceed: true,
         requestKind: 'execute',
         requiresStateChange: plan.requires_state_change === true,
+        allowsPlannerShapedResult: plan.allows_planner_shaped_result === true,
       };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
@@ -4378,6 +4380,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           skillIds: plan.skill_ids,
           requestKind: 'execute',
           requiresStateChange: plan.requires_state_change === true,
+          allowsPlannerShapedResult: plan.allows_planner_shaped_result === true,
         };
       }
       const choice = await this._waitForPlanReview(tabId, planId, plan, markdown, onUpdate, verboseMarkdown);
@@ -4408,6 +4411,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         skillIds: approvedSkillIds,
         requestKind: 'execute',
         requiresStateChange: plan.requires_state_change === true,
+        allowsPlannerShapedResult: plan.allows_planner_shaped_result === true,
       };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
@@ -6701,6 +6705,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       enabled,
       requestKind,
       requiresStateChange: gateOutcome?.requiresStateChange === true,
+      allowsPlannerShapedResult: gateOutcome?.allowsPlannerShapedResult === true,
       approvedPlan: this._hasApprovedExecutionPlan(this.conversations.get(tabId) || []),
       successfulTaskToolCalls: 0,
       successfulConsequentialToolCalls: 0,
@@ -6789,7 +6794,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const policyShape = policyKeys.filter(key => Object.prototype.hasOwnProperty.call(object, key)).length >= 5
         && (Array.isArray(object.allowedActions) || Array.isArray(object.forbiddenActions))
         && String(object.mode || '').toLowerCase() !== 'inactive';
-      if (plannerShape || policyShape) return true;
+      if (plannerShape || policyShape) return state.allowsPlannerShapedResult !== true;
     }
     const completionEvidence = /\b(?:completed|finished|done|submitted|opened|downloaded|saved|created|updated|found|verified|blocked|cannot|can't|could not|failed)\b/i.test(text);
     if (completionEvidence) return false;
