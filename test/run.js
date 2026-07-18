@@ -5932,6 +5932,22 @@ test('all prompt tiers avoid volunteering secrets found in page data', () => {
   }
 });
 
+test('Act prompt tiers continue from approved plans while preserving plan-only boundaries', () => {
+  const browsers = [
+    ['chrome', SYSTEM_PROMPT_ASK_CH, [SYSTEM_PROMPT_ACT_COMPACT_CH, SYSTEM_PROMPT_ACT_CH, SYSTEM_PROMPT_ACT_MID_CH]],
+    ['firefox', SYSTEM_PROMPT_ASK_FX, [SYSTEM_PROMPT_ACT_COMPACT_FX, SYSTEM_PROMPT_ACT_FX, SYSTEM_PROMPT_ACT_MID_FX]],
+  ];
+  for (const [label, askPrompt, actPrompts] of browsers) {
+    assert.doesNotMatch(askPrompt, /PLAN TO EXECUTION/, `${label}: Ask mode must not receive Act execution guidance`);
+    for (const prompt of actPrompts) {
+      assert.match(prompt, /approved or pinned plan is context for doing the task, not a completed user outcome/i, `${label}: approved plan must lead into execution`);
+      assert.match(prompt, /call the first permitted tool and continue/i, `${label}: execution must start with a permitted tool`);
+      assert.match(prompt, /if the user asked only for a plan[\s\S]*do not execute/i, `${label}: plan-only and approval boundaries must remain non-executing`);
+      assert.match(prompt, /never treat an answer as leaked planner metadata merely because it looks like a plan or policy/i, `${label}: requested structured output must remain valid`);
+    }
+  }
+});
+
 test('getToolsForMode: strictSecretMode works in ask mode too', () => {
   for (const getTools of [getToolsForModeCh, getToolsForModeFx]) {
     const strict = getTools('ask', { strictSecretMode: true });
