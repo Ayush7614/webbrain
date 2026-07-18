@@ -23929,6 +23929,49 @@ test('classifier requirements allow transparent skipped and failed exits without
   }
 });
 
+test('restored item-scoped classifier requirements keep completion evidence checks', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 23267;
+    const sessionId = `${AgentClass.name}-restored-session`;
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Process the restored target.' },
+    ]);
+    const seeded = agent._progressUpdate(tabId, {
+      items: [{
+        id: 'restored-target',
+        label: 'restored target',
+        action: 'process_item',
+        status: 'pending',
+        fields: {
+          completionRequirement: true,
+          classifierTarget: true,
+        },
+      }],
+    }, { source: 'classifier', sessionId });
+    assert.equal(seeded.success, true, `${AgentClass.name}: restored requirement setup failed`);
+    agent.progressSessions.delete(tabId);
+    agent._beginCompletionInvariant(tabId);
+
+    const premature = agent._progressUpdate(tabId, {
+      items: [{
+        id: 'restored-target',
+        sessionId,
+        status: 'processed',
+      }],
+    });
+    assert.equal(premature.success, false, `${AgentClass.name}: item-scoped restored requirement bypassed completion evidence`);
+    assert.equal(premature.completionInvariant, true, `${AgentClass.name}: restored requirement block lost invariant classification`);
+    assert.equal(
+      agent.progressLedgers.get(tabId)?.find(row => row.id === 'restored-target')?.status,
+      'pending',
+      `${AgentClass.name}: blocked restored requirement mutated the ledger`,
+    );
+  }
+});
+
 test('progress session changes remove stale pinned ledger prompts', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });

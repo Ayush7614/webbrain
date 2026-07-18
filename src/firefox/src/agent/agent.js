@@ -6192,10 +6192,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const canonicalItems = this._canonicalizeProgressItems(items);
     const activeSession = this._currentProgressSession(tabId);
     const currentRows = this.progressLedgers.get(tabId) || [];
-    const requirementSessionId = opts.sessionId || args.sessionId || args.session_id || activeSession?.sessionId || '';
     const terminalRequirements = canonicalItems
       .filter(item => isTerminalLedgerStatus(item?.status))
       .map(item => {
+        const requirementSessionId = opts.sessionId
+          || args.sessionId
+          || args.session_id
+          || item?.sessionId
+          || item?.session_id
+          || activeSession?.sessionId
+          || '';
         const incomingKey = ledgerRowKey({ ...item, sessionId: requirementSessionId });
         const row = incomingKey
           ? currentRows.find(candidate => ledgerRowKey(candidate) === incomingKey)
