@@ -678,6 +678,24 @@ test('ambiguity: two Cancels return rich candidates with ancestor', async (page)
 });
 
 // ─── click_ax same-page anchors ─────────────────────────────────────────────
+for (const browserKind of ['chrome', 'firefox']) {
+  test(`click_ax (${browserKind}): stale refs are explicit pre-dispatch failures`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const result = await call(page, 'click_ax', { ref_id: 'ref_999999' });
+    if (
+      result?.success !== false
+      || result?.dispatched !== false
+      || result?.noDispatch !== true
+      || result?.fallbackAttempted !== false
+    ) {
+      throw new Error(`expected explicit pre-dispatch markers, got: ${JSON.stringify(result)}`);
+    }
+    if (!/not found/i.test(result.error || '')) {
+      throw new Error(`expected stale-ref error, got: ${JSON.stringify(result)}`);
+    }
+  });
+}
+
 test('click_ax: generic product action returns bounded nearest card context', async (page) => {
   await setup(page, 'trusted-click-fallback.html');
   const tree = await call(page, 'get_accessibility_tree', { filter: 'visible', maxDepth: 10, maxChars: 20000 });

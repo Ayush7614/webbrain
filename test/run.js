@@ -6122,9 +6122,22 @@ test('completion invariant state machine enforces post-action observation with C
       invariant.createCompletionInvariantState(`${label}-no-dispatch`),
       'click_ax',
       { ref_id: 'ref_missing' },
-      { success: false, error: 'target not found', fallbackAttempted: false },
+      {
+        success: false,
+        error: 'target not found',
+        dispatched: false,
+        noDispatch: true,
+        fallbackAttempted: false,
+      },
     );
     assert.equal(noDispatch.verificationDebt, false, `${label}: explicit no-dispatch failure opened debt`);
+    const markerlessClickFailure = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-markerless-click-failure`),
+      'click_ax',
+      { ref_id: 'ref_unknown' },
+      { success: false, error: 'click response was lost' },
+    );
+    assert.equal(markerlessClickFailure.verificationDebt, true, `${label}: markerless click failure did not fail closed`);
     const legacyClickPreflight = invariant.recordCompletionToolResult(
       invariant.createCompletionInvariantState(`${label}-legacy-click-preflight`),
       'click',
