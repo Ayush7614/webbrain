@@ -23082,7 +23082,7 @@ test('empty-step planner JSON remains plan-only after successful task evidence',
   }
 });
 
-test('explicit planner-shaped result intent preserves requested structured JSON', () => {
+test('explicit planner-shaped result intent preserves requested JSON and Markdown', () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
     const agent = new AgentClass({});
     const tabId = 8627 + index;
@@ -23092,23 +23092,27 @@ test('explicit planner-shaped result intent preserves requested structured JSON'
       allowsPlannerShapedResult: true,
     });
     agent._markPlanExecutionToolCall(tabId, 'read_page', { success: true });
-    const requestedResult = JSON.stringify({
-      summary: 'Three matching records were found.',
-      confidence: 0.98,
-      steps: [],
-      risks: [],
-    });
-
-    assert.equal(
-      agent._looksLikePlanOnlyTerminal(requestedResult, state),
-      false,
-      `${AgentClass.name}: explicitly requested JSON was classified as leaked planner output`,
-    );
-    assert.equal(
-      agent._planOnlyTerminalDecision(tabId, requestedResult, { viaDone: true }),
-      null,
-      `${AgentClass.name}: explicitly requested JSON was rejected after successful task evidence`,
-    );
+    const requestedResults = [
+      JSON.stringify({
+        summary: 'Three matching records were found.',
+        confidence: 0.98,
+        steps: [],
+        risks: [],
+      }),
+      'Steps:\n1. Open Settings.\n2. Select the account workflow.',
+    ];
+    for (const requestedResult of requestedResults) {
+      assert.equal(
+        agent._looksLikePlanOnlyTerminal(requestedResult, state),
+        false,
+        `${AgentClass.name}: explicitly requested planner-shaped result was classified as leaked output`,
+      );
+      assert.equal(
+        agent._planOnlyTerminalDecision(tabId, requestedResult, { viaDone: true }),
+        null,
+        `${AgentClass.name}: explicitly requested planner-shaped result was rejected after successful task evidence`,
+      );
+    }
   }
 });
 

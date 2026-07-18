@@ -6800,6 +6800,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (completionEvidence) return false;
     const futurePromise = /\b(?:i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|i plan to|i intend to)\b/i.test(text);
     const planHeading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:execution plan|action plan|proposed plan|plan|steps|workflow)\s*[:\n]/i.test(text);
+    if (state.allowsPlannerShapedResult === true && (futurePromise || planHeading)) return false;
     return futurePromise || planHeading;
   }
 
