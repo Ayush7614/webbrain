@@ -2618,6 +2618,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
             () => ({ success: false, skipped: true, error: 'skipped: invalid done requires a fresh execution turn' })
           );
+          // Drop any partial assistant prose that rode along with the invalid
+          // done so the recovery turn starts with a clean visible bubble.
+          onUpdate('text', { content: '', replace: true });
           onUpdate('warning', { message: 'Plan-only completion was rejected; continuing into execution.' });
           this._persist(tabId);
           return { action: 'continue' };
@@ -14336,6 +14339,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (planOnlyDecision?.retry) {
         messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems, result.reasoningContent, provider));
         messages.push({ role: 'user', content: planOnlyDecision.nudge });
+        // Clear any already-rendered plan/promise so recovery does not leave
+        // rejected terminal text in the assistant bubble (and so run-complete
+        // can write the real summary into an empty bubble).
+        onUpdate('text', { content: '', replace: true });
         onUpdate('warning', { message: 'Plan-only response was rejected; continuing into execution.' });
         this._persist(tabId);
         continue;
@@ -14722,6 +14729,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (planOnlyDecision?.retry) {
           messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems, reasoningContent, provider));
           messages.push({ role: 'user', content: planOnlyDecision.nudge });
+          // Streamed plan text already landed via text_delta. Replace it before
+          // the recovery turn so later deltas do not append onto the plan and
+          // the final done summary is not blocked by a non-empty bubble.
+          onUpdate('text', { content: '', replace: true });
           onUpdate('warning', { message: 'Plan-only response was rejected; continuing into execution.' });
           this._persist(tabId);
           continue;

@@ -10491,8 +10491,8 @@ test('sidepanel suppresses streamed raw tool-call text before rendering tool ste
     assert.doesNotMatch(panel, /dataset\.streamedAssistantText\s*=/, `${label}: streamed text must not be serialized as a data attribute`);
     assert.match(panel, /getStreamedAssistantText\(textEl\) === String\(res\.content\)[\s\S]*?renderAssistantTextUpdate\(assistantEl, res\.content\);/, `${label}: completed streams should format the visible final text in place`);
     assert.match(panel, /clearAssistantTextStreamState\(assistantEl\);/, `${label}: run completion should clear transient streamed-text state before persistence`);
-    assert.match(panel, /case 'text':[\s\S]*?renderAssistantTextUpdate\(currentAssistantEl, data\.content, \{ replace: data\.replace === true \}\);/, `${label}: text updates should forward explicit replacement requests`);
-    assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content, options = \{\}\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?if \(options\.replace === true\) \{[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);[\s\S]*?streamedAssistantTextByEl\.set\(textEl, String\(content\)\);[\s\S]*?\} else if \(verboseMode/, `${label}: explicit replacements should overwrite verbose streamed text and dedupe the completion event`);
+    assert.match(panel, /case 'text':[\s\S]*?\(data\.content \|\| data\.replace === true\)[\s\S]*?renderAssistantTextUpdate\(currentAssistantEl, data\.content \|\| '', \{ replace: data\.replace === true \}\);/, `${label}: text updates should forward explicit replacement requests, including empty clears`);
+    assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content, options = \{\}\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?if \(options\.replace === true\) \{[\s\S]*?if \(content\) \{[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);[\s\S]*?streamedAssistantTextByEl\.set\(textEl, String\(content\)\);[\s\S]*?\} else \{[\s\S]*?textEl\.textContent = '';[\s\S]*?clearStreamedAssistantText\(textEl\);[\s\S]*?\} else if \(verboseMode/, `${label}: explicit replacements should overwrite or clear verbose streamed text`);
     assert.match(panel, /function renderAssistantTextUpdate\(assistantEl, content, options = \{\}\) \{[\s\S]*?isDuplicateStreamFinal[\s\S]*?textEl\.innerHTML = formatMarkdown\(content\);/, `${label}: final text should format an already visible stream instead of appending a duplicate`);
     const start = panel.indexOf("case 'tool_call':");
     const end = panel.indexOf("case 'tool_result':", start);
@@ -24971,8 +24971,14 @@ test('Act rejects planner-shaped plain finals and continues into a real tool', a
     const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
     const tabId = 8600 + index;
     configurePlanOnlyGuardAgent(agent, tabId);
+    const updates = [];
 
-    const final = await agent.processMessage(tabId, 'Read the current page and summarize it.', () => {}, 'act');
+    const final = await agent.processMessage(
+      tabId,
+      'Read the current page and summarize it.',
+      (type, data) => updates.push({ type, data }),
+      'act',
+    );
 
     assert.equal(final, 'Executed and verified.', `${AgentClass.name}: plan-only final was accepted`);
     assert.equal(responses.length, 0, `${AgentClass.name}: execution recovery turn was not requested`);
@@ -24980,8 +24986,17 @@ test('Act rejects planner-shaped plain finals and continues into a real tool', a
       agent.conversations.get(tabId).some(message => message.role === 'user' && String(message.content || '').startsWith('[PLAN EXECUTION BLOCK')),
       `${AgentClass.name}: plan-only recovery nudge missing`,
     );
+    assert.ok(
+      updates.some(update => (
+        update.type === 'text'
+        && update.data?.replace === true
+        && !String(update.data?.content || '').trim()
+      )),
+      `${AgentClass.name}: plan-only recovery must clear rejected terminal text from the bubble`,
+    );
   }
 });
+
 
 test('Act routes ordinary plain finals through the language-neutral done protocol', async () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
@@ -26280,11 +26295,31 @@ test('streamed Act finals recover from planner JSON before execution', async () 
     const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
     const tabId = 8630 + index;
     configurePlanOnlyGuardAgent(agent, tabId);
+    const updates = [];
 
-    const final = await agent.processMessageStream(tabId, 'Read the current page and summarize it.', () => {}, 'act');
+    const final = await agent.processMessageStream(
+      tabId,
+      'Read the current page and summarize it.',
+      (type, data) => updates.push({ type, data }),
+      'act',
+    );
 
     assert.equal(final, 'Executed and verified.', `${AgentClass.name}: streamed plan-only final was accepted`);
     assert.equal(provider.calls, 2, `${AgentClass.name}: streamed execution recovery did not run`);
+    const clearIdx = updates.findIndex(update => (
+      update.type === 'text'
+      && update.data?.replace === true
+      && !String(update.data?.content || '').trim()
+    ));
+    assert.ok(clearIdx >= 0, `${AgentClass.name}: streamed plan-only recovery must clear rejected plan text`);
+    assert.ok(
+      updates.slice(0, clearIdx).some(update => update.type === 'text_delta'),
+      `${AgentClass.name}: plan text should have streamed before the clear`,
+    );
+    assert.ok(
+      updates.slice(clearIdx).some(update => update.type === 'tool_call'),
+      `${AgentClass.name}: recovery tools must run after the bubble clear`,
+    );
   }
 });
 
