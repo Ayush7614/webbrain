@@ -181,6 +181,7 @@ export class Agent {
     this.planReviewMode = 'confidence'; // confidence | always | never
     this.planReviewConfidenceThreshold = PLAN_REVIEW_CONFIDENCE_DEFAULT;
     this._pendingPlans = new Map(); // tabId → (planId → { resolve, ts })
+    this._planExecutionGuards = new Map(); // tabId → current run's plan-only terminal recovery state
     // Stale click detection: per-tab last clicked element identity.
     this._lastCdpClickIdent = new Map(); // tabId -> string
     this._lastClickProgress = new Map(); // tabId -> { ident, snapshot }
@@ -2451,6 +2452,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const _toolStart = Date.now();
       const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
       const toolResult = this._normalizeToolResult(fnName, rawToolResult, missingResponseOutcomeUnknown);
+      if (fnName !== 'done') this._markPlanExecutionToolCall(tabId);
       const _toolLatency = Date.now() - _toolStart;
       const nytimesPageGateFallback = this._nytimesPageGateFallback(tabId, fnName, toolResult);
       if (nytimesPageGateFallback && toolResult && typeof toolResult === 'object') {
@@ -2562,6 +2564,46 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
           this._persist(tabId);
           continue;
+        }
+        const planOnlyDecision = this._planOnlyTerminalDecision(tabId, toolResult.summary || partialAssistantText || '');
+        if (planOnlyDecision?.retry) {
+          const blockedResult = {
+            success: false,
+            blockedDone: true,
+            planOnlyTerminal: true,
+            error: planOnlyDecision.nudge,
+          };
+          onUpdate('tool_result', { name: fnName, result: blockedResult });
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify(blockedResult),
+          });
+          onUpdate('warning', { message: 'Plan-only completion was rejected; continuing into execution.' });
+          this._persist(tabId);
+          continue;
+        }
+        if (planOnlyDecision?.failure) {
+          const failedResult = {
+            success: false,
+            done: true,
+            outcome: 'failed',
+            planOnlyTerminal: true,
+            summary: planOnlyDecision.failure,
+            error: planOnlyDecision.failure,
+          };
+          onUpdate('tool_result', { name: fnName, result: failedResult });
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify(failedResult),
+          });
+          this._appendSyntheticToolResults(
+            tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
+            () => ({ success: false, skipped: true, error: 'skipped: plan-only completion failed' })
+          );
+          this._persist(tabId);
+          return { action: 'return', value: planOnlyDecision.failure, status: 'plan_only_output' };
         }
         onUpdate('tool_result', { name: fnName, result: toolResult });
         const finalResponse = this._appendProgressLedgerToFinal(tabId, toolResult.summary || partialAssistantText || 'Task completed.');
@@ -6889,6 +6931,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       || c.startsWith('[Agent progress ledger')
       || c.startsWith('[Agent memory')
       || c.startsWith('[PROGRESS LEDGER BLOCK')
+      || c.startsWith('[PLAN EXECUTION BLOCK')
       || c.startsWith('[NAVIGATION OCCURRED')
       || c.startsWith('[Auto-screenshot')
       || c.startsWith('[UNTRUSTED CAPTURE')
@@ -7329,6 +7372,94 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return '[System nudge: your previous response had neither text nor a tool call. Continue the active browser task with tool calls. If the task is truly complete, call the done tool with a real summary. Do not output a plain summary and do not stop without a tool call.]';
     }
     return '[System nudge: your previous response had neither text nor a tool call. You may have run out of output budget on internal reasoning. In ONE short message, summarize what you accomplished, what you tried, and what blocked you - then stop. Do not start any new tool calls.]';
+  }
+
+  _isExplicitPlanOnlyTask(taskText) {
+    const text = String(taskText || '').replace(/\s+/g, ' ').trim();
+    if (!text) return false;
+    const executeAfterPlanning = /\b(?:then|and then|after that|sonra|ardından|ve sonra)\b.{0,80}\b(?:execute|run|carry out|perform|apply|act|do it|uygula|çalıştır|gerçekleştir|yap)\b/i.test(text);
+    if (executeAfterPlanning) return false;
+    const planTerm = '(?:plan|strategy|roadmap|outline|workflow|steps|taslak|strateji|yol haritası|adımlar)';
+    const asksOnlyForPlan = new RegExp(
+      `(?:\\b(?:only|just|merely|sadece|yalnızca)\\b.{0,60}\\b${planTerm}\\b|\\b${planTerm}\\b.{0,40}\\b(?:only|sadece|yalnızca)\\b|^(?:please\\s+)?(?:give|create|make|write|draft|outline|provide|show|prepare|return|hazırla|oluştur|yaz|göster)\\b.{0,100}\\b${planTerm}\\b)`,
+      'i',
+    ).test(text);
+    const defersExecution = /\b(?:do not|don't|dont|without|before you|wait for|until)\b.{0,70}\b(?:execute|act|run|perform|apply|approval|confirmation)\b|\b(?:uygulama|çalıştırma|harekete geçme|onayımı bekle|onay vermeden)\b/i.test(text);
+    const requestedPlanStructure = /\b(?:json|yaml|xml|markdown|structured output|machine-readable)\b/i.test(text)
+      && new RegExp(`\\b${planTerm}|action[- ]policy|allowedActions|forbiddenActions\\b`, 'i').test(text);
+    return asksOnlyForPlan || defersExecution || requestedPlanStructure;
+  }
+
+  _hasApprovedExecutionPlan(messages) {
+    const idx = this._findScratchpadIndex(messages || []);
+    if (idx < 0) return false;
+    const body = this._extractScratchpadBody(messages[idx].content);
+    return /\[Approved plan\b[^\]]*pinned by (?:planner|recommended action)\]/i.test(body);
+  }
+
+  _startPlanExecutionGuard(tabId, mode, enriched, runOptions = {}) {
+    const taskText = this._stripInjectedTaskContext(userMessageToText(enriched));
+    const enabled = this._isActionMode(mode)
+      && !(runOptions?.cloudRun && runOptions?.outputSchema)
+      && !this._isExplicitPlanOnlyTask(taskText);
+    const state = {
+      enabled,
+      approvedPlan: this._hasApprovedExecutionPlan(this.conversations.get(tabId) || []),
+      nonDoneToolCalls: 0,
+      recoveryAttempted: false,
+    };
+    this._planExecutionGuards.set(tabId, state);
+    return state;
+  }
+
+  _markPlanExecutionToolCall(tabId) {
+    const state = this._planExecutionGuards.get(tabId);
+    if (state) state.nonDoneToolCalls += 1;
+  }
+
+  _looksLikePlanOnlyTerminal(content, state = {}) {
+    const text = String(content || '').trim();
+    if (!text) return false;
+    const object = extractFirstJsonObject(text);
+    if (object && typeof object === 'object' && !Array.isArray(object)) {
+      const planText = [
+        object.summary,
+        ...(Array.isArray(object.steps) ? object.steps.map(step => step?.action) : []),
+      ].filter(Boolean).join(' ');
+      const safetyRefusal = Number(object.confidence) === 0
+        && /\b(?:refus|will not|do not proceed|unauthorized|illegal|fraud|theft|unsafe|cannot assist|can't assist)\b/i.test(planText);
+      const plannerShape = typeof object.summary === 'string'
+        && Array.isArray(object.steps)
+        && object.steps.length > 0
+        && ['confidence', 'memory', 'scheduling', 'risks', 'mode'].some(key => Object.prototype.hasOwnProperty.call(object, key))
+        && !safetyRefusal;
+      const policyKeys = ['mode', 'allowedActions', 'forbiddenActions', 'targets', 'pageScopePolicy', 'reason'];
+      const policyShape = policyKeys.filter(key => Object.prototype.hasOwnProperty.call(object, key)).length >= 5
+        && (Array.isArray(object.allowedActions) || Array.isArray(object.forbiddenActions))
+        && String(object.mode || '').toLowerCase() !== 'inactive';
+      if (plannerShape || policyShape) return true;
+    }
+    if (!state.approvedPlan) return false;
+    const completionEvidence = /\b(?:completed|finished|done|submitted|opened|downloaded|saved|created|updated|found|verified|blocked|cannot|can't|could not|failed|tamamlandı|bitti|başarılı|kaydedildi|indirildi|açıldı|engellendi|yapılamadı)\b/i.test(text);
+    if (completionEvidence) return false;
+    const futurePromise = /\b(?:i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|i plan to|i intend to)\b|(?:şimdi|sonra|ardından).{0,80}\b(?:yapacağım|uygulayacağım|çalıştıracağım|başlayacağım)\b/i.test(text);
+    const planHeading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:execution plan|action plan|proposed plan|plan|steps|workflow|uygulama planı|eylem planı|adımlar)\s*[:\n]/i.test(text);
+    return futurePromise || planHeading;
+  }
+
+  _planOnlyTerminalDecision(tabId, content) {
+    const state = this._planExecutionGuards.get(tabId);
+    if (!state?.enabled || state.nonDoneToolCalls > 0 || !this._looksLikePlanOnlyTerminal(content, state)) return null;
+    if (!state.recoveryAttempted) {
+      state.recoveryAttempted = true;
+      return {
+        retry: true,
+        nudge: '[PLAN EXECUTION BLOCK: Your previous response only restated planner/action-policy metadata or promised future work. No non-done tool has run in this Act/Dev turn. Call the first permitted tool now and continue until verified completion, a real blocker, cancellation, or required user input. Do not return the plan again and do not call done with a plan-shaped summary.]',
+      };
+    }
+    return {
+      failure: '[Agent stopped because the model returned a plan or promise instead of executing the approved task, even after one recovery nudge. No action was performed.]',
+    };
   }
 
   _buildAutoProgressResumeInstruction(tabId) {
@@ -12662,6 +12793,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageInner(tabId, userMessage, onUpdate, mode, attachments, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
+      this._planExecutionGuards.delete(tabId);
       this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {
         if (previousCloudContext) this.cloudRunContexts.set(tabId, previousCloudContext);
@@ -12819,6 +12951,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       _traceStatus = gateOutcome.reason === 'cost_limit' ? 'cost_limit' : 'cancelled';
       return (finalResponse = gateOutcome.message || 'Task cancelled.');
     }
+    this._startPlanExecutionGuard(tabId, mode, enriched, runOptions);
 
     if (this._isActionMode(mode)) {
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
@@ -13030,6 +13163,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         );
         if (batchResult.action === 'return') {
           finalResponse = batchResult.value;
+          if (batchResult.status) _traceStatus = batchResult.status;
           return finalResponse;
         }
         if (batchResult.action === 'abort') {
@@ -13110,6 +13244,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         break;
       }
       // Genuine final answer — emit and exit.
+      const planOnlyDecision = this._planOnlyTerminalDecision(tabId, result.content);
+      if (planOnlyDecision?.retry) {
+        messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems, result.reasoningContent, provider));
+        messages.push({ role: 'user', content: planOnlyDecision.nudge });
+        onUpdate('warning', { message: 'Plan-only response was rejected; continuing into execution.' });
+        this._persist(tabId);
+        continue;
+      }
+      if (planOnlyDecision?.failure) {
+        finalResponse = planOnlyDecision.failure;
+        _traceStatus = 'plan_only_output';
+        messages.push({ role: 'assistant', content: finalResponse });
+        onUpdate('warning', { message: finalResponse });
+        break;
+      }
       const progressFinalBlock = this._plainFinalProgressBlock(tabId);
       if (progressFinalBlock) {
         messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems, result.reasoningContent, provider));
@@ -13171,6 +13320,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageStreamInner(tabId, userMessage, onUpdate, mode, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
+      this._planExecutionGuards.delete(tabId);
       this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {
         if (previousCloudContext) this.cloudRunContexts.set(tabId, previousCloudContext);
@@ -13246,6 +13396,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!gateOutcome.proceed) {
       return finish(gateOutcome.message || 'Task cancelled.', gateOutcome.reason === 'cost_limit' ? 'cost_limit' : 'cancelled');
     }
+    this._startPlanExecutionGuard(tabId, mode, enriched, runOptions);
 
     if (this._isActionMode(mode)) {
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
@@ -13404,7 +13555,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps
           );
           if (batchResult.action === 'return') {
-            return finish(batchResult.value);
+            return finish(batchResult.value, batchResult.status);
           }
           if (batchResult.action === 'abort') {
             return finish(batchResult.value, 'cancelled');
@@ -13470,6 +13621,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
         emptyOutputRecoveryAttempted = false;
         compressionPlaceholderRecoveryAttempted = false;
+        const planOnlyDecision = this._planOnlyTerminalDecision(tabId, fullText);
+        if (planOnlyDecision?.retry) {
+          messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems, reasoningContent, provider));
+          messages.push({ role: 'user', content: planOnlyDecision.nudge });
+          onUpdate('warning', { message: 'Plan-only response was rejected; continuing into execution.' });
+          this._persist(tabId);
+          continue;
+        }
+        if (planOnlyDecision?.failure) {
+          messages.push({ role: 'assistant', content: planOnlyDecision.failure });
+          onUpdate('warning', { message: planOnlyDecision.failure });
+          this._persist(tabId);
+          return finish(planOnlyDecision.failure, 'plan_only_output');
+        }
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
         if (progressFinalBlock) {
           messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems, reasoningContent, provider));

@@ -5942,6 +5942,7 @@ test('Act prompt tiers continue from approved plans while preserving plan-only b
     for (const prompt of actPrompts) {
       assert.match(prompt, /approved or pinned plan is context for doing the task, not a completed user outcome/i, `${label}: approved plan must lead into execution`);
       assert.match(prompt, /call the first permitted tool and continue/i, `${label}: execution must start with a permitted tool`);
+      assert.match(prompt, /do not call done with the plan/i, `${label}: done must not accept a plan-only summary`);
       assert.match(prompt, /if the user asked only for a plan[\s\S]*do not execute/i, `${label}: plan-only and approval boundaries must remain non-executing`);
       assert.match(prompt, /never treat an answer as leaked planner metadata merely because it looks like a plan or policy/i, `${label}: requested structured output must remain valid`);
     }
@@ -22587,6 +22588,280 @@ test('content-plus-tool responses do not emit intermediate assistant text', asyn
       updates.some(update => update.type === 'text' && update.data?.content === 'Final answer after the tool result.'),
       `${AgentClass.name}: final text update missing`,
     );
+  }
+});
+
+function planOnlyTerminalFixture() {
+  return JSON.stringify({
+    summary: 'Open the current page and collect the requested details.',
+    confidence: 0.91,
+    steps: [
+      { id: '1', action: 'Read the current page.', tools: ['read_page'] },
+      { id: '2', action: 'Return the result.', tools: ['done'] },
+    ],
+    memory: { use_scratchpad: false, scratchpad_notes: [], use_progress_ledger: false, progress_action: null },
+    scheduling: null,
+    risks: [],
+    mode: 'act',
+  });
+}
+
+function configurePlanOnlyGuardAgent(agent, tabId) {
+  agent.planBeforeAct = false;
+  agent.maxSteps = 5;
+  agent._skipPermissionGate = true;
+  agent._hydrate = async () => {};
+  agent._manageContext = async () => {};
+  agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+  agent._maybeReinjectAdapter = async () => {};
+  agent._ensureProgressSessionForCurrentTask = async () => ({ mode: 'inactive' });
+  agent._persist = () => {};
+  agent.conversationModes.set(tabId, 'act');
+  agent.conversations.set(tabId, [{ role: 'system', content: 'sys' }]);
+  agent.executeTool = async (_toolTabId, name, args) => {
+    if (name === 'read_page') return { success: true, text: 'Page result.' };
+    if (name === 'done') return { done: true, summary: args.summary, outcome: args.outcome || 'success' };
+    throw new Error(`unexpected tool ${name}`);
+  };
+}
+
+function executionToolCalls(prefix = 'execution') {
+  return [
+    {
+      id: `${prefix}_read`,
+      function: { name: 'read_page', arguments: '{}' },
+    },
+    {
+      id: `${prefix}_done`,
+      function: { name: 'done', arguments: JSON.stringify({ summary: 'Executed and verified.' }) },
+    },
+  ];
+}
+
+test('Act rejects planner-shaped plain finals and continues into a real tool', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const responses = [
+      { content: planOnlyTerminalFixture(), toolCalls: [] },
+      { content: null, toolCalls: executionToolCalls(`plain_${index}`) },
+    ];
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        const next = responses.shift();
+        assert.ok(next, `${AgentClass.name}: model was called too many times`);
+        return next;
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8600 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+
+    const final = await agent.processMessage(tabId, 'Read the current page and summarize it.', () => {}, 'act');
+
+    assert.equal(final, 'Executed and verified.', `${AgentClass.name}: plan-only final was accepted`);
+    assert.equal(responses.length, 0, `${AgentClass.name}: execution recovery turn was not requested`);
+    assert.ok(
+      agent.conversations.get(tabId).some(message => message.role === 'user' && String(message.content || '').startsWith('[PLAN EXECUTION BLOCK')),
+      `${AgentClass.name}: plan-only recovery nudge missing`,
+    );
+  }
+});
+
+test('Act reports failure when plan-only output repeats after its recovery nudge', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const responses = [
+      { content: planOnlyTerminalFixture(), toolCalls: [] },
+      { content: planOnlyTerminalFixture(), toolCalls: [] },
+    ];
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => responses.shift(),
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8605 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    let ended = null;
+    agent._startTraceRun = async () => {
+      agent.currentRunId.set(tabId, `plan_only_repeat_${index}`);
+      return `plan_only_repeat_${index}`;
+    };
+    agent._endTraceRun = (_tabId, runId, status, finalContent) => {
+      ended = { runId, status, finalContent };
+      agent.currentRunId.delete(tabId);
+    };
+
+    const final = await agent.processMessage(tabId, 'Read the current page and summarize it.', () => {}, 'act');
+
+    assert.match(final, /No action was performed/, `${AgentClass.name}: repeated plan was accepted as success`);
+    assert.equal(ended?.status, 'plan_only_output', `${AgentClass.name}: repeated plan retained a successful trace status`);
+  }
+});
+
+test('Act rejects plan-only done summaries before any non-done tool', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const responses = [
+      {
+        content: null,
+        toolCalls: [{
+          id: `premature_done_${index}`,
+          function: { name: 'done', arguments: JSON.stringify({ summary: planOnlyTerminalFixture() }) },
+        }],
+      },
+      { content: null, toolCalls: executionToolCalls(`done_${index}`) },
+    ];
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        const next = responses.shift();
+        assert.ok(next, `${AgentClass.name}: model was called too many times`);
+        return next;
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8610 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+
+    const final = await agent.processMessage(tabId, 'Read the current page and summarize it.', () => {}, 'act');
+
+    assert.equal(final, 'Executed and verified.', `${AgentClass.name}: premature done ended the run`);
+    assert.ok(
+      agent.conversations.get(tabId).some(message => message.role === 'tool' && /"planOnlyTerminal":true/.test(String(message.content || ''))),
+      `${AgentClass.name}: premature done was not mechanically blocked`,
+    );
+  }
+});
+
+test('Act preserves explicit plan-only structured-output requests', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const expected = planOnlyTerminalFixture();
+    let calls = 0;
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        calls += 1;
+        return { content: expected, toolCalls: [] };
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8620 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+
+    const final = await agent.processMessage(tabId, 'Return only an action plan as JSON; do not execute it.', () => {}, 'act');
+
+    assert.equal(final, expected, `${AgentClass.name}: requested plan output was rejected`);
+    assert.equal(calls, 1, `${AgentClass.name}: requested plan triggered an execution recovery`);
+    assert.equal(
+      agent.conversations.get(tabId).some(message => String(message.content || '').startsWith('[PLAN EXECUTION BLOCK')),
+      false,
+      `${AgentClass.name}: explicit plan-only boundary received a recovery nudge`,
+    );
+  }
+});
+
+test('Act preserves safety refusals and inactive policy classifications', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const refusal = JSON.stringify({
+      summary: 'Refuse this request because it is unauthorized and unsafe.',
+      confidence: 0,
+      steps: [{ id: '1', action: 'Do not proceed; no action will be executed.', tools: ['done'] }],
+      memory: { use_scratchpad: false, scratchpad_notes: [], use_progress_ledger: false, progress_action: null },
+      scheduling: null,
+      risks: ['The requested action is unauthorized.'],
+      mode: 'act',
+    });
+    let calls = 0;
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => {
+        calls += 1;
+        return { content: refusal, toolCalls: [] };
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8625 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+
+    const final = await agent.processMessage(tabId, 'Perform an unauthorized action.', () => {}, 'act');
+
+    assert.equal(final, refusal, `${AgentClass.name}: safety refusal was forced into execution`);
+    assert.equal(calls, 1, `${AgentClass.name}: safety refusal triggered a recovery turn`);
+    assert.equal(
+      agent._looksLikePlanOnlyTerminal(JSON.stringify({
+        mode: 'inactive',
+        allowedActions: [],
+        forbiddenActions: [],
+        targets: [],
+        confidence: 0.9,
+        pageScopePolicy: 'none',
+        reason: 'No actionable request.',
+      }), { approvedPlan: false }),
+      false,
+      `${AgentClass.name}: inactive policy was classified as executable`,
+    );
+  }
+});
+
+test('streamed Act finals recover from planner JSON before execution', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      calls: 0,
+      async *chatStream() {
+        this.calls += 1;
+        if (this.calls === 1) {
+          yield { type: 'text', content: planOnlyTerminalFixture() };
+          yield { type: 'done' };
+          return;
+        }
+        if (this.calls === 2) {
+          yield {
+            type: 'tool_call',
+            content: executionToolCalls(`stream_${index}`).map((call, callIndex) => ({ index: callIndex, ...call })),
+          };
+          yield { type: 'done' };
+          return;
+        }
+        throw new Error(`${AgentClass.name}: model was called too many times`);
+      },
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8630 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+
+    const final = await agent.processMessageStream(tabId, 'Read the current page and summarize it.', () => {}, 'act');
+
+    assert.equal(final, 'Executed and verified.', `${AgentClass.name}: streamed plan-only final was accepted`);
+    assert.equal(provider.calls, 2, `${AgentClass.name}: streamed execution recovery did not run`);
   }
 });
 

@@ -1191,6 +1191,7 @@ const SENSITIVE_PAGE_DATA_GUIDANCE = `SENSITIVE PAGE DATA:
 
 const PLAN_TO_EXECUTION_GUIDANCE = `PLAN TO EXECUTION:
 - In Act/Dev, an approved or pinned plan is context for doing the task, not a completed user outcome. When the user authorized action, do not end by returning the plan, planner JSON, action-policy metadata, or a promise to act; call the first permitted tool and continue until done, an explicit blocker, cancellation, or required user input.
+- Do not call done with the plan, planner JSON, action-policy metadata, or a promise to act as its summary. Call a permitted non-done tool first; use clarify or stop only for a real blocker or required user input.
 - Respect user boundaries: if the user asked only for a plan, or said to wait for approval or confirmation, return the plan or wait and do not execute.
 - Structured output can be legitimate user-requested data. Honor requested JSON or markdown formats; never treat an answer as leaked planner metadata merely because it looks like a plan or policy.`;
 
