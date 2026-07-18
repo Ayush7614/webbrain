@@ -6776,6 +6776,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       : state.successfulTaskToolCalls > 0;
   }
 
+  _storeContinuationExecutionEvidence(tabId) {
+    const guard = this._planExecutionGuards.get(tabId);
+    if (guard?.enabled && (guard.successfulTaskToolCalls > 0 || guard.successfulConsequentialToolCalls > 0)) {
+      this._continuationExecutionEvidence.set(tabId, {
+        requestKind: guard.requestKind,
+        requiresStateChange: guard.requiresStateChange,
+        successfulTaskToolCalls: guard.successfulTaskToolCalls,
+        successfulConsequentialToolCalls: guard.successfulConsequentialToolCalls,
+        conversationId: this.conversationIds.get(tabId) || null,
+      });
+    } else {
+      this._continuationExecutionEvidence.delete(tabId);
+    }
+  }
+
   _isSafetyRefusalTerminal(content) {
     const object = extractFirstJsonObject(String(content || ''));
     if (!object || typeof object !== 'object' || Array.isArray(object)) return false;
@@ -6808,12 +6823,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         && String(object.mode || '').toLowerCase() !== 'inactive';
       if (plannerShape || policyShape) return state.allowsPlannerShapedResult !== true;
     }
-    const completionEvidence = /\b(?:completed|finished|done|submitted|opened|downloaded|saved|created|updated|found|verified|blocked|cannot|can't|could not|failed)\b/i.test(text);
-    if (completionEvidence) return false;
     const futurePromise = /\b(?:i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|i plan to|i intend to)\b/i.test(text);
     const planHeading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:execution plan|action plan|proposed plan|plan|steps|workflow)\s*[:\n]/i.test(text);
     if (state.allowsPlannerShapedResult === true && (futurePromise || planHeading)) return false;
-    return futurePromise || planHeading;
+    // Planner signals take precedence over incidental progress words in mixed
+    // responses such as "I opened the page. Plan: ...".
+    if (futurePromise || planHeading) return true;
+    return false;
   }
 
   _planOnlyTerminalDecision(tabId, content, { viaDone = false, outcome = null } = {}) {
@@ -9869,18 +9885,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageInner(tabId, userMessage, onUpdate, mode, attachments, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
-      const guard = this._planExecutionGuards.get(tabId);
-      if (guard?.enabled && (guard.successfulTaskToolCalls > 0 || guard.successfulConsequentialToolCalls > 0)) {
-        this._continuationExecutionEvidence.set(tabId, {
-          requestKind: guard.requestKind,
-          requiresStateChange: guard.requiresStateChange,
-          successfulTaskToolCalls: guard.successfulTaskToolCalls,
-          successfulConsequentialToolCalls: guard.successfulConsequentialToolCalls,
-          conversationId: this.conversationIds.get(tabId) || null,
-        });
-      } else {
-        this._continuationExecutionEvidence.delete(tabId);
-      }
+      this._storeContinuationExecutionEvidence(tabId);
       this._planExecutionGuards.delete(tabId);
       this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {
@@ -10379,6 +10384,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     this._resetActiveSkillsForRun(tabId, { refreshPrompt: false });
     this._clearLoopState(tabId);
+    if (runOptions?.trustedContinuation !== true) this._continuationExecutionEvidence.delete(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
     if (runOptions.cloudRun) {
@@ -10388,6 +10394,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._processMessageStreamInner(tabId, userMessage, onUpdate, mode, runOptions);
     } finally {
       this.currentCostState.delete(tabId);
+      this._storeContinuationExecutionEvidence(tabId);
       this._planExecutionGuards.delete(tabId);
       this._resetActiveSkillsForRun(tabId);
       if (runOptions.cloudRun) {

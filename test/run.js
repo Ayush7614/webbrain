@@ -23116,6 +23116,36 @@ test('explicit planner-shaped result intent preserves requested JSON and Markdow
   }
 });
 
+test('completion words do not mask mixed progress plus plan terminals', () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const agent = new AgentClass({});
+    const tabId = 8633 + index;
+    agent._startPlanExecutionGuard(tabId, 'act', {
+      requestKind: 'execute',
+      requiresStateChange: false,
+    });
+    agent._markPlanExecutionToolCall(tabId, 'read_page', { success: true });
+    const mixedTerminals = [
+      'I opened the page.\n\nPlan:\n1. Fill out the form.\n2. Submit it.',
+      'I found the workflow. Next, I will apply it.',
+    ];
+
+    for (const mixedTerminal of mixedTerminals) {
+      assert.equal(
+        agent._looksLikePlanOnlyTerminal(mixedTerminal),
+        true,
+        `${AgentClass.name}: completion wording masked a plan or promise`,
+      );
+      assert.equal(
+        agent._planOnlyTerminalDecision(tabId, mixedTerminal, { viaDone: true })?.retry,
+        true,
+        `${AgentClass.name}: mixed progress plus plan terminal bypassed recovery`,
+      );
+      agent._planExecutionGuards.get(tabId).recoveryAttempted = false;
+    }
+  }
+});
+
 test('planner-bypassed managed cloud runs never enable the execution guard', () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
     const agent = new AgentClass({});
@@ -23205,6 +23235,81 @@ test('trusted continuation carries consequential evidence without repeating the 
       `${AgentClass.name}: continuation repeated a consequential action`,
     );
     assert.equal(responses.length, 0, `${AgentClass.name}: continuation entered recovery`);
+  }
+});
+
+test('streamed runs preserve consequential evidence for a trusted continuation', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      async *chatStream() {
+        yield {
+          type: 'tool_call',
+          content: [{
+            index: 0,
+            id: `stream_continuation_mutation_${index}`,
+            function: { name: 'click_ax', arguments: JSON.stringify({ ref_id: 'ref_submit' }) },
+          }],
+        };
+        yield { type: 'done' };
+      },
+      chat: async () => ({
+        content: null,
+        toolCalls: [
+          {
+            id: `stream_continuation_verify_${index}`,
+            function: { name: 'read_page', arguments: '{}' },
+          },
+          {
+            id: `stream_continuation_done_${index}`,
+            function: {
+              name: 'done',
+              arguments: JSON.stringify({ summary: 'Streamed mutation verified.', outcome: 'success' }),
+            },
+          },
+        ],
+      }),
+    };
+    const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+    const tabId = 8647 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    agent.conversationIds.set(tabId, `stream_continuation_conv_${index}`);
+    agent._maybeRunPlannerGate = async () => ({
+      proceed: true,
+      requestKind: 'execute',
+      requiresStateChange: true,
+    });
+    const toolCalls = [];
+    agent.executeTool = async (_toolTabId, name, args) => {
+      toolCalls.push(name);
+      if (name === 'click_ax') return { success: true };
+      if (name === 'read_page') return { success: true, text: 'The submitted state is visible.' };
+      if (name === 'done') return { done: true, summary: args.summary, outcome: args.outcome };
+      throw new Error(`unexpected tool ${name}`);
+    };
+
+    agent.maxSteps = 1;
+    await agent.processMessageStream(tabId, 'Submit the form and verify it.', () => {}, 'act');
+    assert.equal(
+      agent._continuationExecutionEvidence.get(tabId)?.successfulConsequentialToolCalls,
+      1,
+      `${AgentClass.name}: streamed run did not preserve mutation evidence`,
+    );
+
+    agent.maxSteps = 3;
+    const final = await agent.continueProcessing(tabId, () => {}, 'act');
+
+    assert.equal(final, 'Streamed mutation verified.', `${AgentClass.name}: continuation rejected streamed evidence`);
+    assert.deepEqual(
+      toolCalls,
+      ['click_ax', 'read_page', 'done'],
+      `${AgentClass.name}: continuation repeated the streamed mutation`,
+    );
   }
 });
 
