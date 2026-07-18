@@ -15517,6 +15517,53 @@ test('user full-page screenshots apply adapter capture policy without LLM adapte
   }
 });
 
+test('agent full-page screenshot tool applies adapter capture policy without LLM adapter injection', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalCapture = cdpClientCh.captureFullPageScreenshot;
+  let receivedOptions = null;
+  try {
+    globalThis.chrome = {
+      ...(originalChrome || {}),
+      tabs: {
+        ...(originalChrome?.tabs || {}),
+        get: async (tabId) => {
+          assert.equal(tabId, 42);
+          return { id: tabId, url: 'https://x.com/home' };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.captureFullPageScreenshot = async (_tabId, options) => {
+      receivedOptions = options;
+      return { data: 'Zmlyc3QtdGlsZQ==', warning: 'bounded infinite-scroll capture' };
+    };
+    const agent = new AgentCh({
+      getActive: () => ({ supportsVision: true }),
+      getVisionProvider: async () => null,
+    });
+    agent.useSiteAdapters = false;
+    agent._bringToFrontForCapture = async () => {};
+    agent._withIndicatorsHidden = async (_tabId, capture) => capture();
+    agent._shrinkImageForBudget = async (dataUrl) => ({ dataUrl, width: 1, height: 1 });
+
+    const result = await agent.executeTool(42, 'full_page_screenshot', {});
+
+    assert.equal(result.success, true);
+    assert.equal(result.method, 'image_attach');
+    assert.equal(result.warning, 'bounded infinite-scroll capture');
+    assert.deepEqual(receivedOptions, {
+      knownInfiniteScroll: true,
+      adapterName: 'twitter',
+    });
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.captureFullPageScreenshot = originalCapture;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
 test('inspect_event_listeners resolves marked ref targets through CDP and always removes markers', async () => {
   const originals = {
     enable: cdpClientCh.enableDevDiagnostics,

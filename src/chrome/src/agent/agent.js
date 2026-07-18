@@ -380,21 +380,25 @@ export class Agent {
     return { success: true, existed: true, note: 'scratchpad cleared' };
   }
 
+  async _getFullPageCapturePolicy(tabId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return getFullPageCapturePolicy(tab?.url) || {};
+    } catch {
+      // URL/policy lookup is an optimization. Capture still works without it,
+      // and runtime policy intentionally does not depend on LLM adapter notes.
+      return {};
+    }
+  }
+
   async captureFullPageScreenshotForUser(tabId) {
     if (!tabId) return { ok: false, error: 'No tab ID' };
     try {
-      let capturePolicy = null;
-      try {
-        const tab = await chrome.tabs.get(tabId);
-        capturePolicy = getFullPageCapturePolicy(tab?.url);
-      } catch {
-        // URL/policy lookup is an optimization. Capture still works without it,
-        // and runtime policy intentionally does not depend on LLM adapter notes.
-      }
+      const capturePolicy = await this._getFullPageCapturePolicy(tabId);
       await cdpClient.attach(tabId);
       await this._bringToFrontForCapture(tabId);
       const capture = await this._withIndicatorsHidden(tabId, () =>
-        cdpClient.captureFullPageScreenshot(tabId, capturePolicy || {})
+        cdpClient.captureFullPageScreenshot(tabId, capturePolicy)
       );
       const imageData = typeof capture === 'string' ? capture : capture?.data;
       const warning = typeof capture === 'object' ? capture?.warning || null : null;
@@ -9908,10 +9912,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     if (name === 'full_page_screenshot') {
       try {
+        const capturePolicy = await this._getFullPageCapturePolicy(tabId);
         await cdpClient.attach(tabId);
         await this._bringToFrontForCapture(tabId);
         const capture = await this._withIndicatorsHidden(tabId, () =>
-          cdpClient.captureFullPageScreenshot(tabId)
+          cdpClient.captureFullPageScreenshot(tabId, capturePolicy)
         );
         const imageData = typeof capture === 'string' ? capture : capture?.data;
         const captureWarning = typeof capture === 'object' ? capture?.warning || null : null;
