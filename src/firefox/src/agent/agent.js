@@ -4148,7 +4148,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       requiresStateChange: gate.requiresStateChange === true,
       allowsPlannerShapedResult: gate.allowsPlannerShapedResult === true,
       allowsAppStateToolEvidence: gate.allowsAppStateToolEvidence === true,
-      allowsFutureTenseResult: gate.allowsFutureTenseResult === true,
     };
   }
 
@@ -4288,7 +4287,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         requiresStateChange: plan.requires_state_change === true,
         allowsPlannerShapedResult: plan.allows_planner_shaped_result === true,
         allowsAppStateToolEvidence: plan.allows_app_state_tool_evidence === true,
-        allowsFutureTenseResult: plan.allows_future_tense_result === true,
       };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
@@ -4414,7 +4412,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           requiresStateChange: plan.requires_state_change === true,
           allowsPlannerShapedResult: plan.allows_planner_shaped_result === true,
           allowsAppStateToolEvidence: plan.allows_app_state_tool_evidence === true,
-          allowsFutureTenseResult: plan.allows_future_tense_result === true,
         };
       }
       const choice = await this._waitForPlanReview(tabId, planId, plan, markdown, onUpdate, verboseMarkdown);
@@ -4447,7 +4444,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         requiresStateChange: plan.requires_state_change === true,
         allowsPlannerShapedResult: plan.allows_planner_shaped_result === true,
         allowsAppStateToolEvidence: plan.allows_app_state_tool_evidence === true,
-        allowsFutureTenseResult: plan.allows_future_tense_result === true,
       };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
@@ -6739,7 +6735,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       && requestKind === 'execute';
     const requiresStateChange = gateOutcome?.requiresStateChange === true;
     const allowsAppStateToolEvidence = gateOutcome?.allowsAppStateToolEvidence === true;
-    const allowsFutureTenseResult = gateOutcome?.allowsFutureTenseResult === true;
     const carried = runOptions?.trustedContinuation === true
       ? this._continuationExecutionEvidence.get(tabId)
       : null;
@@ -6748,7 +6743,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       && carried?.requestKind === 'execute'
       && carried.requiresStateChange === requiresStateChange
       && carried.allowsAppStateToolEvidence === allowsAppStateToolEvidence
-      && carried.allowsFutureTenseResult === allowsFutureTenseResult
       && carried.conversationId === (this.conversationIds.get(tabId) || null);
     const state = {
       enabled,
@@ -6756,7 +6750,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       requiresStateChange,
       allowsPlannerShapedResult: gateOutcome?.allowsPlannerShapedResult === true,
       allowsAppStateToolEvidence,
-      allowsFutureTenseResult,
       approvedPlan: this._hasApprovedExecutionPlan(this.conversations.get(tabId) || []),
       // Only the app-owned Continue action can carry verified evidence from
       // the immediately preceding run; ordinary user turns always start at 0.
@@ -6829,7 +6822,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         requestKind: guard.requestKind,
         requiresStateChange: guard.requiresStateChange,
         allowsAppStateToolEvidence: guard.allowsAppStateToolEvidence,
-        allowsFutureTenseResult: guard.allowsFutureTenseResult,
         successfulTaskToolCalls: guard.successfulTaskToolCalls,
         successfulConsequentialToolCalls: guard.successfulConsequentialToolCalls,
         conversationId: this.conversationIds.get(tabId) || null,
@@ -6871,12 +6863,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         && String(object.mode || '').toLowerCase() !== 'inactive';
       if (plannerShape || policyShape) return state.allowsPlannerShapedResult !== true;
     }
-    const futurePromise = /\b(?:i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|i plan to|i intend to)\b/i.test(text);
+    // "Next, I will …" / "I plan to …" is agent-continue language and is always
+    // invalid as a terminal. Bare "I will …" is evidence-gated so drafted reply
+    // text can finish after a real task tool without a planner exemption flag.
+    const continuePromise = /\b(?:next,?\s+i(?:'ll| will)|i plan to|i intend to)\b/i.test(text);
+    const firstPersonFuture = /\bi(?:'ll| will| am going to)\b/i.test(text);
     const planHeading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:execution plan|action plan|proposed plan|plan|steps|workflow)\s*[:\n]/i.test(text);
-    // A requested planner-shaped result may exempt its heading, never a fresh
-    // promise to act. Planner signals also beat incidental progress wording.
-    if (!ignoreFuturePromise && futurePromise && state.allowsFutureTenseResult !== true) return true;
-    if (planHeading) return state.allowsPlannerShapedResult !== true;
+    const hasTaskEvidence = state.requiresStateChange
+      ? (state.successfulConsequentialToolCalls || 0) > 0
+      : (state.successfulTaskToolCalls || 0) > 0;
+    if (planHeading && state.allowsPlannerShapedResult !== true) return true;
+    if (!ignoreFuturePromise) {
+      if (continuePromise) return true;
+      if (firstPersonFuture && (!hasTaskEvidence || planHeading)) return true;
+    }
     return false;
   }
 

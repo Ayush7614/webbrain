@@ -24847,7 +24847,6 @@ function planOnlyTerminalFixture() {
     requires_state_change: false,
     allows_planner_shaped_result: false,
     allows_app_state_tool_evidence: false,
-    allows_future_tense_result: false,
     summary: 'Open the current page and collect the requested details.',
     confidence: 0.91,
     steps: [
@@ -24875,7 +24874,6 @@ function plannerIntentFixture({
   requiresStateChange = false,
   allowsPlannerShapedResult = false,
   allowsAppStateToolEvidence = false,
-  allowsFutureTenseResult = false,
   locale = 'en',
   localizedSummary = 'Carry out the requested task.',
   localizedSteps = ['Inspect the current state.', 'Complete the requested task.'],
@@ -24886,7 +24884,6 @@ function plannerIntentFixture({
     requires_state_change: requiresStateChange,
     allows_planner_shaped_result: allowsPlannerShapedResult,
     allows_app_state_tool_evidence: allowsAppStateToolEvidence,
-    allows_future_tense_result: allowsFutureTenseResult,
     summary: requestKind === 'clarify'
       ? 'Ask the user for the missing information.'
       : 'Handle the requested task.',
@@ -25418,39 +25415,45 @@ test('explicit planner-shaped result intent preserves requested JSON and Markdow
   }
 });
 
-test('explicit future-tense result intent preserves requested drafted text', () => {
+test('future-promise prose is gated by task evidence, not a planner flag', () => {
   for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
     const agent = new AgentClass({});
     const draftedReply = 'I will attend tomorrow.';
 
-    const authorizedTabId = 8631 + index;
-    const authorizedState = agent._startPlanExecutionGuard(authorizedTabId, 'act', {
+    // After a successful task tool, first-person future text is treated as
+    // possible drafted content (no allows_future_tense_result planner flag).
+    const afterEvidenceTabId = 8631 + index;
+    const afterEvidenceState = agent._startPlanExecutionGuard(afterEvidenceTabId, 'act', {
       requestKind: 'execute',
       requiresStateChange: false,
-      allowsFutureTenseResult: true,
     });
-    agent._markPlanExecutionToolCall(authorizedTabId, 'read_page', { success: true });
+    agent._markPlanExecutionToolCall(afterEvidenceTabId, 'read_page', { success: true });
     assert.equal(
-      agent._looksLikePlanOnlyTerminal(draftedReply, authorizedState),
+      agent._looksLikePlanOnlyTerminal(draftedReply, afterEvidenceState),
       false,
-      `${AgentClass.name}: explicitly requested drafted reply was classified as an execution promise`,
+      `${AgentClass.name}: drafted reply after task evidence was classified as an execution promise`,
     );
     assert.equal(
-      agent._planOnlyTerminalDecision(authorizedTabId, draftedReply, { viaDone: true, outcome: 'success' }),
+      agent._planOnlyTerminalDecision(afterEvidenceTabId, draftedReply, { viaDone: true, outcome: 'success' }),
       null,
-      `${AgentClass.name}: explicitly requested drafted reply was rejected after task evidence`,
+      `${AgentClass.name}: drafted reply after task evidence was rejected`,
     );
 
-    const ordinaryTabId = 8639 + index;
-    agent._startPlanExecutionGuard(ordinaryTabId, 'act', {
+    // Without evidence, the same wording is still a blocked promise to act.
+    const noEvidenceTabId = 8639 + index;
+    const noEvidenceState = agent._startPlanExecutionGuard(noEvidenceTabId, 'act', {
       requestKind: 'execute',
       requiresStateChange: false,
     });
-    agent._markPlanExecutionToolCall(ordinaryTabId, 'read_page', { success: true });
     assert.equal(
-      agent._planOnlyTerminalDecision(ordinaryTabId, draftedReply, { viaDone: true, outcome: 'success' })?.retry,
+      agent._looksLikePlanOnlyTerminal(draftedReply, noEvidenceState),
       true,
-      `${AgentClass.name}: ordinary execution promise bypassed recovery`,
+      `${AgentClass.name}: future promise without evidence was accepted`,
+    );
+    assert.equal(
+      agent._planOnlyTerminalDecision(noEvidenceTabId, draftedReply, { viaDone: true, outcome: 'success' })?.retry,
+      true,
+      `${AgentClass.name}: future promise without evidence bypassed recovery`,
     );
   }
 });
@@ -25469,9 +25472,10 @@ test('completion words do not mask mixed progress plus plan terminals', () => {
       'I found the workflow. Next, I will apply it.',
     ];
 
+    const guardState = agent._planExecutionGuards.get(tabId);
     for (const mixedTerminal of mixedTerminals) {
       assert.equal(
-        agent._looksLikePlanOnlyTerminal(mixedTerminal),
+        agent._looksLikePlanOnlyTerminal(mixedTerminal, guardState),
         true,
         `${AgentClass.name}: completion wording masked a plan or promise`,
       );
@@ -25974,42 +25978,6 @@ test('planner intent carries explicit app-state evidence authorization', async (
   });
 });
 
-test('planner intent carries explicit future-tense result authorization', async () => {
-  await withPlannerBrowserGlobals(async () => {
-    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
-      const agent = new AgentClass({ getActive: () => ({ name: 'intent-test', model: 'intent-test' }) });
-      agent._chatWithCostAllowance = async () => ({
-        content: plannerIntentFixture({
-          requestKind: 'execute',
-          requiresStateChange: false,
-          allowsFutureTenseResult: true,
-          localizedSummary: 'Draft the requested reply.',
-        }),
-      });
-      const tabId = 8698 + index;
-      const gate = await agent._runPlannerIntentGate(
-        tabId,
-        { role: 'user', content: 'Draft a reply that says “I will attend tomorrow.”' },
-        () => {},
-        null,
-        null,
-        '',
-        { tabUrl: 'https://example.com', tabTitle: 'Example' },
-        'act',
-        { locale: 'en' },
-      );
-
-      assert.equal(gate.proceed, true, `${AgentClass.name}: future-tense drafting task did not execute`);
-      assert.equal(gate.allowsFutureTenseResult, true, `${AgentClass.name}: future-tense result authorization was dropped`);
-      assert.equal(
-        agent._startPlanExecutionGuard(tabId, 'act', gate).allowsFutureTenseResult,
-        true,
-        `${AgentClass.name}: execution guard dropped future-tense result authorization`,
-      );
-    }
-  });
-});
-
 test('full planner carries explicit planner-shaped result authorization', async () => {
   await withPlannerBrowserGlobals(async () => {
     for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
@@ -26076,42 +26044,6 @@ test('full planner carries explicit app-state evidence authorization', async () 
 
       assert.equal(gate.proceed, true, `${AgentClass.name}: full planner blocked app-state task`);
       assert.equal(gate.allowsAppStateToolEvidence, true, `${AgentClass.name}: full planner dropped app-state authorization`);
-    }
-  });
-});
-
-test('full planner carries explicit future-tense result authorization', async () => {
-  await withPlannerBrowserGlobals(async () => {
-    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
-      const tabId = 8702 + index;
-      const agent = new AgentClass({ getActive: () => ({ name: 'planner-test', model: 'planner-test' }) });
-      agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
-      agent.setScheduledRunPolicy(tabId, {
-        requireConsequentialConfirmation: false,
-        autoApprovePlanReview: true,
-      });
-      agent._chatWithCostAllowance = async () => ({
-        content: plannerFixtureJson({
-          allows_future_tense_result: true,
-          summary: 'Draft the requested future-tense reply',
-        }),
-      });
-
-      const gate = await agent._runPlannerGate(
-        tabId,
-        { role: 'user', content: 'Draft a reply that says “I will attend tomorrow.”' },
-        () => {},
-        null,
-        null,
-        '',
-        { tabUrl: 'https://example.com', tabTitle: 'Example' },
-        'try',
-        'act',
-        { locale: 'en' },
-      );
-
-      assert.equal(gate.proceed, true, `${AgentClass.name}: full planner blocked future-tense drafting task`);
-      assert.equal(gate.allowsFutureTenseResult, true, `${AgentClass.name}: full planner dropped future-tense result authorization`);
     }
   });
 });
@@ -30118,7 +30050,6 @@ function plannerFixtureJson(overrides = {}) {
     requires_state_change: false,
     allows_planner_shaped_result: false,
     allows_app_state_tool_evidence: false,
-    allows_future_tense_result: false,
     summary: 'Open the page and collect visible account links',
     confidence: 0.75,
     steps: [{ id: '1', action: 'Read the current page', tools: ['read_page'] }],
