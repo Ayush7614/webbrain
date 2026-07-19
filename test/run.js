@@ -12213,6 +12213,47 @@ test('sidepanel exposes dangerously-skip-permissions in both builds', () => {
   }
 });
 
+test('permission skip education is contextual, one-time, and mirrored', () => {
+  for (const [label, prefix] of [
+    ['chrome', 'src/chrome'],
+    ['firefox', 'src/firefox'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/sidepanel.js'), 'utf8');
+    const html = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/sidepanel.html'), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, prefix, 'styles/sidepanel.css'), 'utf8');
+    const locale = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/locales/en.js'), 'utf8');
+
+    assert.match(html, /class="ob-note ob-permission-note" data-i18n="ob\.act\.permissions_tip"/, `${label}: Act onboarding should mention the prompt bypass`);
+    assert.match(locale, /'ob\.act\.permissions_tip': '[^']*\/dangerously-skip-permissions/, `${label}: onboarding copy should name the command`);
+    assert.match(panel, /const PERMISSION_EDUCATION_KEY = 'permissionPromptEducation';/, `${label}: education state should have one storage key`);
+    assert.match(panel, /const PERMISSION_EDUCATION_THRESHOLD = 2;/, `${label}: contextual hint should wait for the second permission prompt`);
+    assert.match(panel, /async function maybeShowPermissionEducationHint\(card\) \{[\s\S]*?await permissionEducationReady;[\s\S]*?if \(!askBeforeConsequential \|\| !card\) return;[\s\S]*?promptCount: Math\.min\([\s\S]*?PERMISSION_EDUCATION_THRESHOLD[\s\S]*?hintShown[\s\S]*?card\.isConnected/, `${label}: hint should be gate-aware, counted, and one-time`);
+    assert.match(panel, /if \(changes\[PERMISSION_EDUCATION_KEY\]\) \{[\s\S]*?normalizePermissionEducationState\([\s\S]*?newValue[\s\S]*?updateInputPlaceholder\(\);/, `${label}: education state should stay synchronized across open panels`);
+
+    const renderStart = panel.indexOf('function renderClarifyCard(data) {');
+    const permissionStart = panel.indexOf('if (data.permission && data.permission.capability)', renderStart);
+    const permissionEnd = panel.indexOf('if (data.reason)', permissionStart);
+    const permissionBody = panel.slice(permissionStart, permissionEnd);
+    assert.match(permissionBody, /content\.appendChild\(card\);[\s\S]*?void maybeShowPermissionEducationHint\(card\);/, `${label}: only permission cards should trigger education`);
+
+    assert.match(panel, /function insertPermissionSkipCommand\(\) \{[\s\S]*?if \(inputEl\.value\.trim\(\)\) \{[\s\S]*?sp\.perm\.skip_hint_draft[\s\S]*?return;[\s\S]*?inputEl\.value = command;[\s\S]*?updateSlashCommandAutocomplete\(\);[\s\S]*?syncSendButtonState\(\);/, `${label}: insert action should preserve drafts and refresh the composer`);
+    assert.match(panel, /querySelectorAll\('\.permission-education-action'\)\.forEach\(bindPermissionEducationAction\)/, `${label}: restored permission hints should regain their action`);
+    assert.match(panel, /function getInputPlaceholderKeys\(\) \{[\s\S]*?askBeforeConsequential && permissionEducationState\.promptCount > 0[\s\S]*?PERMISSION_REMINDER_PLACEHOLDER_KEY/, `${label}: reminder should rotate only after real permission use while prompts remain on`);
+    assert.match(panel, /function startInputPlaceholderRotation\(\)/, `${label}: placeholder rotation should exist in both builds`);
+    const placeholderKeysStart = panel.indexOf('const ASK_PLACEHOLDER_KEYS = [');
+    const placeholderKeysEnd = panel.indexOf('];', placeholderKeysStart);
+    const placeholderKeys = panel.slice(placeholderKeysStart, placeholderKeysEnd);
+    if (label === 'firefox') {
+      assert.doesNotMatch(placeholderKeys, /sp\.input\.placeholder_tip\.record/, 'firefox: placeholder rotation should not advertise unsupported recording');
+    } else {
+      assert.match(placeholderKeys, /sp\.input\.placeholder_tip\.record/, 'chrome: placeholder rotation should retain the recording tip');
+    }
+    assert.match(locale, /'sp\.input\.placeholder_tip\.skip_permissions': 'Prompt-free mode: \/dangerously-skip-permissions'/, `${label}: placeholder reminder should name the command`);
+    assert.match(css, /\.permission-education-hint\s*\{[\s\S]*?border-top:/, `${label}: contextual hint should be visually separated inside the permission card`);
+    assert.match(css, /\.permission-education-action:focus-visible\s*\{[\s\S]*?outline:/, `${label}: insert action should have a keyboard focus treatment`);
+  }
+});
+
 test('sidepanel scopes async tab commands to the original tab', () => {
   for (const [label, panelRel, styleRel, localeRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/styles/sidepanel.css', 'src/chrome/src/ui/locales/en.js'],
