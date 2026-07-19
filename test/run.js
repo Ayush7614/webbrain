@@ -31459,6 +31459,24 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
     && command.params.enabled === false
   ));
 
+  const quietProtocolGuard = new CDPClient();
+  const quietProtocolCommands = [];
+  quietProtocolGuard.sendCommand = async (_tabId, method, params) => {
+    quietProtocolCommands.push({ method, params });
+    return {};
+  };
+  quietProtocolGuard.evaluate = async (_tabId, expression) => ({
+    result: { value: expression.includes('__wb_file_input_click_guard_last || null') ? null : true },
+  });
+  await quietProtocolGuard.armFileInputClickGuard(44);
+  const quietBlocked = await quietProtocolGuard.consumeFileInputClickGuard(44, 0);
+  assert.equal(quietBlocked, null);
+  assert.equal(quietProtocolGuard.fileChooserGuards.has(44), false);
+  assert.ok(quietProtocolCommands.some(command =>
+    command.method === 'Page.setInterceptFileChooserDialog'
+    && command.params.enabled === false
+  ), 'empty consume must release tab-wide protocol interception');
+
   cdp.resolveSelector = async () => ({
     found: true,
     inViewport: true,

@@ -1191,7 +1191,11 @@ export class CDPClient {
     }
     const protocolBlocked = this.fileChooserGuards.get(tabId)?.blocked || null;
     const blocked = rendererBlocked || protocolBlocked;
-    if (blocked) await this._disarmProtocolFileChooserGuard(tabId);
+    // Protocol interception cancels every chooser in the tab, including a
+    // user's later trusted click, so it must never outlive this observation
+    // window. The narrower page-world wrapper can remain on its TTL to cover
+    // delayed programmatic click()/showPicker() callbacks.
+    await this._disarmProtocolFileChooserGuard(tabId);
     return blocked;
   }
 
