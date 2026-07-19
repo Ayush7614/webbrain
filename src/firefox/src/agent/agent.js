@@ -4710,7 +4710,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _isFormValidationCandidate(toolName, args = {}) {
     const name = String(toolName || '');
-    if (name === 'click' || name === 'click_ax' || name === 'iframe_click') return true;
+    if (name === 'click' || name === 'click_ax' || name === 'iframe_click' || name === 'execute_js') return true;
     if (name === 'set_field') return args?.submit === true;
     if (name === 'press_keys') {
       const keys = JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
@@ -4725,19 +4725,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       ? ['selector', 'ref_id', 'index', 'name', 'text', 'submit']
       : name === 'press_keys'
         ? ['selector', 'ref_id', 'index', 'key', 'keys']
+        : name === 'execute_js'
+          ? ['code']
         : ['selector', 'ref_id', 'index', 'text', 'x', 'y', 'urlFilter'];
     const identity = {};
     for (const field of fields) {
       const value = args?.[field];
       if (value == null || value === '') continue;
-      if (name === 'set_field' && field === 'text') {
+      if ((name === 'set_field' && field === 'text') || (name === 'execute_js' && field === 'code')) {
         const text = String(value);
         let hash = 2166136261;
         for (let i = 0; i < text.length; i++) {
           hash ^= text.charCodeAt(i);
           hash = Math.imul(hash, 16777619);
         }
-        identity.textFingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
+        const fingerprintField = name === 'execute_js' ? 'codeFingerprint' : 'textFingerprint';
+        identity[fingerprintField] = `${text.length}:${(hash >>> 0).toString(16)}`;
         continue;
       }
       identity[field] = typeof value === 'string' ? value.slice(0, 500) : value;
@@ -4749,6 +4752,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (detectedSubmit?.isSubmit) return true;
     const name = String(toolName || '');
     if (name === 'set_field') return args?.submit === true;
+    if (name === 'execute_js') return true;
     if (name === 'press_keys') {
       const keys = JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
       return /\b(?:enter|return)\b/.test(keys);

@@ -2426,11 +2426,32 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         continue;
       }
       const formValidationCandidate = this._isFormValidationCandidate(fnName, fnArgs);
-      const formValidationAllFrames = fnName === 'iframe_click' || fnName === 'press_keys';
-      let detectedSubmitAction = null;
+      let formValidationCoordinateFrames = null;
+      if (
+        formValidationCandidate
+        && fnName === 'click'
+        && fnArgs?.x != null
+        && fnArgs?.y != null
+      ) {
+        formValidationCoordinateFrames = await this._iframeRectsForCoordinate(
+          tabId,
+          fnArgs.x,
+          fnArgs.y,
+        );
+      }
+      const formValidationAllFrames = fnName === 'iframe_click'
+        || fnName === 'press_keys'
+        || (Array.isArray(formValidationCoordinateFrames) && formValidationCoordinateFrames.length > 0);
+      let detectedSubmitAction = formValidationAllFrames
+        && Array.isArray(formValidationCoordinateFrames)
+        && formValidationCoordinateFrames.length > 0
+        ? await this._detectLikelySubmitAction(tabId, fnName, fnArgs, {
+            coordinateFrames: formValidationCoordinateFrames,
+          })
+        : null;
       const validationBlock = formValidationCandidate ? this._formValidationBlocks.get(tabId) : null;
       const obviousSubmitAction = formValidationCandidate
-        && this._formValidationActionLooksSubmit(fnName, fnArgs);
+        && this._formValidationActionLooksSubmit(fnName, fnArgs, null, detectedSubmitAction);
       let formValidationBefore = (validationBlock || obviousSubmitAction)
         ? await this._captureFormValidationState(tabId, { allFrames: formValidationAllFrames })
         : [];
@@ -5438,7 +5459,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _isFormValidationCandidate(toolName, args = {}) {
     const name = String(toolName || '');
-    if (name === 'click' || name === 'click_ax' || name === 'iframe_click') return true;
+    if (name === 'click' || name === 'click_ax' || name === 'iframe_click' || name === 'execute_js') return true;
     if (name === 'set_field') return args?.submit === true;
     if (name === 'press_keys') {
       const keys = JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
@@ -5453,19 +5474,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       ? ['selector', 'ref_id', 'index', 'name', 'text', 'submit']
       : name === 'press_keys'
         ? ['selector', 'ref_id', 'index', 'key', 'keys']
+        : name === 'execute_js'
+          ? ['code']
         : ['selector', 'ref_id', 'index', 'text', 'x', 'y', 'urlFilter'];
     const identity = {};
     for (const field of fields) {
       const value = args?.[field];
       if (value == null || value === '') continue;
-      if (name === 'set_field' && field === 'text') {
+      if ((name === 'set_field' && field === 'text') || (name === 'execute_js' && field === 'code')) {
         const text = String(value);
         let hash = 2166136261;
         for (let i = 0; i < text.length; i++) {
           hash ^= text.charCodeAt(i);
           hash = Math.imul(hash, 16777619);
         }
-        identity.textFingerprint = `${text.length}:${(hash >>> 0).toString(16)}`;
+        const fingerprintField = name === 'execute_js' ? 'codeFingerprint' : 'textFingerprint';
+        identity[fingerprintField] = `${text.length}:${(hash >>> 0).toString(16)}`;
         continue;
       }
       identity[field] = typeof value === 'string' ? value.slice(0, 500) : value;
@@ -5477,6 +5501,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (detectedSubmit?.isSubmit) return true;
     const name = String(toolName || '');
     if (name === 'set_field') return args?.submit === true;
+    if (name === 'execute_js') return true;
     if (name === 'press_keys') {
       const keys = JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
       return /\b(?:enter|return)\b/.test(keys);
@@ -5881,7 +5906,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
   }
 
-  async _detectLikelySubmitAction(tabId, toolName, args = {}) {
+  async _detectLikelySubmitAction(tabId, toolName, args = {}, options = {}) {
     const name = String(toolName || '');
     const submitCapableTools = new Set(['click', 'click_ax', 'iframe_click', 'set_field', 'press_keys', 'execute_js']);
     if (!submitCapableTools.has(name)) return null;
@@ -5911,7 +5936,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       let probeArgs = args || {};
       let allFrames = name === 'iframe_click' || name === 'press_keys';
       if (name === 'click' && args?.x != null && args?.y != null && globalThis.chrome?.scripting?.executeScript) {
-        const frameCoordinateRects = await this._iframeRectsForCoordinate(tabId, args.x, args.y);
+        const frameCoordinateRects = Array.isArray(options?.coordinateFrames)
+          ? options.coordinateFrames
+          : await this._iframeRectsForCoordinate(tabId, args.x, args.y);
         if (frameCoordinateRects.length) {
           probeArgs = { ...(args || {}), __wbTopLevelCoordinateFrames: frameCoordinateRects };
           allFrames = true;

@@ -22936,6 +22936,15 @@ test('form validation classifier surfaces native and custom submission errors', 
     assert.notEqual(failedSetFieldKey, correctedSetFieldKey, `${AgentClass.name}: corrected set_field value kept the failed retry key`);
     assert.doesNotMatch(failedSetFieldKey, /wrong@example\.com/, `${AgentClass.name}: set_field retry key retained raw typed text`);
     assert.doesNotMatch(correctedSetFieldKey, /correct@example\.com/, `${AgentClass.name}: corrected retry key retained raw typed text`);
+
+    const failedExecuteJsKey = agent._formValidationActionKey('execute_js', {
+      code: 'document.querySelector("form").requestSubmit()',
+    });
+    const correctedExecuteJsKey = agent._formValidationActionKey('execute_js', {
+      code: 'document.querySelector("#checkout").requestSubmit()',
+    });
+    assert.notEqual(failedExecuteJsKey, correctedExecuteJsKey, `${AgentClass.name}: corrected execute_js kept the failed retry key`);
+    assert.doesNotMatch(failedExecuteJsKey, /requestSubmit/, `${AgentClass.name}: execute_js retry key retained raw code`);
   }
 });
 
@@ -22979,6 +22988,156 @@ test('form validation polling catches delayed errors', async () => {
     assert.ok(failure, `${AgentClass.name}: delayed validation feedback was missed`);
     assert.match(failure.error, /server rejected this value/i);
     assert.equal(captures, 2, `${AgentClass.name}: validation polling did not retry after a same-form redirect`);
+  }
+});
+
+test('coordinate iframe submits capture validation state in all frames', async () => {
+  const agent = new AgentCh({ getVisionProvider: async () => null });
+  const tabId = 5118;
+  const url = 'https://merchant.example/checkout';
+  const before = [{
+    frameId: 0,
+    url,
+    activeInvalid: false,
+    invalidFields: [],
+    ariaInvalidFields: [],
+    alerts: [],
+    controlFingerprint: 'top',
+  }, {
+    frameId: 3,
+    url: 'https://payments.example/card',
+    activeInvalid: false,
+    invalidFields: [],
+    ariaInvalidFields: [],
+    alerts: [],
+    controlFingerprint: 'card-ready',
+  }];
+  const after = structuredClone(before);
+  after[1].activeInvalid = true;
+  after[1].invalidFields = [{
+    label: 'Card number',
+    type: 'text',
+    message: 'Enter a valid card number.',
+  }];
+  after[1].controlFingerprint = 'card-invalid';
+
+  const captureOptions = [];
+  let captures = 0;
+  agent._ensureGateSetting = async () => false;
+  agent._skipPermissionGate = false;
+  agent._currentUrl = async () => url;
+  agent._recordProgressObservation = async () => null;
+  agent._autoRecordProgressAction = () => null;
+  agent._progressWarningForAction = () => '';
+  agent._persist = () => {};
+  agent._iframeRectsForCoordinate = async () => [{
+    left: 20,
+    top: 40,
+    width: 400,
+    height: 250,
+    url: 'https://payments.example/card',
+    host: 'payments.example',
+    index: 0,
+  }];
+  agent._detectLikelySubmitAction = async () => ({
+    isSubmit: true,
+    host: 'payments.example',
+    tool: 'click',
+    reason: 'submit button/control activation',
+  });
+  agent._promptSubmitConfirmation = async () => 'once';
+  agent._captureFormValidationState = async (_tabId, options = {}) => {
+    captureOptions.push(options);
+    captures += 1;
+    return structuredClone(captures === 1 ? before : after);
+  };
+  agent.executeTool = async () => ({
+    success: true,
+    dispatched: true,
+    text: 'Pay',
+  });
+
+  const messages = [];
+  await agent._executeToolBatch(
+    tabId,
+    [{
+      id: 'coordinate_iframe_submit',
+      function: { name: 'click', arguments: '{"x":120,"y":160}' },
+    }],
+    messages,
+    () => {},
+    { supportsVision: false },
+    '',
+    new Set(['click']),
+    1,
+  );
+
+  assert.ok(captureOptions.length >= 2, 'Chrome: coordinate iframe submit did not capture before and after states');
+  assert.ok(captureOptions.every(options => options.allFrames === true), 'Chrome: coordinate iframe validation capture omitted child frames');
+  const result = JSON.parse(agent._unwrapUntrusted(messages[0].content));
+  assert.equal(result.formValidationFailed, true, 'Chrome: child-frame validation failure was not returned');
+  assert.match(result.error, /valid card number/i);
+});
+
+test('execute_js submissions receive form validation feedback', async () => {
+  const url = 'https://example.com/checkout';
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5119;
+    const before = [{
+      frameId: 0,
+      url,
+      activeInvalid: false,
+      invalidFields: [],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'ready',
+    }];
+    const after = [{
+      ...before[0],
+      alerts: ['Please correct the payment details.'],
+      controlFingerprint: 'script-error',
+    }];
+    let captures = 0;
+    agent._ensureGateSetting = async () => true;
+    agent._skipPermissionGate = true;
+    agent._currentUrl = async () => url;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._progressWarningForAction = () => '';
+    agent._persist = () => {};
+    agent._captureFormValidationState = async () => {
+      captures += 1;
+      return structuredClone(captures === 1 ? before : after);
+    };
+    agent.executeTool = async () => ({
+      success: true,
+      dispatched: true,
+      result: null,
+    });
+
+    const messages = [];
+    await agent._executeToolBatch(
+      tabId,
+      [{
+        id: 'execute_js_submit',
+        function: {
+          name: 'execute_js',
+          arguments: '{"code":"document.querySelector(\\\"form\\\").requestSubmit()"}',
+        },
+      }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['execute_js']),
+      1,
+    );
+
+    assert.ok(captures >= 2, `${AgentClass.name}: execute_js submit did not capture validation states`);
+    const result = JSON.parse(agent._unwrapUntrusted(messages[0].content));
+    assert.equal(result.formValidationFailed, true, `${AgentClass.name}: execute_js validation failure was not returned`);
+    assert.match(result.error, /correct the payment details/i);
   }
 });
 
