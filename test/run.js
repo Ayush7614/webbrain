@@ -22902,6 +22902,14 @@ test('form validation classifier surfaces native and custom submission errors', 
     });
     assert.equal(correctiveNative, null, `${AgentClass.name}: pre-existing native validation blocked a corrective button`);
 
+    const persistentNativeSubmit = agent._detectFormValidationFailure(alreadyActive, alreadyActive, {
+      toolName: 'click',
+      args: { text: 'Submit' },
+      result: { success: true, tag: 'BUTTON', type: 'submit', isSubmitControl: true },
+    });
+    assert.ok(persistentNativeSubmit, `${AgentClass.name}: already-focused native invalid field was missed on a real submit`);
+    assert.match(persistentNativeSubmit.error, /compatible with at least one application/i);
+
     const customAfter = [{
       ...before[0],
       invalidFields: [],

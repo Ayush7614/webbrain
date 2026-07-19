@@ -5505,8 +5505,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return Object.keys(identity).length ? `${name}:${JSON.stringify(identity)}` : '';
   }
 
-  _formValidationActionLooksSubmit(toolName, args = {}, result = null, detectedSubmit = null) {
-    if (detectedSubmit?.isSubmit) return true;
+  _formValidationActionHasStrongSubmitEvidence(toolName, args = {}, result = null, detectedSubmit = null) {
+    if (detectedSubmit?.isSubmit === true) return true;
     const name = String(toolName || '');
     if (name === 'set_field') return args?.submit === true;
     if (name === 'execute_js') return true;
@@ -5516,11 +5516,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
     if (!['click', 'click_ax', 'iframe_click'].includes(name)) return false;
 
-    if (result?.isSubmitControl === true) return true;
-    const tag = String(result?.tag || '').toUpperCase();
-    const type = String(result?.type || '').toLowerCase();
-    if (tag === 'BUTTON' && (result?.isSubmitControl === true || type === 'submit')) return true;
+    const target = result?.frame && typeof result.frame === 'object' ? result.frame : result;
+    if (target?.isSubmitControl === true) return true;
+    const tag = String(target?.tag || '').toUpperCase();
+    const type = String(target?.type || '').toLowerCase();
+    if (tag === 'BUTTON' && type === 'submit') return true;
     if (tag === 'INPUT' && (type === 'submit' || type === 'image')) return true;
+    const selector = String(args?.selector || '').toLowerCase();
+    return /type\s*=\s*["']?(?:submit|image)/.test(selector);
+  }
+
+  _formValidationActionLooksSubmit(toolName, args = {}, result = null, detectedSubmit = null) {
+    if (this._formValidationActionHasStrongSubmitEvidence(toolName, args, result, detectedSubmit)) return true;
+    const name = String(toolName || '');
+    if (!['click', 'click_ax', 'iframe_click'].includes(name)) return false;
 
     const label = String(args?.text || result?.name || result?.matched || result?.text || '').trim();
     if (/^(?:continue|next|create|save|submit|add|post|publish|send|confirm|sign up|sign in|log in|register|place order|pay|checkout|update|apply|finish|done)\b/i.test(label)) {
@@ -5577,6 +5586,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       context.result,
       context.detectedSubmit,
     );
+    const strongSubmitEvidence = this._formValidationActionHasStrongSubmitEvidence(
+      context.toolName,
+      context.args,
+      context.result,
+      context.detectedSubmit,
+    );
     const includePersistentValidation = looksLikeSubmit
       && context.priorValidationFailure === true;
     const beforeAlerts = new Set(before.flatMap(state =>
@@ -5613,7 +5628,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const nativeFailureStates = sameRouteAfter.filter((state) => {
       if (state?.activeInvalid !== true) return false;
       const key = `${state?.frameId ?? ''}|${this._normalizeUrlPath(String(state?.url || ''))}`;
-      return !beforeActiveInvalid.has(key);
+      return !beforeActiveInvalid.has(key) || strongSubmitEvidence;
     });
     const nativeInvalidFields = looksLikeSubmit
       ? nativeFailureStates.flatMap(state => Array.isArray(state?.invalidFields) ? state.invalidFields : [])
