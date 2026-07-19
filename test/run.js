@@ -2323,6 +2323,13 @@ test('config transfer exports and restores Settings values including provider ke
           configured: true,
           deviceGuid: 'must-not-import',
         },
+        webbrain_cloud: {
+          type: 'openai',
+          baseUrl: 'https://stale-export.example/v1',
+          apiKey: 'stale-export-secret',
+          configured: true,
+          deviceGuid: 'must-not-import',
+        },
       },
       futureSetting: 'ignored',
     },
@@ -2336,15 +2343,31 @@ test('config transfer exports and restores Settings values including provider ke
   assert.deepEqual(chromePatch.ignoredKeys, ['futureSetting']);
   const currentSettings = {
     providers: {
-      webbrain_cloud: { type: 'openai', deviceGuid: 'platform-device' },
+      webbrain_cloud: {
+        type: 'openai',
+        baseUrl: 'https://platform.example/v1',
+        apiKey: 'platform-secret',
+        deviceGuid: 'platform-device',
+      },
       anthropic: { type: 'anthropic', apiKey: 'existing-secret' },
     },
   };
   const mergedPatch = ConfigTransferCh.mergeConfigPatchSettings(currentSettings, chromePatch.settings);
-  assert.equal(mergedPatch.providers.webbrain_cloud.deviceGuid, 'platform-device');
+  const firefoxMergedPatch = ConfigTransferFx.mergeConfigPatchSettings(currentSettings, firefoxPatch.settings);
+  assert.deepEqual(firefoxMergedPatch, mergedPatch, 'Chrome and Firefox provider merge should remain identical');
+  assert.deepEqual(
+    mergedPatch.providers.webbrain_cloud,
+    currentSettings.providers.webbrain_cloud,
+    'sparse import must preserve the complete platform-managed WebBrain Cloud provider',
+  );
   assert.equal(mergedPatch.providers.anthropic.apiKey, 'existing-secret');
   assert.equal(mergedPatch.providers.openai.apiKey, 'provider-secret');
   assert.equal(currentSettings.providers.openai, undefined, 'provider merge must not mutate current storage');
+  assert.equal(
+    ConfigTransferCh.mergeConfigPatchSettings({}, chromePatch.settings).providers.webbrain_cloud,
+    undefined,
+    'a portable WebBrain Cloud provider must not be introduced without platform state',
+  );
 });
 
 test('config transfer validates schema, size, containers, and unknown keys', () => {
