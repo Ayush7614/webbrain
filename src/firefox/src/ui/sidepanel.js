@@ -6657,8 +6657,8 @@ async function ensureDevMode() {
       return false;
     }
   } catch (e) {
-    // The agent also enforces this; keep the UI usable if the background
-    // restarted between lookup and send.
+    // The agent also enforces this server-side; don't block Dev on a stale
+    // sidepanel/background lookup failure.
   }
   setMode('dev');
   return true;

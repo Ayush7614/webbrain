@@ -840,6 +840,7 @@
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
       return {
         success: false,
+        dispatched: false,
         error: 'Invalid selector: ":contains()" and ":has-text()" are jQuery/Playwright extensions, not valid CSS. Use click({text: "..."}) instead.',
       };
     }
@@ -881,7 +882,7 @@
 
       const modes = explicit ? [explicit] : ['exact', 'prefix', 'contains'];
       if (explicit && !['exact', 'prefix', 'contains'].includes(explicit)) {
-        return { success: false, error: `Invalid textMatch "${explicit}". Use exact, prefix, or contains.` };
+        return { success: false, dispatched: false, error: `Invalid textMatch "${explicit}". Use exact, prefix, or contains.` };
       }
 
       let matches = [];
@@ -949,7 +950,7 @@
         }
         if (!el && matches.length === 0) {
           const _noteModal = _modalRoot ? ' (search was scoped to the open modal/dialog; if the target is outside it, dismiss or complete the dialog first)' : '';
-          return { success: false, error: `No clickable element found for text "${params.text}" (also tried scrolling down)${_noteModal}` };
+          return { success: false, dispatched: false, error: `No clickable element found for text "${params.text}" (also tried scrolling down)${_noteModal}` };
         }
       }
       if (!el && matches.length > 1) {
@@ -1003,6 +1004,7 @@
           const _scopeNote = _modalRoot ? ' (search was scoped to the open modal/dialog)' : '';
           return {
             success: false,
+            dispatched: false,
             error: `Ambiguous text match for "${params.text}" (mode=${usedMode}, matches=${matches.length})${_scopeNote}. ${candidates.length} candidates returned with cx/cy (precomputed click center, in CSS pixels) and ancestor context. Pick one and call click({x: candidate.cx, y: candidate.cy}) — no arithmetic needed. Use the ancestor field to disambiguate (e.g. an alertdialog's Cancel vs a form's Cancel sit in different containers). Do NOT retry click({text: "${params.text}"}) — it will fail the same way.`,
             candidates,
           };
@@ -1031,12 +1033,12 @@
       // index the agent saw is the index we resolve.
       const interactive = queryInteractive();
       el = interactive[params.index];
-      if (!el) return _staleIndexError(params.index, interactive);
+      if (!el) return { ..._staleIndexError(params.index, interactive), dispatched: false };
     } else if (params.x != null && params.y != null) {
       el = document.elementFromPoint(params.x, params.y);
     }
 
-    if (!el) return { success: false, error: 'Element not found' };
+    if (!el) return { success: false, dispatched: false, error: 'Element not found' };
     const targetIsSubmitControl = _isSubmitControl(el);
 
     // ── Auto-select: if click text matches a <select> option, select it ──
@@ -1070,6 +1072,7 @@
       const options = Array.from(el.options).map(o => o.text.trim());
       return {
         success: false,
+        dispatched: false,
         tag: 'SELECT',
         text: el.options[el.selectedIndex]?.text?.trim() || '',
         error: `CANNOT CLICK a <select> dropdown — clicking opens a native OS popup that cannot be controlled. The dropdown is now focused (current: "${el.options[el.selectedIndex]?.text?.trim() || ''}"). Use type_text({text: "option name"}) to change the value. Available options: ${options.join(', ')}`,
@@ -1090,6 +1093,7 @@
         const options = Array.from(nearbySel.options).map(o => o.text.trim());
         return {
           success: false,
+          dispatched: false,
           tag: 'SELECT',
           text: nearbySel.options[nearbySel.selectedIndex]?.text?.trim() || '',
           error: `CANNOT CLICK — a <select> dropdown is near this element (current: "${nearbySel.options[nearbySel.selectedIndex]?.text?.trim() || ''}"). The dropdown is now focused. Use type_text({text: "option name"}) to change the value. Available options: ${options.join(', ')}`,
@@ -1137,6 +1141,7 @@
             } catch {}
             return {
               success: false,
+              dispatched: false,
               error: `Click blocked: an overlay is covering the target. Topmost element at (${cx}, ${cy}) is <${blockerInfo}>${blockerContainer}, not your target <${el.tagName.toLowerCase()}>. Dismiss the overlay (press Escape, click its close button, or complete the modal flow) before retrying. If you're sure you want to force the click, use click({x: ${cx}, y: ${cy}}) — that will hit whatever's on top.`,
               occluded: true,
               occludedBy: { tag: topmost.tagName.toLowerCase(), text: txt, cx, cy },
@@ -1158,6 +1163,7 @@
       const postOpts = Array.from(postActive.options).map(o => o.text.trim());
       return {
         success: false,
+        dispatched: true,
         tag: 'SELECT',
         text: postActive.options[postActive.selectedIndex]?.text?.trim() || '',
         error: `CANNOT CLICK — a <select> dropdown was activated by this click (current: "${postActive.options[postActive.selectedIndex]?.text?.trim() || ''}"). The dropdown is now focused. Use type_text({text: "option name"}) to change the value. Available options: ${postOpts.join(', ')}`,
@@ -1283,12 +1289,24 @@
       return _loadDeasciifier().then(() => {
         params.text = _applyLangTransform(params.text, params.lang);
         return _typeTextInner(params);
-      }).catch(e => ({ success: false, error: e.message }));
+      }).catch(e => ({
+        success: false,
+        dispatched: false,
+        noDispatch: true,
+        error: e.message,
+      }));
     }
     return _typeTextInner(params);
   }
 
   function _typeTextInner(params) {
+    const noDispatchFailure = (error, extra = {}) => ({
+      success: false,
+      error,
+      ...extra,
+      dispatched: false,
+      noDispatch: true,
+    });
     let el;
     if (params.selector) {
       el = safeQuerySelector(params.selector);
@@ -1296,26 +1314,26 @@
       // Same index space as getInteractiveElements / clickElement.
       const interactive = queryInteractive();
       el = interactive[params.index];
-      if (!el) return _staleIndexError(params.index, interactive);
+      if (!el) {
+        const stale = _staleIndexError(params.index, interactive);
+        return noDispatchFailure(stale.error, stale);
+      }
     } else {
       // Fallback path: type into the currently focused element. Used when
       // CDP isn't available or as the secondary path. Usually unreached on
       // chrome because agent.js routes type_text → cdpClient first.
       el = document.activeElement;
       if (!el || el === document.body || el === document.documentElement) {
-        return { success: false, error: 'No editable element is currently focused. Click the target input/textarea first, then call type_text again with no selector.' };
+        return noDispatchFailure('No editable element is currently focused. Click the target input/textarea first, then call type_text again with no selector.');
       }
       // Verify it's actually editable
       const editable = el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
       if (!editable) {
-        return {
-          success: false,
-          error: `Focused element <${el.tagName.toLowerCase()}> is not an editable field. Click the target input/textarea first, then call type_text again.`,
-        };
+        return noDispatchFailure(`Focused element <${el.tagName.toLowerCase()}> is not an editable field. Click the target input/textarea first, then call type_text again.`);
       }
     }
 
-    if (!el) return { success: false, error: 'Element not found' };
+    if (!el) return noDispatchFailure('Element not found');
 
     // Guard: only INPUT, TEXTAREA, SELECT, and contenteditable are typeable.
     // Calling HTMLInputElement's native value setter on anything else throws
@@ -1326,10 +1344,7 @@
       || el instanceof HTMLSelectElement;
     if (!isTypeable) {
       const tag = (el.tagName || '').toLowerCase();
-      return {
-        success: false,
-        error: `Cannot type into <${tag}> — it is not an editable field. If you wanted to activate it, use click instead. If the real target is a nearby input, click the input first, then call type_text({text: "..."}) with no selector.`,
-      };
+      return noDispatchFailure(`Cannot type into <${tag}> — it is not an editable field. If you wanted to activate it, use click instead. If the real target is a nearby input, click the input first, then call type_text({text: "..."}) with no selector.`);
     }
 
     el.focus();
@@ -1355,7 +1370,7 @@
         || Array.from(el.options).find(o => o.text.trim().toLowerCase().includes(needle.toLowerCase()));
       const match = byValue || byText;
       if (!match) {
-        return { success: false, error: `No <option> matching "${params.text}" in select.` };
+        return noDispatchFailure(`No <option> matching "${params.text}" in select.`);
       }
       const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
       if (nativeSetter) nativeSetter.call(el, match.value);
@@ -1403,7 +1418,12 @@
     const repeat = Math.max(1, Math.min(3, Number.isFinite(repeatRaw) ? Math.floor(repeatRaw) : 1));
     const SUPPORTED_KEYS = ['Escape', 'Tab', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
     if (!SUPPORTED_KEYS.includes(key)) {
-      return { success: false, error: `Unsupported key "${key}". Supported keys: ${SUPPORTED_KEYS.join(', ')}.` };
+      return {
+        success: false,
+        dispatched: false,
+        noDispatch: true,
+        error: `Unsupported key "${key}". Supported keys: ${SUPPORTED_KEYS.join(', ')}.`,
+      };
     }
 
     // NOTE: this path dispatches untrusted (isTrusted: false) KeyboardEvents,
@@ -1463,7 +1483,7 @@
       if (key === 'Tab') moveTabFocus();
     }
 
-    return { success: true, key, repeat, method: 'keyboardevent', focusedTag: document.activeElement?.tagName || null };
+    return { success: true, dispatched: true, key, repeat, method: 'keyboardevent', focusedTag: document.activeElement?.tagName || null };
   }
 
   /**
@@ -3014,10 +3034,19 @@
         }
       },
       'click_ax': () => {
+        let dispatched = false;
+        const failure = (error, extra = {}) => ({
+          success: false,
+          error,
+          ...extra,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true, fallbackAttempted: false }),
+        });
         try {
           const { ref_id } = msg.params || {};
-          if (typeof ref_id !== 'string') return { success: false, error: 'ref_id (string, e.g. "ref_42") is required' };
-          if (typeof window.__wb_ax_lookup !== 'function') return { success: false, error: 'accessibility-tree.js not injected' };
+          if (typeof ref_id !== 'string') return failure('ref_id (string, e.g. "ref_42") is required');
+          if (typeof window.__wb_ax_lookup !== 'function') return failure('accessibility-tree.js not injected');
           const el = window.__wb_ax_lookup(ref_id);
           if (!el) {
             let suggestions = [];
@@ -3030,7 +3059,7 @@
             const hint = suggestions.length
               ? ' Nearest existing refs: ' + suggestions.map(s => `${s.ref} (${s.role}${s.name ? ' "' + s.name + '"' : ''})`).join(', ') + '.'
               : '';
-            return { success: false, error: `ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, suggestions };
+            return failure(`ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, { suggestions });
           }
           try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
           try { el.focus({ preventScroll: true }); } catch {}
@@ -3053,6 +3082,42 @@
           const fallbackStateBefore = _axFallbackState(el);
           const rect = el.getBoundingClientRect();
           const tag = el.tagName ? el.tagName.toLowerCase() : '';
+          const targetContext = (() => {
+            try {
+              const ownText = String(_axAccessibleName(el) || el.innerText || '')
+                .replace(/\s+/g, ' ').trim();
+              let fallback = null;
+              let node = el.parentElement;
+              for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+                const text = String(node.innerText || '').replace(/\s+/g, ' ').trim();
+                if (!text || text === ownText) continue;
+                const headingEl = node.querySelector?.('h1,h2,h3,h4,[role="heading"]');
+                const linkEl = node.querySelector?.('a[href]');
+                const role = String(node.getAttribute?.('role') || '').toLowerCase();
+                const nodeTag = String(node.tagName || '').toLowerCase();
+                const productCard = !!node.matches?.([
+                  '[data-product-id]',
+                  '[data-product]',
+                  '[data-testid*="product" i]',
+                  '[class*="product" i]',
+                  '[class*="card" i]',
+                  '[class*="tile" i]',
+                ].join(','));
+                const context = {
+                  text: text.slice(0, 600),
+                  ...(headingEl ? { heading: String(headingEl.innerText || headingEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) } : {}),
+                  ...(linkEl ? { href: String(linkEl.href || linkEl.getAttribute('href') || '').slice(0, 500) } : {}),
+                };
+                if (!fallback) fallback = context;
+                if (productCard || headingEl || linkEl || role === 'listitem' || nodeTag === 'li' || nodeTag === 'article') {
+                  return context;
+                }
+              }
+              return fallback;
+            } catch {
+              return null;
+            }
+          })();
           const fallbackStatic = _axFallbackStaticAssessment(el);
           let popupRole = '';
           let popupHasPopup = null;
@@ -3101,6 +3166,7 @@
           }
           rememberInteractionPoint(el, 'click_ax');
           const syntheticClickStartedAt = Date.now();
+          dispatched = true;
           el.click();
           const fallbackStateAfterImmediate = _axFallbackState(el);
           // If the model just clicked a text-entry element, its next call must
@@ -3130,6 +3196,7 @@
               _fallbackWeakStateAfterImmediate: fallbackStateAfterImmediate.weak,
               _fallbackStaticBlockedReason: fallbackStatic.blockedReason,
               rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+              ...(targetContext ? { targetContext } : {}),
             };
             // Echo accessible name + href so the model can see exactly what
             // element it hit. This is critical when a stale ref_id points at
@@ -3203,29 +3270,38 @@
                 try {
                   resolve(buildResponse());
                 } catch (e) {
-                  resolve({ success: false, error: e && e.message || String(e) });
+                  resolve(failure(e && e.message || String(e)));
                 }
               }, 120);
             });
           }
           return buildResponse();
         } catch (e) {
-          return { success: false, error: e && e.message || String(e) };
+          return failure(e && e.message || String(e));
         }
       },
       'type_ax': () => {
+        let dispatched = false;
+        const failure = (error, extra = {}) => ({
+          success: false,
+          error,
+          ...extra,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+        });
         if (msg.params?.lang === 'tr-deasciify') {
           return _loadDeasciifier().then(() => {
             msg.params.text = _applyLangTransform(msg.params.text, msg.params.lang);
             delete msg.params.lang;
             return handlers['type_ax']();
-          }).catch(e => ({ success: false, error: e.message }));
+          }).catch(e => failure(e.message));
         }
         try {
           const { ref_id, text, clear } = msg.params || {};
-          if (typeof ref_id !== 'string') return { success: false, error: 'ref_id (string, e.g. "ref_42") is required' };
-          if (typeof text !== 'string') return { success: false, error: 'text (string) is required' };
-          if (typeof window.__wb_ax_lookup !== 'function') return { success: false, error: 'accessibility-tree.js not injected' };
+          if (typeof ref_id !== 'string') return failure('ref_id (string, e.g. "ref_42") is required');
+          if (typeof text !== 'string') return failure('text (string) is required');
+          if (typeof window.__wb_ax_lookup !== 'function') return failure('accessibility-tree.js not injected');
           const el = window.__wb_ax_lookup(ref_id);
           if (!el) {
             let suggestions = [];
@@ -3238,7 +3314,7 @@
             const hint = suggestions.length
               ? ' Nearest existing refs: ' + suggestions.map(s => `${s.ref} (${s.role}${s.name ? ' "' + s.name + '"' : ''})`).join(', ') + '.'
               : '';
-            return { success: false, error: `ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, suggestions };
+            return failure(`ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, { suggestions });
           }
           try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
           try { el.focus({ preventScroll: true }); } catch {}
@@ -3253,6 +3329,7 @@
             } catch { return null; }
           })();
           if (el.isContentEditable) {
+            dispatched = true;
             if (clear) {
               try {
                 const sel = window.getSelection();
@@ -3282,10 +3359,7 @@
                 'reset', 'image', 'color', 'range', 'hidden',
               ]);
               if (nonTypeable.has(inputType)) {
-                return {
-                  success: false,
-                  error: `ref_id ${ref_id} is an <input type="${inputType}"> which is not text-typeable. Use click_ax to toggle/activate it instead.`,
-                };
+                return failure(`ref_id ${ref_id} is an <input type="${inputType}"> which is not text-typeable. Use click_ax to toggle/activate it instead.`);
               }
             }
             if (el.tagName === 'SELECT') {
@@ -3300,14 +3374,16 @@
                 || Array.from(el.options).find((o) => o.text.trim().toLowerCase().includes(needle.toLowerCase()));
               const match = byValue || byText;
               if (!match) {
-                return { success: false, error: `No <option> matching "${text}" in select ref_id ${ref_id}.` };
+                return failure(`No <option> matching "${text}" in select ref_id ${ref_id}.`);
               }
+              dispatched = true;
               const selSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
               if (selSetter) selSetter.call(el, match.value); else el.value = match.value;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
               return { success: true, method: 'type_ax_select', ref_id, value: el.value, rect: typeRect };
             }
+            dispatched = true;
             if (clear) el.value = '';
             // Use the native setter so React's synthetic event system picks it up.
             const proto = el.tagName === 'TEXTAREA'
@@ -3321,12 +3397,21 @@
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return { success: true, method: 'type_ax_input', ref_id, rect: typeRect };
           }
-          return { success: false, error: `ref_id ${ref_id} is not a typeable element (tag=${el.tagName}). Use click_ax then type_text.` };
+          return failure(`ref_id ${ref_id} is not a typeable element (tag=${el.tagName}). Use click_ax then type_text.`);
         } catch (e) {
-          return { success: false, error: e && e.message || String(e) };
+          return failure(e && e.message || String(e));
         }
       },
       'set_field': async () => {
+        let dispatched = false;
+        const failure = (error, extra = {}) => ({
+          success: false,
+          error,
+          ...extra,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+        });
         try {
           if (msg.params?.lang === 'tr-deasciify') {
             await _loadDeasciifier();
@@ -3334,9 +3419,9 @@
             delete msg.params.lang;
           }
           const { ref_id, text, clear = true, submit = false } = msg.params || {};
-          if (typeof ref_id !== 'string') return { success: false, error: 'ref_id (string, e.g. "ref_42") is required' };
-          if (typeof text !== 'string') return { success: false, error: 'text (string) is required' };
-          if (typeof window.__wb_ax_lookup !== 'function') return { success: false, error: 'accessibility-tree.js not injected' };
+          if (typeof ref_id !== 'string') return failure('ref_id (string, e.g. "ref_42") is required');
+          if (typeof text !== 'string') return failure('text (string) is required');
+          if (typeof window.__wb_ax_lookup !== 'function') return failure('accessibility-tree.js not injected');
           const el = window.__wb_ax_lookup(ref_id);
           if (!el) {
             let suggestions = [];
@@ -3349,7 +3434,7 @@
             const hint = suggestions.length
               ? ' Nearest existing refs: ' + suggestions.map(s => `${s.ref} (${s.role}${s.name ? ' "' + s.name + '"' : ''})`).join(', ') + '.'
               : '';
-            return { success: false, error: `ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, suggestions };
+            return failure(`ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, { suggestions });
           }
           try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
           try { el.focus({ preventScroll: true }); } catch {}
@@ -3366,12 +3451,13 @@
             const inputType = (el.type || 'text').toLowerCase();
             const nonTypeable = new Set(['checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image', 'color', 'range', 'hidden']);
             if (nonTypeable.has(inputType)) {
-              return { success: false, error: `ref_id ${ref_id} is an <input type="${inputType}"> which is not text-typeable. Use click_ax to toggle/activate it instead.` };
+              return failure(`ref_id ${ref_id} is an <input type="${inputType}"> which is not text-typeable. Use click_ax to toggle/activate it instead.`);
             }
           } else if (!el.isContentEditable && el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT') {
-            return { success: false, error: `ref_id ${ref_id} is not a text field (tag=${el.tagName}). set_field works on input/textarea/contenteditable only.` };
+            return failure(`ref_id ${ref_id} is not a text field (tag=${el.tagName}). set_field works on input/textarea/contenteditable only.`);
           }
           let prevValue = '';
+          dispatched = true;
           if (el.isContentEditable) {
             prevValue = el.textContent || '';
             if (clear) {
@@ -3495,7 +3581,7 @@
             fieldMeta,
           };
         } catch (e) {
-          return { success: false, error: e && e.message || String(e) };
+          return failure(e && e.message || String(e));
         }
       },
       // ── ref_id → on-screen rect resolver ─────────────────────────────────

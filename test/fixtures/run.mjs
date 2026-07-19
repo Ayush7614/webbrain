@@ -628,6 +628,7 @@ test('modal scoping: click({text:"Publish"}) returns no-match (scoped out)', asy
   await setup(page, 'modal-scoping.html');
   const resp = await call(page, 'click', { text: 'Publish release' });
   if (resp?.success) throw new Error(`expected failure, got success`);
+  if (resp?.dispatched !== false) throw new Error(`no-match must report dispatched:false, got: ${JSON.stringify(resp)}`);
   if (!/scoped to the open modal/i.test(resp?.error || '')) {
     throw new Error(`expected modal-scope note in error, got: ${resp?.error}`);
   }
@@ -638,6 +639,7 @@ test('occlusion: click({text:"Submit"}) refuses when covered', async (page) => {
   await setup(page, 'occlusion.html');
   const resp = await call(page, 'click', { text: 'Submit' });
   if (resp?.success) throw new Error(`expected failure, got success`);
+  if (resp?.dispatched !== false) throw new Error(`occluded preflight must report dispatched:false, got: ${JSON.stringify(resp)}`);
   if (!resp?.occluded) throw new Error(`expected occluded:true, got: ${JSON.stringify(resp)}`);
   if (!resp?.occludedBy) throw new Error(`expected occludedBy payload`);
   const clicked = await clickedSentinel(page);
@@ -659,6 +661,7 @@ test('ambiguity: two Cancels return rich candidates with ancestor', async (page)
   await setup(page, 'ambiguity-candidates.html');
   const resp = await call(page, 'click', { text: 'Cancel' });
   if (resp?.success) throw new Error(`expected ambiguity, got success`);
+  if (resp?.dispatched !== false) throw new Error(`ambiguity must report dispatched:false, got: ${JSON.stringify(resp)}`);
   if (!Array.isArray(resp?.candidates)) throw new Error(`expected candidates array`);
   if (resp.candidates.length < 2) throw new Error(`expected ≥2 candidates, got ${resp.candidates.length}`);
   const ancestors = resp.candidates.map(c => c.ancestor || '');
@@ -675,6 +678,71 @@ test('ambiguity: two Cancels return rich candidates with ancestor', async (page)
 });
 
 // ─── click_ax same-page anchors ─────────────────────────────────────────────
+for (const browserKind of ['chrome', 'firefox']) {
+  test(`click_ax (${browserKind}): stale refs are explicit pre-dispatch failures`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const result = await call(page, 'click_ax', { ref_id: 'ref_999999' });
+    if (
+      result?.success !== false
+      || result?.dispatched !== false
+      || result?.noDispatch !== true
+      || result?.fallbackAttempted !== false
+    ) {
+      throw new Error(`expected explicit pre-dispatch markers, got: ${JSON.stringify(result)}`);
+    }
+    if (!/not found/i.test(result.error || '')) {
+      throw new Error(`expected stale-ref error, got: ${JSON.stringify(result)}`);
+    }
+  });
+
+  test(`input tools (${browserKind}): invalid targets and keys are explicit pre-dispatch failures`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const calls = [
+      ['type', { text: 'should not be typed' }],
+      ['type_ax', { ref_id: 'ref_999999', text: 'should not be typed' }],
+      ['set_field', { ref_id: 'ref_999999', text: 'should not be typed' }],
+      ['press_keys', { key: 'F5' }],
+    ];
+    for (const [action, params] of calls) {
+      const result = await call(page, action, params);
+      if (
+        result?.success !== false
+        || result?.dispatched !== false
+        || result?.noDispatch !== true
+      ) {
+        throw new Error(`${action} should be an explicit pre-dispatch failure, got: ${JSON.stringify(result)}`);
+      }
+    }
+  });
+}
+
+for (const browserKind of ['chrome', 'firefox']) {
+  test(`click_ax (${browserKind}): aria-labelledby action returns bounded nearest card context`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'visible', maxDepth: 10, maxChars: 20000 });
+    const match = String(tree?.pageContent || '').match(/button "Add to cart" \[(ref_\d+)\]/);
+    if (!match) throw new Error(`could not find product action in AX tree: ${tree?.pageContent}`);
+
+    const result = await call(page, 'click_ax', { ref_id: match[1] });
+    if (!result?.success) throw new Error(`expected click_ax success, got: ${JSON.stringify(result)}`);
+    if (
+      result.name !== 'Add to cart'
+      || result.targetContext?.heading !== 'Cola Zero 6-pack'
+      || !String(result.targetContext?.text || '').includes('Cola Zero 6-pack')
+      || !String(result.targetContext?.href || '').endsWith('/products/cola-zero-six-pack')
+    ) {
+      throw new Error(`nearest product context missing or wrong: ${JSON.stringify(result)}`);
+    }
+    if (
+      String(result.targetContext.text).length > 600
+      || String(result.targetContext.heading).length > 160
+      || String(result.targetContext.href).length > 500
+    ) {
+      throw new Error(`product context bounds regressed: ${JSON.stringify(result.targetContext)}`);
+    }
+  });
+}
+
 test('click_ax: Agent.executeTool keeps synthetic-first behavior and uses trusted CDP only for an ignored generic row', async (page) => {
   await setup(page, 'trusted-click-fallback.html');
   const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 20000 });

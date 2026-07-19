@@ -2,10 +2,11 @@ import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMo
 import { handleDoneJson } from './cloud-output.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT, STRICT_SECRET_SYSTEM_NOTE } from './credential-fields.js';
-import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isBlockedLedgerDowngrade, isTerminalLedgerStatus, isValidLedgerStatus, ledgerDoneBlock, normalizeLedgerStatus, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
+import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isBlockedLedgerDowngrade, isTerminalLedgerStatus, isValidLedgerStatus, ledgerDoneBlock, ledgerRowKey, normalizeLedgerStatus, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
 import { buildGithubStargazerProgressItems } from './observers/github-stargazers.js';
 import { analyzeMastodonPage, mastodonHandoffInstruction, mastodonProgressGuard } from './observers/mastodon.js';
 import { isProgressActionAllowed, isProgressIntentActive, normalizeProgressAction, normalizeProgressIntent } from './progress-intent.js';
+import { completionDoneBlock, completionPlainFinalBlock, consumeCompletionObservation, consumeCompletionObservationResult, createCompletionInvariantState, hasUnconsumedCompletionObservation, hasUnconsumedCompletionObservationResult, recordCompletionToolResult } from './completion-invariant.js';
 import { cdpClient } from '../cdp/cdp-client.js';
 import { getActiveAdapter, getFullPageCapturePolicy, UNIVERSAL_PREAMBLE } from './adapters.js';
 import {
@@ -294,8 +295,79 @@ export class Agent {
     this._doneBlockCount = new Map(); // tabId -> consecutive done-blocks
     this._recentSubmitClicks = new Map(); // tabId -> recent submit click timestamps
     this._runningTabs = new Set(); // tabIds with an active processMessage/Stream in flight
+    this.completionInvariants = new Map(); // tabId -> run-scoped post-action verification state
+    this._completionRunCounter = 0;
     this.scheduler = null;
     this.scheduledRunPolicies = new Map(); // tabId -> { requireConsequentialConfirmation, autoApprovePlanReview }
+  }
+
+  _beginCompletionInvariant(tabId) {
+    this._completionRunCounter += 1;
+    const token = `completion_${tabId}_${Date.now()}_${this._completionRunCounter}`;
+    this.completionInvariants.set(tabId, createCompletionInvariantState(token));
+    return token;
+  }
+
+  _clearCompletionInvariant(tabId, runToken = '') {
+    const state = this.completionInvariants.get(tabId);
+    if (!state) return;
+    if (runToken && state.runToken !== runToken) return;
+    this.completionInvariants.delete(tabId);
+  }
+
+  _recordCompletionToolResult(tabId, name, args, result) {
+    const state = this.completionInvariants.get(tabId);
+    if (!state) return null;
+    const completionArgs = this._activeSkillToolForName(tabId, name)?.requiresDownloadPermission
+      ? { ...(args || {}), __completionDownloadAction: true }
+      : args;
+    const next = recordCompletionToolResult(state, name, completionArgs, result);
+    this.completionInvariants.set(tabId, next);
+    return next;
+  }
+
+  _completionDoneBlock(tabId, name, args, batchStartState = null) {
+    const mode = this.conversationModes.get(tabId) || 'ask';
+    if (!this._isActionMode(mode)) return null;
+    const state = this.completionInvariants.get(tabId);
+    const block = completionDoneBlock(state, name, args);
+    if (block) return block;
+    const outcome = name === 'done_json' ? 'success' : String(args?.outcome || '').trim().toLowerCase();
+    if (outcome !== 'success' || !batchStartState) return null;
+    const batchStartSequence = Number(batchStartState.sequence || 0);
+    const lastActionSequence = Number(state?.lastAction?.sequence || 0);
+    if (batchStartState.verificationDebt || lastActionSequence > batchStartSequence) {
+      return {
+        reason: 'prior_turn_verification_required',
+        error: 'A success completion cannot rely on action or observation results from the same assistant tool batch. Let this batch finish, inspect the returned evidence on the next model turn, then call done again; otherwise use outcome="partial" or outcome="failed".',
+        lastAction: state?.lastAction || null,
+      };
+    }
+    return null;
+  }
+
+  _completionPlainFinalBlock(tabId) {
+    const mode = this.conversationModes.get(tabId) || 'ask';
+    if (!this._isActionMode(mode)) return null;
+    return completionPlainFinalBlock(this.completionInvariants.get(tabId));
+  }
+
+  _consumeCompletionObservation(tabId) {
+    const state = this.completionInvariants.get(tabId);
+    if (!state) return false;
+    const next = consumeCompletionObservation(state);
+    if (next === state) return false;
+    this.completionInvariants.set(tabId, next);
+    return true;
+  }
+
+  _consumeCompletionObservationResult(tabId) {
+    const state = this.completionInvariants.get(tabId);
+    if (!state) return false;
+    const next = consumeCompletionObservationResult(state);
+    if (next === state) return false;
+    this.completionInvariants.set(tabId, next);
+    return true;
   }
 
   setScheduler(scheduler) {
@@ -2164,7 +2236,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const error = toolName === 'navigate'
           ? `Navigation blocked: the current page has unsaved changes (${detail}) that leaving will discard. Re-navigating resets forms like GitHub's "New release" page — you would lose the tag, title, and attached binaries, then have to start over. Finish the current action first (e.g. click "Publish release"). If discarding is genuinely intended, call navigate again with force:true.`
           : `${toolName} blocked: the current page has unsaved changes (${detail}) that leaving will discard. Finish the current action first, or call ${toolName} again with force:true to discard them intentionally.`;
-        return { success: false, blockedUnsavedChanges: true, error };
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          blockedUnsavedChanges: true,
+          error,
+        };
       }
     } catch { /* injection failed (chrome:// / PDF viewer / no host perm) — nothing to protect there, allow navigation */ }
     return null;
@@ -2219,6 +2297,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null) {
     let didStateChange = false;
+    const completionBatchStartState = this.completionInvariants.get(tabId) || null;
     // Set of tools whose side effect can navigate the page. We snapshot the
     // URL before these and re-check after, so we can warn the model when an
     // unintended navigation happens (the most common cause of "model keeps
@@ -2460,6 +2539,40 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
       }
 
+      if (fnName === 'done' || fnName === 'done_json') {
+        const invariantBlock = this._completionDoneBlock(tabId, fnName, fnArgs, completionBatchStartState);
+        if (invariantBlock) {
+          const blockedResult = {
+            success: false,
+            blockedDone: true,
+            completionInvariant: true,
+            reason: invariantBlock.reason,
+            error: invariantBlock.error,
+            ...(invariantBlock.lastAction ? { lastAction: invariantBlock.lastAction } : {}),
+          };
+          onUpdate('tool_call', { name: fnName, args: fnArgs });
+          onUpdate('tool_result', { name: fnName, result: blockedResult });
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify(blockedResult),
+          });
+          const runId = this.currentRunId.get(tabId);
+          if (runId) {
+            trace.recordToolCall(runId, step, {
+              name: fnName, args: fnArgs, result: blockedResult, latencyMs: 0,
+            });
+          }
+          onUpdate('warning', { message: 'Runtime completion invariant blocked an unverified or ambiguous completion.' });
+          this._appendSyntheticToolResults(
+            tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
+            () => ({ success: false, skipped: true, error: 'skipped: blocked completion requires a fresh verification turn' })
+          );
+          this._persist(tabId);
+          return { action: 'continue' };
+        }
+      }
+
       // Snapshot URL before nav-prone calls. Some tools are conditional:
       // Enter and set_field({submit:true}) can navigate, while other key
       // presses and ordinary field edits should avoid the URL-check delay.
@@ -2471,13 +2584,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
       onUpdate('tool_call', { name: fnName, args: fnArgs });
       const _toolStart = Date.now();
-      const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
+      const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate, {
+        completionBatchStartState,
+      });
       const toolResult = this._normalizeToolResult(fnName, rawToolResult, missingResponseOutcomeUnknown);
       if (fnName !== 'done') {
         this._markPlanExecutionToolCall(tabId, fnName, toolResult, {
           consequential: executionMutationEvidence,
         });
       }
+      this._recordCompletionToolResult(tabId, fnName, fnArgs, toolResult);
       const _toolLatency = Date.now() - _toolStart;
       const nytimesPageGateFallback = this._nytimesPageGateFallback(tabId, fnName, toolResult);
       if (nytimesPageGateFallback && toolResult && typeof toolResult === 'object') {
@@ -6263,6 +6379,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInteractionRect.delete(tabId);
     this._doneBlockCount.delete(tabId);
     this._recentSubmitClicks.delete(tabId);
+    this.completionInvariants.delete(tabId);
     if (!preserveRunGuard) {
       this._runningTabs.delete(tabId);
       this.currentRunId.delete(tabId);
@@ -6961,6 +7078,92 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       };
     }
     const canonicalItems = this._canonicalizeProgressItems(items);
+    const activeSession = this._currentProgressSession(tabId);
+    const currentRows = this.progressLedgers.get(tabId) || [];
+    const terminalRequirements = canonicalItems
+      .filter(item => isTerminalLedgerStatus(item?.status))
+      .map(item => {
+        const requirementSessionId = opts.sessionId
+          || args.sessionId
+          || args.session_id
+          || item?.sessionId
+          || item?.session_id
+          || activeSession?.sessionId
+          || '';
+        const incomingKey = ledgerRowKey({ ...item, sessionId: requirementSessionId });
+        const row = incomingKey
+          ? currentRows.find(candidate => ledgerRowKey(candidate) === incomingKey)
+          : null;
+        const changesTerminalStatus = normalizeLedgerStatus(row?.status, '')
+          !== normalizeLedgerStatus(item?.status, '');
+        return row?.fields?.completionRequirement === true
+          && (!isTerminalLedgerStatus(row?.status) || changesTerminalStatus)
+          ? { id: row.id, item, row }
+          : null;
+      })
+      .filter(Boolean);
+    const evidenceRequirementIds = terminalRequirements
+      // processed is a success claim and needs one action -> observation cycle.
+      // skipped/failed are transparent non-success exits: requiring an action
+      // just to admit that a target is absent, unavailable, or already satisfied
+      // would force an unrelated mutation. They still need a prior explicit
+      // observation and prevent outcome:"success" in _progressTerminalDoneBlock.
+      .filter(({ item }) => String(item?.status || '').toLowerCase() === 'processed')
+      .map(requirement => requirement.id);
+    const observationOnlyRequirementIds = terminalRequirements
+      .filter(({ item }) => ['skipped', 'failed'].includes(String(item?.status || '').toLowerCase()))
+      .map(requirement => requirement.id);
+    if (evidenceRequirementIds.length > 1) {
+      return {
+        success: false,
+        completionInvariant: true,
+        error: 'Each classifier-seeded completion requirement needs its own consequential action and successful explicit observation. Complete one requirement per evidence cycle.',
+        ids: evidenceRequirementIds.slice(0, 20),
+      };
+    }
+    const hasBatchStartState = Object.prototype.hasOwnProperty.call(opts, 'completionBatchStartState');
+    const evidenceState = hasBatchStartState
+      ? opts.completionBatchStartState
+      : this.completionInvariants.get(tabId);
+    const currentCompletionState = this.completionInvariants.get(tabId);
+    const hasNewBatchAction = hasBatchStartState
+      && Number(currentCompletionState?.lastAction?.sequence || 0) > Number(evidenceState?.sequence || 0);
+    const hasCurrentRunEvidence = evidenceRequirementIds.length
+      && hasUnconsumedCompletionObservation(evidenceState)
+      && hasUnconsumedCompletionObservation(currentCompletionState)
+      && !hasNewBatchAction;
+    const persistedActedRequirement = terminalRequirements.find(({ item, row }) => (
+      String(item?.status || '').toLowerCase() === 'processed'
+      && String(row?.status || '').toLowerCase() === 'acted'
+      && String(row?.source || '').toLowerCase() === 'auto'
+    ));
+    const hasPersistedActionEvidence = !!persistedActedRequirement
+      && hasUnconsumedCompletionObservationResult(evidenceState)
+      && hasUnconsumedCompletionObservationResult(currentCompletionState)
+      && !hasNewBatchAction;
+    if (evidenceRequirementIds.length && !hasCurrentRunEvidence && !hasPersistedActionEvidence) {
+      return {
+        success: false,
+        completionInvariant: true,
+        error: 'Classifier-seeded completion requirements can be marked processed only after a consequential action and a successful explicit observation whose result was available on a prior assistant turn. A runtime-recorded acted row may instead use one fresh continuation observation. Use skipped or failed for transparent non-success outcomes.',
+        ids: evidenceRequirementIds.slice(0, 20),
+      };
+    }
+    if (
+      observationOnlyRequirementIds.length
+      && (
+        Number(evidenceState?.lastObservation?.sequence || 0)
+          <= Number(evidenceState?.lastAction?.sequence || 0)
+        || hasNewBatchAction
+      )
+    ) {
+      return {
+        success: false,
+        completionInvariant: true,
+        error: 'Classifier-seeded completion requirements can be marked skipped or failed after a successful explicit observation whose result was available on a prior assistant turn. No consequential action is required for these transparent non-success outcomes.',
+        ids: observationOnlyRequirementIds.slice(0, 20),
+      };
+    }
     const mastodonGuard = this._mastodonProgressUpdateGuard(tabId, canonicalItems);
     if (mastodonGuard) {
       return {
@@ -6970,7 +7173,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         ids: mastodonGuard.ids,
       };
     }
-    const sessionOpts = { ...opts, sessionId: opts.sessionId || args.sessionId || args.session_id, source: opts.source || args.source || 'model' };
+    // Only internal callers may select a trusted ledger source. Tool arguments
+    // are model-controlled and must not be able to impersonate the classifier.
+    const updateSource = opts.source || 'model';
+    const sessionOpts = { ...opts, sessionId: opts.sessionId || args.sessionId || args.session_id, source: updateSource };
     const session = this._sessionForProgressUpdate(tabId, canonicalItems, sessionOpts);
     const sessionId = sessionOpts.sessionId || session?.sessionId || '';
     const pageScope = opts.pageScope || session?.pageScope || '';
@@ -6982,7 +7188,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const current = this.progressLedgers.get(tabId) || [];
     const taskKey = this._progressTaskKeyHash(tabId);
     const result = upsertLedgerItems(current, scopedItems, {
-      source: opts.source || args.source || 'model',
+      source: updateSource,
       sessionId,
       pageScope,
       taskKey,
@@ -6990,6 +7196,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     });
     if (!result.changed) {
       return { success: false, error: 'progress_update: no valid items were provided. Each item needs a stable id.' };
+    }
+    if (evidenceRequirementIds.length) {
+      if (hasCurrentRunEvidence) this._consumeCompletionObservation(tabId);
+      else this._consumeCompletionObservationResult(tabId);
     }
     this.progressLedgers.set(tabId, result.rows);
     const adoption = sessionId
@@ -7244,12 +7454,53 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
   }
 
+  _seedClassifierProgressTargets(tabId, session) {
+    if (
+      !session
+      || session.source !== 'classifier'
+      || !isProgressIntentActive(session)
+      || !Array.isArray(session.targets)
+      || session.targets.length < 2
+      || !Array.isArray(session.allowedActions)
+      || session.allowedActions.length < 1
+    ) {
+      return null;
+    }
+    const allowedActions = session.allowedActions.map(normalizeProgressAction).filter(Boolean);
+    const action = allowedActions[0];
+    if (!action) return null;
+    const existingKeys = new Set((this.progressLedgers.get(tabId) || [])
+      .map(ledgerRowKey)
+      .filter(Boolean));
+    const items = session.targets.map((target, index) => ({
+      id: `requirement:${index + 1}:${String(target || '').trim()}`,
+      label: String(target || '').trim(),
+      target: String(target || '').trim(),
+      action,
+      status: 'pending',
+      fields: {
+        completionRequirement: true,
+        classifierTarget: true,
+      },
+    })).filter(item => item.label
+      && !existingKeys.has(ledgerRowKey({ ...item, sessionId: session.sessionId })));
+    if (!items.length) return null;
+    return this._progressUpdate(tabId, { items }, {
+      source: 'classifier',
+      sessionId: session.sessionId,
+      pageScope: session.pageScope || '',
+    });
+  }
+
   async _ensureProgressSessionForCurrentTask(tabId, opts = {}) {
     const taskText = this._progressTaskTextKey(opts.taskText || this._latestTaskText(tabId));
     if (!taskText) return null;
     const pageScope = String(opts.pageScope || this._currentProgressPageScope(tabId) || '').trim();
     const existing = this._currentProgressSession(tabId, { pageScope });
-    if (existing) return existing;
+    if (existing) {
+      this._seedClassifierProgressTargets(tabId, existing);
+      return existing;
+    }
     if (this._currentTaskIsProgressContinuation(tabId)) {
       const session = this._deriveProgressSessionForCurrentTask(tabId);
       this._syncProgressSessionPrompt(tabId);
@@ -7267,6 +7518,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return session;
     }
     const session = this._setProgressSession(tabId, classified, { taskText, pageScope, source: 'classifier' });
+    this._seedClassifierProgressTargets(tabId, session);
     this._syncProgressSessionPrompt(tabId);
     return session;
   }
@@ -7516,7 +7768,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       { excludedUsernames: this._excludedGithubUsernames(tabId), session }
     );
     if (!observed.items.length) return null;
-    const update = this._progressUpdate(tabId, { items: observed.items }, { source: 'observe', pageScope, sessionId: session.sessionId });
+    const update = this._progressUpdate(tabId, { items: observed.items }, {
+      source: 'observe',
+      pageScope,
+      sessionId: session.sessionId,
+    });
     if (!update?.success) return null;
     const note = {
       ...observed.stats,
@@ -7591,7 +7847,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _emptyOutputRecoveryNudge(mode) {
     if (this._isActionMode(mode)) {
-      return '[System nudge: your previous response had neither text nor a tool call. Continue the active browser task with tool calls. If the task is truly complete, call the done tool with a real summary. Do not output a plain summary and do not stop without a tool call.]';
+      return '[System nudge: your previous response had neither text nor a tool call. Continue the active browser task with tool calls. If the task is truly complete, call done with a real summary and an explicit success, partial, or failed outcome. Do not output a plain summary and do not stop without a tool call.]';
     }
     return '[System nudge: your previous response had neither text nor a tool call. You may have run out of output budget on internal reasoning. In ONE short message, summarize what you accomplished, what you tried, and what blocked you - then stop. Do not start any new tool calls.]';
   }
@@ -7806,7 +8062,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       'Do not redo processed, skipped, or failed rows.',
       'Continue only unresolved pending/acted rows for the current task.',
       'Prefer a small batch of tool calls, then update progress.',
-      'When all rows are processed, skipped, or failed, call done with a real summary.',
+      'When all rows are processed, skipped, or failed, call done with a real summary and an explicit success, partial, or failed outcome.',
       `Current progress snapshot: ${counts.total} row(s), ${unresolved.length} unresolved.`,
     ].join(' ');
   }
@@ -9343,14 +9599,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _executeDevJavaScript(tabId, args = {}) {
     const code = typeof args.code === 'string' ? args.code : '';
-    if (!code.trim()) return { success: false, error: 'execute_js: `code` is required.' };
-    if (code.length > 100000) return { success: false, error: 'execute_js: code exceeds the 100,000-character limit.' };
+    if (!code.trim()) return { success: false, dispatched: false, error: 'execute_js: `code` is required.' };
+    if (code.length > 100000) return { success: false, dispatched: false, error: 'execute_js: code exceeds the 100,000-character limit.' };
+    let dispatched = false;
     try {
       await cdpClient.enableDevDiagnostics(tabId);
       // Match Firefox's function-body contract while adding async/await:
       // callers use an explicit `return` for readback instead of having to
       // squeeze a multi-statement edit into one JavaScript expression.
       const expression = `(async () => {\n${code}\n})()\n//# sourceURL=webbrain-dev-execute.js`;
+      dispatched = true;
       const response = await cdpClient.evaluate(tabId, expression, true, { timeoutMs: 15000 });
       if (response?.exceptionDetails) {
         const details = response.exceptionDetails;
@@ -9363,6 +9621,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }));
         return {
           success: false,
+          dispatched: true,
           error: String(exception.description || exception.value || details.text || 'JavaScript execution failed.').slice(0, 12000),
           exception: {
             text: String(details.text || '').slice(0, 1000),
@@ -9391,6 +9650,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       return {
         success: true,
+        dispatched: true,
         result,
         resultType: String(remote.type || 'undefined'),
         resultSubtype: remote.subtype ? String(remote.subtype) : null,
@@ -9400,9 +9660,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       };
     } catch (e) {
       if (/timed?\s*out|timeout/i.test(String(e?.message || e))) {
-        return { success: false, timedOut: true, error: 'execute_js timed out after 15,000 ms.' };
+        return { success: false, dispatched, timedOut: true, error: 'execute_js timed out after 15,000 ms.' };
       }
-      return { success: false, error: `execute_js failed: ${e.message || e}` };
+      return { success: false, dispatched, error: `execute_js failed: ${e.message || e}` };
     }
   }
 
@@ -9462,7 +9722,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
   }
 
-  async executeTool(tabId, name, args, onUpdate = null) {
+  async executeTool(tabId, name, args, onUpdate = null, executionContext = null) {
     if (name === 'load_skill') {
       return this._loadSkillForRun(tabId, args || {});
     }
@@ -9502,10 +9762,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._inspectDevEventListeners(tabId, args || {});
     }
     if (name === 'schedule_resume') {
-      if (!this.scheduler) return { success: false, error: 'Scheduling is not available in this build.' };
+      if (!this.scheduler) {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'Scheduling is not available in this build.',
+        };
+      }
       let tab = null;
       try { tab = await chrome.tabs.get(tabId); } catch {}
-      return await this.scheduler.createResumeJob({
+      const result = await this.scheduler.createResumeJob({
         tabId,
         conversationId: this.conversationIds.get(tabId) || null,
         mode: this.conversationModes.get(tabId) || 'act',
@@ -9513,12 +9780,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         currentUrl: tab?.url || '',
         currentTitle: tab?.title || '',
       });
+      return result?.success === false
+        ? { ...result, dispatched: false, noDispatch: true }
+        : result;
     }
     if (name === 'schedule_task') {
-      if (!this.scheduler) return { success: false, error: 'Scheduling is not available in this build.' };
+      if (!this.scheduler) {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'Scheduling is not available in this build.',
+        };
+      }
       let tab = null;
       try { tab = await chrome.tabs.get(tabId); } catch {}
-      return await this.scheduler.createTaskJob({
+      const result = await this.scheduler.createTaskJob({
         tabId,
         conversationId: this.conversationIds.get(tabId) || null,
         args: args || {},
@@ -9526,6 +9803,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         currentUrl: tab?.url || '',
         currentTitle: tab?.title || '',
       });
+      return result?.success === false
+        ? { ...result, dispatched: false, noDispatch: true }
+        : result;
     }
 
     // clarify: pause the run and wait for the user to answer. This tool does
@@ -9625,7 +9905,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (name === 'navigate') {
       let rawUrl = String(args.url || '').trim();
       if (!rawUrl) {
-        return { success: false, error: 'navigate: url is required' };
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'navigate: url is required',
+        };
       }
       // Resolve relative URLs (e.g. "/acct_.../products") against the
       // current tab. chrome.tabs.update silently routes bare paths to
@@ -9642,11 +9927,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           } else {
             return {
               success: false,
+              dispatched: false,
+              noDispatch: true,
               error: `navigate: "${args.url}" is not an absolute URL. Provide the full URL including scheme and host (e.g. "https://dashboard.stripe.com/${String(args.url).replace(/^\/+/, '')}"). Do NOT pass bare paths — they resolve to local files.`,
             };
           }
         } catch (e) {
-          return { success: false, error: `navigate: cannot resolve relative URL "${args.url}" — no current tab URL available. Pass an absolute URL starting with https://.` };
+          return {
+            success: false,
+            dispatched: false,
+            noDispatch: true,
+            error: `navigate: cannot resolve relative URL "${args.url}" — no current tab URL available. Pass an absolute URL starting with https://.`,
+          };
         }
       }
       // Guard against discarding unsaved work. Re-navigating (even to the
@@ -9668,7 +9960,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const tab = await chrome.tabs.get(tabId);
         if (tab && tab.url) finalUrl = tab.url;
       } catch {}
-      return { success: true, url: finalUrl, requestedUrl: rawUrl };
+      return { success: true, dispatched: true, url: finalUrl, requestedUrl: rawUrl };
     }
 
     if (name === 'go_back' || name === 'go_forward') {
@@ -9687,7 +9979,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // Internal pages (chrome://, about:, extension/view-source) have no
       // meaningful web session history to walk.
       if (/^(chrome|edge|brave|about|chrome-extension|moz-extension|view-source|data):/i.test(beforeUrl)) {
-        return { success: false, error: `${name}: history navigation is not available on internal pages (${beforeUrl || 'unknown'}).` };
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: `${name}: history navigation is not available on internal pages (${beforeUrl || 'unknown'}).`,
+        };
       }
 
       // Same unsaved-changes guard as navigate — going back/forward leaves the
@@ -9701,8 +9998,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // (the extension's injected function, NOT page eval) so it works even
       // where execute_js is CSP-blocked.
       let probe = null;
+      let dispatched = false;
       try {
         const delta = direction === 'back' ? -steps : steps;
+        dispatched = true;
         const results = await chrome.scripting.executeScript({
           target: { tabId },
           args: [delta],
@@ -9714,10 +10013,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         });
         probe = results?.[0]?.result || null;
       } catch (e) {
-        return { success: false, error: `${name}: cannot navigate history on this page (${e.message}).` };
+        return { success: false, dispatched, error: `${name}: cannot navigate history on this page (${e.message}).` };
       }
       if (!probe) {
-        return { success: false, error: `${name}: history navigation did not run on this page.` };
+        return { success: false, dispatched, error: `${name}: history navigation did not run on this page.` };
       }
 
       // history.go() commits asynchronously (including bfcache restores), so
@@ -9735,10 +10034,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const dirWord = direction === 'back' ? 'earlier' : 'later';
         return {
           success: false,
+          dispatched: true,
           error: `${name}: no ${dirWord} entry in this tab's history (the page did not change).`,
         };
       }
-      return { success: true, url: afterUrl, previousUrl: probe.before, direction, steps };
+      return { success: true, dispatched: true, url: afterUrl, previousUrl: probe.before, direction, steps };
     }
 
     if (name === 'new_tab') {
@@ -10003,7 +10303,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
 
     if (name === 'progress_update') {
-      return this._progressUpdate(tabId, args);
+      const progressOpts = executionContext
+        && Object.prototype.hasOwnProperty.call(executionContext, 'completionBatchStartState')
+        ? { completionBatchStartState: executionContext.completionBatchStartState }
+        : {};
+      return this._progressUpdate(tabId, args, progressOpts);
     }
 
     if (name === 'progress_read') {
@@ -10204,14 +10508,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // Settings. We re-check on every call so flipping the toggle or
     // rotating the key takes effect without a restart.
     if (name === 'solve_captcha') {
+      let dispatched = false;
+      const noDispatchFailure = (error) => ({
+        success: false,
+        dispatched: false,
+        noDispatch: true,
+        error,
+      });
       try {
         const stored = await chrome.storage.local.get(['captchaSolverEnabled', 'capsolverApiKey']);
         if (!stored.captchaSolverEnabled) {
-          return { success: false, error: 'CapSolver is not enabled. Ask the user to enable it in Settings → General → Advanced, or fall back to asking them to solve the captcha manually.' };
+          return noDispatchFailure('CapSolver is not enabled. Ask the user to enable it in Settings → General → Advanced, or fall back to asking them to solve the captcha manually.');
         }
         const apiKey = (stored.capsolverApiKey || '').trim();
         if (!apiKey) {
-          return { success: false, error: 'CapSolver is enabled but no API key is configured. Ask the user to set one in Settings → General → Advanced, or fall back to asking them to solve the captcha manually.' };
+          return noDispatchFailure('CapSolver is enabled but no API key is configured. Ask the user to set one in Settings → General → Advanced, or fall back to asking them to solve the captcha manually.');
         }
 
         // Resolve the website URL — the active tab's URL is what the
@@ -10228,7 +10539,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (!type) {
           const detected = await detectCaptcha(tabId);
           if (!detected) {
-            return { success: false, error: 'No CAPTCHA detected on the page. If the captcha lives inside a cross-origin iframe or uses a non-standard widget, pass `type` and `websiteKey` explicitly.' };
+            return noDispatchFailure('No CAPTCHA detected on the page. If the captcha lives inside a cross-origin iframe or uses a non-standard widget, pass `type` and `websiteKey` explicitly.');
           }
           type = detected.type;
           if (!websiteKey) websiteKey = detected.websiteKey;
@@ -10238,12 +10549,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         if (type === 'image_to_text') {
           if (!imageBase64) {
-            return { success: false, error: 'solve_captcha: image_to_text requires `imageBase64`.' };
+            return noDispatchFailure('solve_captcha: image_to_text requires `imageBase64`.');
           }
         } else if (!websiteKey) {
-          return { success: false, error: `solve_captcha: ${type} requires a websiteKey (data-sitekey). Auto-detection didn't find one — pass it explicitly.` };
+          return noDispatchFailure(`solve_captcha: ${type} requires a websiteKey (data-sitekey). Auto-detection didn't find one — pass it explicitly.`);
         }
 
+        dispatched = true;
         const result = await solveCaptcha(apiKey, {
           type,
           websiteURL,
@@ -10272,6 +10584,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         return {
           success: true,
+          dispatched: true,
           type,
           taskId: result.taskId,
           token: result.token,
@@ -10283,7 +10596,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             : 'Token returned, not injected. Pass it to the form via type_text on the response field, then submit.',
         };
       } catch (e) {
-        return { success: false, error: `solve_captcha failed: ${e.message}` };
+        const error = `solve_captcha failed: ${e.message}`;
+        return dispatched
+          ? { success: false, dispatched: true, error }
+          : noDispatchFailure(error);
       }
     }
 
@@ -10628,13 +10944,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
 
     if (name === 'iframe_click') {
+      let dispatched = false;
       try {
         // Inject into all frames; in each frame, see if the selector resolves
         // and if the URL matches the optional filter, then click. Returns the
         // first successful frame.
         const urlFilter = args.urlFilter || '';
         const selector = args.selector;
-        if (!selector) return { success: false, error: 'selector is required' };
+        if (!selector) {
+          return {
+            success: false,
+            dispatched: false,
+            noDispatch: true,
+            error: 'selector is required',
+          };
+        }
+        dispatched = true;
         const results = await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: (sel, filter) => {
@@ -10652,6 +10977,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 return { ok: false, skipped: 'url-filter', url: location.href };
               }
             }
+            let targetDispatched = false;
             try {
               const el = document.querySelector(sel);
               if (!el) return { ok: false, url: location.href, reason: 'not-found' };
@@ -10662,6 +10988,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               const cx = rect.left + rect.width / 2;
               const cy = rect.top + rect.height / 2;
               const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0 };
+              targetDispatched = true;
               try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
               el.dispatchEvent(new MouseEvent('mousedown', opts));
               try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
@@ -10672,36 +10999,56 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 url: location.href,
                 tag: el.tagName,
                 text: (el.innerText || el.value || '').slice(0, 80),
+                dispatched: true,
               };
             } catch (e) {
-              return { ok: false, url: location.href, error: e.message };
+              return { ok: false, url: location.href, dispatched: targetDispatched, error: e.message };
             }
           },
           args: [selector, urlFilter],
         });
         const successes = results.map(r => r.result).filter(r => r && r.ok);
         if (successes.length > 0) {
-          return { success: true, method: 'iframe-click', frame: successes[0] };
+          return { success: true, dispatched: true, method: 'iframe-click', frame: successes[0] };
         }
         const candidates = results.map(r => r.result).filter(r => r && !r.skipped);
+        const targetDispatched = candidates.some(candidate => candidate.dispatched === true);
         return {
           success: false,
+          ...(targetDispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
           error: 'Element not found in any matching iframe',
           searchedFrames: candidates.length,
           frameUrls: candidates.map(c => c.url).slice(0, 5),
         };
       } catch (e) {
-        return { success: false, error: `Iframe click failed: ${e.message}` };
+        return {
+          success: false,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+          error: `Iframe click failed: ${e.message}`,
+        };
       }
     }
 
     if (name === 'iframe_type') {
+      let dispatched = false;
       try {
         const urlFilter = args.urlFilter || '';
         const selector = args.selector;
         const text = args.text || '';
         const clear = !!args.clear;
-        if (!selector) return { success: false, error: 'selector is required' };
+        if (!selector) {
+          return {
+            success: false,
+            dispatched: false,
+            noDispatch: true,
+            error: 'selector is required',
+          };
+        }
+        dispatched = true;
         const results = await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: (sel, txt, clr, filter) => {
@@ -10719,15 +11066,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 return { ok: false, skipped: 'url-filter', url: location.href };
               }
             }
+            let targetDispatched = false;
             try {
               const el = document.querySelector(sel);
               if (!el) return { ok: false, url: location.href, reason: 'not-found' };
+              targetDispatched = true;
               el.focus();
               if (el.isContentEditable) {
                 if (clr) el.textContent = '';
                 el.textContent += txt;
                 el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt }));
-                return { ok: true, url: location.href, method: 'contenteditable', value: el.textContent.slice(0, 100) };
+                return { ok: true, url: location.href, method: 'contenteditable', value: el.textContent.slice(0, 100), dispatched: true };
               }
               const proto = el instanceof HTMLTextAreaElement
                 ? HTMLTextAreaElement.prototype
@@ -10737,26 +11086,36 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               if (setter) setter.call(el, newVal); else el.value = newVal;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-              return { ok: true, url: location.href, method: 'native-setter', value: (el.value || '').slice(0, 100) };
+              return { ok: true, url: location.href, method: 'native-setter', value: (el.value || '').slice(0, 100), dispatched: true };
             } catch (e) {
-              return { ok: false, url: location.href, error: e.message };
+              return { ok: false, url: location.href, dispatched: targetDispatched, error: e.message };
             }
           },
           args: [selector, text, clear, urlFilter],
         });
         const successes = results.map(r => r.result).filter(r => r && r.ok);
         if (successes.length > 0) {
-          return { success: true, frame: successes[0] };
+          return { success: true, dispatched: true, frame: successes[0] };
         }
         const candidates = results.map(r => r.result).filter(r => r && !r.skipped);
+        const targetDispatched = candidates.some(candidate => candidate.dispatched === true);
         return {
           success: false,
+          ...(targetDispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
           error: 'Input not found in any matching iframe',
           searchedFrames: candidates.length,
           frameUrls: candidates.map(c => c.url).slice(0, 5),
         };
       } catch (e) {
-        return { success: false, error: `Iframe type failed: ${e.message}` };
+        return {
+          success: false,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+          error: `Iframe type failed: ${e.message}`,
+        };
       }
     }
 
@@ -11024,6 +11383,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (!args.filePath) {
         return { success: false, error: 'upload_file needs either downloadId (from download_files / list_downloads — preferred) or filePath (absolute local path).' };
       }
+      let uploadDispatched = false;
       try {
         await cdpClient.attach(tabId);
         const nodeIds = await cdpClient.querySelectorPierce(tabId, args.selector);
@@ -11055,6 +11415,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // pre-validation exists to prevent).
         const pathConfirmed = !!(probe && probe.exists && probe.readable === true);
 
+        uploadDispatched = true;
         await cdpClient.setFileInputFiles(tabId, nodeIds[0], [args.filePath]);
 
         // Verify the file actually attached. CDP's DOM.setFileInputFiles does
@@ -11086,7 +11447,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             // If the probe was inconclusive, surface it rather than fabricating
             // a success the agent would treat as completed work.
             if (!pathConfirmed) {
-              return { success: false, error: `Could not confirm "${basename}" uploaded: the target input is empty and the local path "${args.filePath}" was not validated. Check whether "${basename}" appears attached via get_accessibility_tree — if it does, the upload succeeded and you should NOT re-upload; if it does not, re-check the path with list_downloads and retry.` };
+              return { success: false, dispatched: true, error: `Could not confirm "${basename}" uploaded: the target input is empty and the local path "${args.filePath}" was not validated. Check whether "${basename}" appears attached via get_accessibility_tree — if it does, the upload succeeded and you should NOT re-upload; if it does not, re-check the path with list_downloads and retry.` };
             }
             // Path was validated as readable above, so an empty list here is a
             // real upload the page has taken over — report it as an unverified
@@ -11102,7 +11463,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           // must NOT reject on size alone.) readable === null = probe couldn't
           // run; fall through to success rather than block a valid upload.
           if (attached.readable === false) {
-            return { success: false, error: `"${args.filePath}" could not be read — it almost certainly does not exist at that path. Confirm the absolute path (use list_downloads to see where files were actually saved) and retry.` };
+            return { success: false, dispatched: true, error: `"${args.filePath}" could not be read — it almost certainly does not exist at that path. Confirm the absolute path (use list_downloads to see where files were actually saved) and retry.` };
           }
           return { success: true, file: args.filePath, attached: { name: attached.name, size: attached.size } };
         }
@@ -11113,11 +11474,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // inconclusive too, we have no evidence at all — surface it instead of
         // fabricating a success the agent would treat as completed work.
         if (!pathConfirmed) {
-          return { success: false, error: `Could not confirm "${basename}" uploaded: the input.files list was unreadable and the local path "${args.filePath}" was not validated. Check whether "${basename}" appears attached via get_accessibility_tree — if it does, you're done; if not, re-check the path with list_downloads and the selector, then retry.` };
+          return { success: false, dispatched: true, error: `Could not confirm "${basename}" uploaded: the input.files list was unreadable and the local path "${args.filePath}" was not validated. Check whether "${basename}" appears attached via get_accessibility_tree — if it does, you're done; if not, re-check the path with list_downloads and the selector, then retry.` };
         }
         return { success: true, file: args.filePath, verified: false, note: 'Attachment could not be verified (the input.files list was unreadable), but the local path validated as readable. If the file does not appear attached on the page, re-check the selector.' };
       } catch (e) {
-        return { success: false, error: `Upload failed: ${e.message}` };
+        return { success: false, dispatched: uploadDispatched, error: `Upload failed: ${e.message}` };
       }
     }
 
@@ -11141,6 +11502,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           if (Number.isFinite(xn) && Number.isFinite(yn) && xn >= 0 && xn <= 1 && yn >= 0 && yn <= 1) {
             return {
               success: false,
+              dispatched: false,
               error: this._normalizedCoordinateRecoveryError(tabId, args),
             };
           }
@@ -11171,6 +11533,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             if (match) {
               return {
                 success: false,
+                dispatched: false,
                 blockedDuplicateSubmit: true,
                 error: `Blocked: you already clicked "${rawText}" on this page ${Math.round((now - match.ts) / 1000)}s ago and the URL has not changed since. Stripe-style UIs often reuse the same label for the modal-OPEN button and the SUBMIT button inside the modal — a second click typically creates a duplicate record. Before clicking "${rawText}" again, verify: (a) that all required fields are actually filled by reading the form/page, (b) that this click is intended as a FIRST submit and not a retry. If the previous click did nothing because a field was empty, fill the field first. If you genuinely need to retry, pass _allowResubmit: true in the args.`,
                 previousClickUrl: match.url,
@@ -11240,6 +11603,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (args.selector && /:contains\(|:has-text\(/.test(args.selector)) {
           return {
             success: false,
+            dispatched: false,
             error: `Invalid selector: ":contains()" and ":has-text()" are not valid CSS — they are jQuery/Playwright extensions and browsers do not understand them. Use click({text: "..."}) to click by visible text instead, or click({index: N}) using an index from get_interactive_elements.`,
           };
         }
@@ -11654,11 +12018,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
           if (!info?.found) {
             if (info?.error) {
-              return { success: false, error: info.error };
+              return { success: false, dispatched: false, error: info.error };
             }
             if (info?.ambiguous) {
               return {
                 success: false,
+                dispatched: false,
                 error: `Ambiguous text match for "${args.text}" (mode=${info.mode}, matches=${info.count}). Candidates in the candidates field include cx/cy (precomputed click center, CSS pixels) and ancestor context. Call click({x: candidate.cx, y: candidate.cy}) — no arithmetic needed. Use the ancestor field to disambiguate (e.g. an alertdialog's Cancel vs a form's Cancel sit in different containers). Do NOT retry click({text: "${args.text}"}) — it will fail the same way.`,
                 candidates: info.candidates || [],
               };
@@ -11753,6 +12118,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                     : `There is an input field inside the listbox`;
                 return {
                   success: false,
+                  dispatched: false,
                   error: `"${needle}" is not in the currently-visible options of the open ${openOptions.source}. ${filterHint} — this is a SEARCHABLE combobox (likely virtualized, only ${openOptions.visibleCount} of ${openOptions.totalCount} options rendered). Instead of clicking, TYPE the value to filter: call type_text({text: "${needle}", clear: true}) with NO selector (the combobox input should already be focused), then click the matching option or press Enter. Do NOT retry click({text: "${needle}"}) — the option isn't in the visible window.`,
                   availableOptions: openOptions.options,
                   source: openOptions.source,
@@ -11764,6 +12130,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               }
               return {
                 success: false,
+                dispatched: false,
                 error: `No clickable element found for text "${args.text}". However, an open ${openOptions.source} is visible on the page with these options: ${openOptions.options.map(o => '"' + o + '"').join(', ')}. Pick one of those exact labels (or "Custom" if the value you want isn't listed) and call click({text: "..."}) again.`,
                 availableOptions: openOptions.options,
                 source: openOptions.source,
@@ -11831,6 +12198,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             } else {
               return {
                 success: false,
+                dispatched: false,
                 error: `No clickable element found for text "${args.text}" (also tried scrolling down and widening to contenteditable/[role=*]/[tabindex]). Try get_interactive_elements to see what's on the page, or use a selector.`,
               };
             }
@@ -11860,6 +12228,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const opts = optionsInfo?.result?.value;
             return {
               success: false,
+              dispatched: false,
               tag: 'SELECT',
               text: opts?.current || info.text,
               error: 'CANNOT CLICK a <select> dropdown — clicking opens a native OS popup that cannot be controlled. The dropdown is now focused. Use type_text({text: "option name"}) to change the value.' + (opts?.options ? ' Available options: ' + opts.options.join(', ') : ''),
@@ -12096,6 +12465,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           if (coordTag?.isSelect) {
             return {
               success: false,
+              dispatched: false,
               tag: 'SELECT',
               text: coordTag.current,
               error: `CANNOT CLICK a <select> dropdown at (${args.x}, ${args.y}) — clicking opens a native OS popup that cannot be controlled. The dropdown is now focused (current: "${coordTag.current}"). Use type_text({text: "option name"}) to change the value. Available options: ${coordTag.options.join(', ')}`,
@@ -12184,6 +12554,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           if (redir?.isSelect) {
             return {
               success: false,
+              dispatched: false,
               tag: 'SELECT',
               text: redir.current,
               error: `CANNOT CLICK a <select> dropdown at (${args.x}, ${args.y}) — clicking opens a native OS popup that cannot be controlled. The dropdown is now focused (current: "${redir.current}"). Use type_text({text: "option name"}) to change the value. Available options: ${redir.options.join(', ')}`,
@@ -12254,16 +12625,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     }
 
     if (name === 'type_text') {
+      let dispatched = false;
       try {
         await cdpClient.attach(tabId);
         if (args.index != null) {
           return {
             success: false,
+            dispatched: false,
+            noDispatch: true,
             error: `type_text does not accept an \`index\` parameter. To type into an element by its index, first call click({index: ${args.index}}) to focus it, then call type_text({text: "${String(args.text || '').slice(0, 60)}"}) with NO selector and NO index. Alternatively, use click_ax + type_ax with a ref_id from get_accessibility_tree.`,
           };
         }
         if (args.selector) {
-          const result = await cdpClient.typeText(tabId, args.selector, args.text || '', !!args.clear);
+          let result;
+          try {
+            result = await cdpClient.typeText(tabId, args.selector, args.text || '', !!args.clear);
+          } catch (error) {
+            return {
+              success: false,
+              dispatched: true,
+              error: `Type failed after selector dispatch became uncertain: ${error?.message || String(error)}`,
+            };
+          }
           if (result.success) this._showAgentTarget(tabId, result.rect || result, 'type_text_selector');
           // Track field for duplicate-typing detection
           if (result.success) {
@@ -12309,6 +12692,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           if (!focus?.focused || !focus?.editable) {
             return {
               success: false,
+              dispatched: false,
+              noDispatch: true,
               error: 'No editable element is currently focused. Click the target input/textarea first, then call type_text with no selector.',
               focusedElement: focus || null,
             };
@@ -12345,9 +12730,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               })()
             `);
             const sInfo = selectInfo?.result?.value;
-            if (!sInfo?.success) return sInfo || { success: false, error: 'Select interaction failed' };
+            if (!sInfo?.success) {
+              return {
+                ...(sInfo || { success: false, error: 'Select interaction failed' }),
+                dispatched: false,
+                noDispatch: true,
+              };
+            }
 
             // Close any open native dropdown first
+            dispatched = true;
             await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
               type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
             });
@@ -12401,6 +12793,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           }
 
           if (args.clear) {
+            dispatched = true;
             await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
               type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65,
             });
@@ -12414,6 +12807,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46,
             });
           }
+          dispatched = true;
           await cdpClient.sendCommand(tabId, 'Input.insertText', { text: args.text || '' });
 
           // Track field for duplicate-typing detection
@@ -12435,9 +12829,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           };
         }
         // Should be unreachable — all branches above return.
-        return { success: false, error: 'type_text: internal — no branch matched. Provide {text} (with focused field) or {selector, text}.' };
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'type_text: internal — no branch matched. Provide {text} (with focused field) or {selector, text}.',
+        };
       } catch (e) {
-        return { success: false, error: `Type failed: ${e.message}` };
+        return {
+          success: false,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+          error: `Type failed: ${e.message}`,
+        };
       }
     }
 
@@ -12447,7 +12852,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const repeat = Math.max(1, Math.min(3, Number.isFinite(repeatRaw) ? Math.floor(repeatRaw) : 1));
       const SUPPORTED_KEYS = ['Escape', 'Tab', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
       if (!SUPPORTED_KEYS.includes(key)) {
-        return { success: false, error: `Unsupported key "${key}". Supported keys: ${SUPPORTED_KEYS.join(', ')}.` };
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: `Unsupported key "${key}". Supported keys: ${SUPPORTED_KEYS.join(', ')}.`,
+        };
       }
 
       try {
@@ -12481,7 +12891,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           });
         }
 
-        return { success: true, method: 'cdp-key', key, repeat };
+        return { success: true, dispatched: true, method: 'cdp-key', key, repeat };
       } catch (e) {
         // Fall through to content-script path if CDP is unavailable.
       }
@@ -12686,6 +13096,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         ) {
           return {
             success: false,
+            dispatched: false,
+            noDispatch: true,
             error: `${name} cannot be used on Chrome's built-in PDF viewer (a chrome-extension:// page our scripts cannot reach). Use read_pdf to extract the document's text instead. If you need to read a specific page, pass fromPage/toPage to read_pdf.`,
           };
         }
@@ -13380,6 +13792,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return withSnapshot({
         ...response,
         success: false,
+        dispatched: true,
         noProgress: pressedDelivered || undefined,
         fallback: 'cdp_after_synthetic_no_progress',
         fallbackAttempted,
@@ -13862,6 +14275,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._clearLoopState(tabId);
     if (runOptions?.trustedContinuation !== true) this._continuationExecutionEvidence.delete(tabId);
     this._clickAxCdpFallbacks.delete(tabId);
+    const completionRunToken = this._beginCompletionInvariant(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
     if (runOptions.cloudRun) {
@@ -13881,6 +14295,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       this._runningTabs.delete(tabId);
       this._clearLoopState(tabId);
       this._clickAxCdpFallbacks.delete(tabId);
+      this._clearCompletionInvariant(tabId, completionRunToken);
     }
   }
 
@@ -14328,10 +14743,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // Genuine final answer — emit and exit. Repeated-item progress recovery
       // takes priority so an unresolved ledger can still drive the next tool turn.
       const progressFinalBlock = this._plainFinalProgressBlock(tabId);
-      if (progressFinalBlock) {
+      const completionFinalBlock = this._completionPlainFinalBlock(tabId);
+      const plainFinalBlocks = [progressFinalBlock, completionFinalBlock].filter(Boolean);
+      if (plainFinalBlocks.length) {
         messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems, result.reasoningContent, provider));
-        messages.push({ role: 'user', content: progressFinalBlock });
-        onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
+        messages.push({ role: 'user', content: plainFinalBlocks.join('\n\n') });
+        onUpdate('warning', { message: completionFinalBlock ? 'Runtime completion invariant requires an explicit done outcome.' : 'Progress ledger has unresolved rows; continuing.' });
         this._persist(tabId);
         continue;
       }
@@ -14401,6 +14818,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._clearLoopState(tabId);
     if (runOptions?.trustedContinuation !== true) this._continuationExecutionEvidence.delete(tabId);
     this._clickAxCdpFallbacks.delete(tabId);
+    const completionRunToken = this._beginCompletionInvariant(tabId);
     this._runningTabs.add(tabId);
     const previousCloudContext = this.cloudRunContexts.get(tabId);
     if (runOptions.cloudRun) {
@@ -14420,6 +14838,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       this._runningTabs.delete(tabId);
       this._clearLoopState(tabId);
       this._clickAxCdpFallbacks.delete(tabId);
+      this._clearCompletionInvariant(tabId, completionRunToken);
     }
   }
 
@@ -14719,10 +15138,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // Preserve the progress ledger's purpose-built continuation before
         // treating other plain terminal text as unverified.
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
-        if (progressFinalBlock) {
+        const completionFinalBlock = this._completionPlainFinalBlock(tabId);
+        const plainFinalBlocks = [progressFinalBlock, completionFinalBlock].filter(Boolean);
+        if (plainFinalBlocks.length) {
           messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems, reasoningContent, provider));
-          messages.push({ role: 'user', content: progressFinalBlock });
-          onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
+          messages.push({ role: 'user', content: plainFinalBlocks.join('\n\n') });
+          if (completionFinalBlock) onUpdate('text', { content: '', replace: true });
+          onUpdate('warning', { message: completionFinalBlock ? 'Runtime completion invariant requires an explicit done outcome.' : 'Progress ledger has unresolved rows; continuing.' });
           this._persist(tabId);
           continue;
         }
