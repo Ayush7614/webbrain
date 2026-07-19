@@ -6389,7 +6389,18 @@ test('pre-dispatch action failures opt out without weakening ambiguous iframe fa
     }
 
     globalThis.chrome.scripting.executeScript = async () => [{
-      result: { ok: false, error: 'event handler threw after target resolution', url: 'https://example.test/frame' },
+      result: { ok: false, dispatched: false, error: 'invalid selector', url: 'https://example.test/frame' },
+    }];
+    assertNoDebt(
+      'chrome',
+      CompletionInvariantCh,
+      'iframe_type',
+      { selector: '::invalid' },
+      await chromeAgent.executeTool(6401, 'iframe_type', { selector: '::invalid', text: 'x' }),
+    );
+
+    globalThis.chrome.scripting.executeScript = async () => [{
+      result: { ok: false, dispatched: true, error: 'event handler threw after target resolution', url: 'https://example.test/frame' },
     }];
     const ambiguousChromeIframe = await chromeAgent.executeTool(6401, 'iframe_type', { selector: '#field', text: 'x' });
     assert.equal(ambiguousChromeIframe.dispatched, true, 'chrome: ambiguous iframe failure lost its dispatch marker');
@@ -6426,6 +6437,21 @@ test('pre-dispatch action failures opt out without weakening ambiguous iframe fa
 
     globalThis.browser.tabs.executeScript = async () => [{
       ok: false,
+      dispatched: false,
+      error: 'invalid selector',
+      url: 'https://example.test/frame',
+    }];
+    assertNoDebt(
+      'firefox',
+      CompletionInvariantFx,
+      'iframe_type',
+      { selector: '::invalid' },
+      await firefoxAgent.executeTool(6402, 'iframe_type', { selector: '::invalid', text: 'x' }),
+    );
+
+    globalThis.browser.tabs.executeScript = async () => [{
+      ok: false,
+      dispatched: true,
       error: 'event handler threw after target resolution',
       url: 'https://example.test/frame',
     }];

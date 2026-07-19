@@ -9815,19 +9815,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               const _hostOk = !_w || _h === _w || _h.endsWith('.' + _w);
               if (!_hostOk || !location.href.includes(filter)) return { ok: false, skipped: 'url-filter', url: location.href };
             }
+            let targetDispatched = false;
             try {
               const el = document.querySelector(${JSON.stringify(selector)});
               if (!el) return { ok: false, url: location.href, reason: 'not-found' };
               el.scrollIntoView({ block: 'center', inline: 'center' });
               const rect = el.getBoundingClientRect();
               const opts = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2, button: 0 };
+              targetDispatched = true;
               try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
               el.dispatchEvent(new MouseEvent('mousedown', opts));
               try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
               el.dispatchEvent(new MouseEvent('mouseup', opts));
               el.click();
-              return { ok: true, url: location.href, tag: el.tagName, text: (el.innerText || el.value || '').slice(0, 80) };
-            } catch (e) { return { ok: false, url: location.href, error: e.message }; }
+              return { ok: true, url: location.href, tag: el.tagName, text: (el.innerText || el.value || '').slice(0, 80), dispatched: true };
+            } catch (e) { return { ok: false, url: location.href, dispatched: targetDispatched, error: e.message }; }
           })()
         `;
         dispatched = true;
@@ -9835,7 +9837,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const successes = (results || []).filter(r => r && r.ok);
         if (successes.length > 0) return { success: true, dispatched: true, method: 'iframe-click', frame: successes[0] };
         const candidates = (results || []).filter(r => r && !r.skipped);
-        const targetDispatched = candidates.some(candidate => candidate.reason !== 'not-found');
+        const targetDispatched = candidates.some(candidate => candidate.dispatched === true);
         return {
           success: false,
           ...(targetDispatched
@@ -9885,15 +9887,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               const _hostOk = !_w || _h === _w || _h.endsWith('.' + _w);
               if (!_hostOk || !location.href.includes(filter)) return { ok: false, skipped: 'url-filter', url: location.href };
             }
+            let targetDispatched = false;
             try {
               const el = document.querySelector(${JSON.stringify(selector)});
               if (!el) return { ok: false, url: location.href, reason: 'not-found' };
+              targetDispatched = true;
               el.focus();
               if (el.isContentEditable) {
                 if (${clear}) el.textContent = '';
                 el.textContent += ${JSON.stringify(text)};
                 el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${JSON.stringify(text)} }));
-                return { ok: true, url: location.href, method: 'contenteditable', value: el.textContent.slice(0, 100) };
+                return { ok: true, url: location.href, method: 'contenteditable', value: el.textContent.slice(0, 100), dispatched: true };
               }
               const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
               const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -9901,8 +9905,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               if (setter) setter.call(el, newVal); else el.value = newVal;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-              return { ok: true, url: location.href, method: 'native-setter', value: (el.value || '').slice(0, 100) };
-            } catch (e) { return { ok: false, url: location.href, error: e.message }; }
+              return { ok: true, url: location.href, method: 'native-setter', value: (el.value || '').slice(0, 100), dispatched: true };
+            } catch (e) { return { ok: false, url: location.href, dispatched: targetDispatched, error: e.message }; }
           })()
         `;
         dispatched = true;
@@ -9910,7 +9914,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const successes = (results || []).filter(r => r && r.ok);
         if (successes.length > 0) return { success: true, dispatched: true, frame: successes[0] };
         const candidates = (results || []).filter(r => r && !r.skipped);
-        const targetDispatched = candidates.some(candidate => candidate.reason !== 'not-found');
+        const targetDispatched = candidates.some(candidate => candidate.dispatched === true);
         return {
           success: false,
           ...(targetDispatched
