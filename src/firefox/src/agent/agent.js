@@ -42,7 +42,7 @@ import {
   messageContentToText,
 } from './planner.js';
 import { extractFirstJsonObject } from './json-extract.js';
-import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
+import { repairDoubleEscapedAssistantText, sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 import { buildCustomSkillsPrompt, buildSkillLoaderDefinition, buildSkillToolDefinitions, buildSkillToolRegistry, getEligibleCustomSkills, getEligibleSkillCatalog, normalizeCustomSkills } from './skills.js';
 import { publicMediaUrlNeedsExplicitTarget } from './public-media-url.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
@@ -10398,9 +10398,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         onUpdate('warning', { message: finalResponse });
         break;
       }
+      const repairedFinalContent = repairDoubleEscapedAssistantText(result.content);
       finalResponse = result.costAllowanceMessage
-        ? `${result.content}\n\n${result.costAllowanceMessage}`
-        : result.content;
+        ? `${repairedFinalContent}\n\n${result.costAllowanceMessage}`
+        : repairedFinalContent;
       messages.push(this._withResponseItems({ role: 'assistant', content: finalResponse }, result.responseItems, result.reasoningContent, provider));
       onUpdate('text', { content: finalResponse });
       break;
@@ -10777,6 +10778,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           onUpdate('warning', { message: planOnlyDecision.failure });
           this._persist(tabId);
           return finish(planOnlyDecision.failure, planOnlyDecision.status || 'plan_only_output');
+        }
+        const repairedFullText = repairDoubleEscapedAssistantText(fullText);
+        if (repairedFullText !== fullText) {
+          fullText = repairedFullText;
+          // Streaming deltas have already displayed the malformed escapes.
+          // Replace the transient bubble once with the repaired terminal text.
+          onUpdate('text', { content: fullText, replace: true });
         }
         if (costStopMessage) {
           onUpdate('text_delta', { content: `\n\n${costStopMessage}` });

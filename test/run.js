@@ -568,6 +568,12 @@ const { Agent: AgentCh } = await import(
 const { Agent: AgentFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/agent.js').replace(/\\/g, '/')
 );
+const { repairDoubleEscapedAssistantText: repairDoubleEscapedAssistantTextCh } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/text-sanitize.js').replace(/\\/g, '/')
+);
+const { repairDoubleEscapedAssistantText: repairDoubleEscapedAssistantTextFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/text-sanitize.js').replace(/\\/g, '/')
+);
 const userMemoryCh = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/agent/user-memory.js').replace(/\\/g, '/')
 );
@@ -19329,6 +19335,161 @@ test('_defaultConfigs: new cloud providers present and disabled by default', () 
     );
     assert.equal(streamBody.temperature, undefined);
     assert.deepEqual(streamBody.stream_options, { include_usage: true });
+  }
+});
+
+test('assistant response repair decodes issue #409 double-escaped Markdown', () => {
+  const expected = '**Registro en vivo**\n\n---\n\n*Nota: El texto parece estar truncado ("Live Lo").*';
+  const malformed = JSON.stringify(expected).slice(1, -1);
+
+  assert.match(malformed, /\\n\\n/);
+  assert.match(malformed, /\\"Live Lo\\"/);
+  for (const [label, repair] of [
+    ['chrome', repairDoubleEscapedAssistantTextCh],
+    ['firefox', repairDoubleEscapedAssistantTextFx],
+  ]) {
+    assert.equal(repair(malformed), expected, `${label}: malformed Markdown should decode exactly one level`);
+  }
+});
+
+test('assistant response repair preserves legitimate escapes and formatted text', () => {
+  const unchanged = [
+    String.raw`Use the literal sequences \n\n when documenting JSON escapes.`,
+    String.raw`Path C:\new\temp and regex /\n\n/.`,
+    String.raw`**Regex:**\n\nUse /\n\n/ to match a blank line.`,
+    String.raw`**Literal:**\n\nWrite \n\n between paragraphs.`,
+    String.raw`### Escapes\n\nThe token \n starts a new line.`,
+    '```json\n{"line":"one\\ntwo"}\n```',
+    'Already\n\n**formatted**',
+    String.raw`First\nSecond`,
+    String.raw`### Title\n\nBad \q escape`,
+  ];
+
+  for (const [label, repair] of [
+    ['chrome', repairDoubleEscapedAssistantTextCh],
+    ['firefox', repairDoubleEscapedAssistantTextFx],
+  ]) {
+    for (const value of unchanged) {
+      assert.equal(repair(value), value, `${label}: should preserve ${JSON.stringify(value)}`);
+    }
+  }
+});
+
+test('assistant response repair preserves escapes inside double-escaped fenced code', () => {
+  const expected = '```json\n{"line":"one\\ntwo"}\n```';
+  const malformed = JSON.stringify(expected).slice(1, -1);
+
+  for (const [label, repair] of [
+    ['chrome', repairDoubleEscapedAssistantTextCh],
+    ['firefox', repairDoubleEscapedAssistantTextFx],
+  ]) {
+    assert.equal(repair(malformed), expected, `${label}: fenced JSON should retain its inner escape`);
+  }
+});
+
+test('provider response path preserves raw assistant content and metadata', async () => {
+  const expected = '**Result**\n\n- First\n- Second';
+  const malformed = JSON.stringify(expected).slice(1, -1);
+  const reasoningContent = String.raw`Keep \n reasoning unchanged`;
+
+  for (const [label, AgentClass] of [
+    ['chrome', AgentCh],
+    ['firefox', AgentFx],
+  ]) {
+    const raw = { choices: [{ message: { content: malformed } }] };
+    const agent = new AgentClass({});
+    agent._checkCostAllowance = async () => null;
+    agent._recordCostUsage = async () => null;
+    const result = await agent._chatWithCostAllowance({
+      chat: async () => ({
+        content: malformed,
+        reasoningContent,
+        raw,
+        usage: null,
+      }),
+    }, [], {}, {});
+
+    assert.equal(result.content, malformed, `${label}: raw content should remain available to semantic gates`);
+    assert.equal(result.reasoningContent, reasoningContent, `${label}: hidden reasoning should not be decoded`);
+    assert.equal(raw.choices[0].message.content, malformed, `${label}: raw provider payload should remain untouched`);
+  }
+});
+
+test('terminal display repair cannot turn escaped text into executable tool calls', async () => {
+  const expected = '### Continuing\n\n<tool_call>{"name":"read_page","arguments":{}}</tool_call>';
+  const malformed = JSON.stringify(expected).slice(1, -1);
+
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      chat: async () => ({ content: malformed, toolCalls: [] }),
+    };
+    const agent = new AgentClass({
+      getActive: () => provider,
+      getVisionProvider: async () => null,
+    });
+    const tabId = 4090 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    let executed = false;
+    agent.executeTool = async () => {
+      executed = true;
+      throw new Error('display-only text must not execute');
+    };
+
+    const final = await agent.processMessage(tabId, 'Show the response.', () => {}, 'ask');
+
+    assert.equal(final, expected, `${AgentClass.name}: terminal display text should be repaired`);
+    assert.equal(executed, false, `${AgentClass.name}: decoded display text became a tool call`);
+  }
+});
+
+test('agent repairs only terminal content after raw tool-call and plan gates', () => {
+  for (const [label, prefix] of [
+    ['chrome', 'src/chrome'],
+    ['firefox', 'src/firefox'],
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, prefix, 'src/agent/agent.js'), 'utf8');
+    const rawFallback = source.indexOf(
+      'const fallback = this._tryParseToolCallsFromText(result.content, allowedToolNames);',
+    );
+    const planGate = source.indexOf(
+      'const planOnlyDecision = this._planOnlyTerminalDecision(tabId, result.content);',
+      rawFallback,
+    );
+    const terminalRepair = source.indexOf(
+      'const repairedFinalContent = repairDoubleEscapedAssistantText(result.content);',
+      planGate,
+    );
+    assert.ok(
+      rawFallback >= 0 && rawFallback < planGate && planGate < terminalRepair,
+      `${label}: non-streaming repair must run after raw semantic gates`,
+    );
+
+    const rawStreamFallback = source.indexOf(
+      'const fallback = this._tryParseToolCallsFromText(fullText, allowedToolNames);',
+    );
+    const streamPlanGate = source.indexOf(
+      'const planOnlyDecision = this._planOnlyTerminalDecision(tabId, fullText);',
+      rawStreamFallback,
+    );
+    const streamTerminalRepair = source.indexOf(
+      'const repairedFullText = repairDoubleEscapedAssistantText(fullText);',
+      streamPlanGate,
+    );
+    assert.ok(
+      rawStreamFallback >= 0 && rawStreamFallback < streamPlanGate && streamPlanGate < streamTerminalRepair,
+      `${label}: streaming repair must run after raw semantic gates`,
+    );
+    assert.match(
+      source,
+      /if \(repairedFullText !== fullText\) \{[\s\S]{0,400}onUpdate\('text', \{ content: fullText, replace: true \}\);/,
+      `${label}: malformed streamed deltas should be replaced once at completion`,
+    );
   }
 });
 
