@@ -18597,6 +18597,50 @@ test('reason is informative', () => {
   assert.match(isCredentialField({ type: 'text', name: 'api_key' }).reason, /name matches credential pattern/);
 });
 
+test('failed sensitive set_field readbacks are annotated and redacted', () => {
+  for (const [label, rel, detector, strictNote] of [
+    ['chrome', 'src/chrome/src/agent/agent.js', isCredentialField, CREDENTIAL_NOTE_STRICT],
+    ['firefox', 'src/firefox/src/agent/agent.js', isCredentialFieldFx, CREDENTIAL_NOTE_STRICT_FX],
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const start = source.indexOf('_annotateCredentialField(toolName, response) {');
+    const end = source.indexOf('\n  }\n\n', start);
+    assert.ok(start >= 0 && end > start, `${label}: credential result annotator should remain independently testable`);
+    const method = vm.runInNewContext(`({${source.slice(start, end + 4)}})._annotateCredentialField`, {
+      isCredentialField: detector,
+      CREDENTIAL_NOTE_STRICT: strictNote,
+    });
+
+    const failedSensitive = {
+      success: false,
+      actual: 'settled-secret-value',
+      fieldMeta: { type: 'password' },
+    };
+    method.call({ strictSecretMode: false }, 'set_field', failedSensitive);
+    assert.equal(Object.hasOwn(failedSensitive, 'actual'), false, `${label}: sensitive readback must not reach the model`);
+    assert.equal(failedSensitive.actualRedacted, true, `${label}: redaction should remain observable without the value`);
+    assert.equal(failedSensitive.sensitiveField, true, `${label}: failed post-dispatch results should retain sensitive-field policy`);
+
+    const failedOrdinary = {
+      success: false,
+      actual: 'Magnetic Locksg',
+      fieldMeta: { type: 'text', name: 'product_name' },
+    };
+    method.call({ strictSecretMode: false }, 'set_field', failedOrdinary);
+    assert.equal(failedOrdinary.actual, 'Magnetic Locksg', `${label}: ordinary mismatch diagnostics should remain available`);
+    assert.equal(failedOrdinary.actualRedacted, undefined, `${label}: ordinary fields should not be marked redacted`);
+
+    const strictFailure = {
+      success: false,
+      actual: '123456',
+      fieldMeta: { type: 'text', autocomplete: 'one-time-code' },
+    };
+    method.call({ strictSecretMode: true }, 'set_field', strictFailure);
+    assert.equal(Object.hasOwn(strictFailure, 'actual'), false, `${label}: strict mode must also redact failed readbacks`);
+    assert.equal(strictFailure.note, strictNote, `${label}: strict secret reminder should apply to failed sensitive results`);
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // Provider categorization (filter UI)
 // ────────────────────────────────────────────────────────────────────────
