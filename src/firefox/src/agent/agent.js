@@ -5113,6 +5113,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return mode === 'act' || mode === 'dev';
   }
 
+  _devModeBlockedMessage(provider = null) {
+    const providerName = provider?.name || provider?.config?.model || 'the active provider';
+    return `Dev mode requires a Mid or Full prompt tier. ${providerName} is currently configured as Compact, so Dev mode is blocked for this provider. Switch to a Mid/Full-tier provider or change this provider's prompt tier, then try Dev again.`;
+  }
+
   /**
    * Compose the full system prompt: base (ASK or ACT) + optional universal
    * cookie/paywall guidance + optional enabled skills + optional user
@@ -10385,6 +10390,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let finalResponse = '';
     let _traceStatus = 'done';
 
+    if (mode === 'dev' && provider.promptTier === 'compact') {
+      const msg = this._devModeBlockedMessage(provider);
+      messages.push(enriched);
+      messages.push({ role: 'assistant', content: msg });
+      this._persist(tabId);
+      onUpdate('warning', { message: msg });
+      return (finalResponse = msg);
+    }
+
     // Validate attachments BEFORE the planner gate / trace start: an
     // unsupported attachment is a plain "tell the user" response, not an
     // agent run, and the message must never be pushed to history this way.
@@ -10837,6 +10851,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       _traceStatus = status;
       return response;
     };
+
+    if (mode === 'dev' && provider.promptTier === 'compact') {
+      const msg = this._devModeBlockedMessage(provider);
+      messages.push(enriched);
+      messages.push({ role: 'assistant', content: msg });
+      this._persist(tabId);
+      onUpdate('warning', { message: msg });
+      return finish(msg);
+    }
 
     // All throwing work — trace start, planner gate, run setup, and the agent
     // loop — runs inside this try so the finally always ends the trace run and

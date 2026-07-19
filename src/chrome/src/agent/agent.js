@@ -5957,6 +5957,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return mode === 'act' || mode === 'dev';
   }
 
+  _devModeBlockedMessage(provider = null) {
+    const providerName = provider?.name || provider?.config?.model || 'the active provider';
+    return `Dev mode requires a Mid or Full prompt tier. ${providerName} is currently configured as Compact, so Dev mode is blocked for this provider. Switch to a Mid/Full-tier provider or change this provider's prompt tier, then try Dev again.`;
+  }
+
   /**
    * Compose the full system prompt: base (ASK or ACT) + optional universal
    * cookie/paywall guidance + optional enabled skills + optional user
@@ -14361,6 +14366,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let finalResponse = '';
     let _traceStatus = 'done'; // updated on early exits
 
+    if (mode === 'dev' && provider.promptTier === 'compact') {
+      const msg = this._devModeBlockedMessage(provider);
+      messages.push(enriched);
+      messages.push({ role: 'assistant', content: msg });
+      this._persist(tabId);
+      onUpdate('warning', { message: msg });
+      return (finalResponse = msg);
+    }
+
     // Start console/network capture before the planning/model loop so Dev
     // diagnostic tools can inspect activity caused by the run's first page
     // action. Failure is non-fatal; the individual tool returns a focused CDP
@@ -14838,6 +14852,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       _traceStatus = status;
       return response;
     };
+
+    if (mode === 'dev' && provider.promptTier === 'compact') {
+      const msg = this._devModeBlockedMessage(provider);
+      messages.push(enriched);
+      messages.push({ role: 'assistant', content: msg });
+      this._persist(tabId);
+      onUpdate('warning', { message: msg });
+      return finish(msg);
+    }
 
     // Match the non-streaming path: diagnostics must be live before the first
     // Dev action so console and network tools include activity from this run.

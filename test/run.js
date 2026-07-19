@@ -6014,7 +6014,7 @@ test('offscreen cloud bridge ignores asynchronous close events from replaced soc
   assert.equal(replacement.sent.filter(message => message.type === 'hello').length, 1, 'replacement socket should remain current and announce itself');
 });
 
-test('getToolsForMode: `done` outcome is required in every Act and Dev prompt tier', () => {
+test('getToolsForMode: `done` outcome is required in every supported Act and Dev prompt tier', () => {
   for (const [label, getTools] of [
     ['chrome', getToolsForModeCh],
     ['firefox', getToolsForModeFx],
@@ -6027,13 +6027,11 @@ test('getToolsForMode: `done` outcome is required in every Act and Dev prompt ti
       ['act compact', getTools('act', { tier: 'compact' }), true],
       ['dev full', getTools('dev'), true],
       ['dev mid', getTools('dev', { tier: 'mid' }), true],
-      ['dev compact', getTools('dev', { tier: 'compact' }), true],
       ['act strict full', getTools('act', { strictSecretMode: true }), true],
       ['act strict mid', getTools('act', { tier: 'mid', strictSecretMode: true }), true],
       ['act strict compact', getTools('act', { tier: 'compact', strictSecretMode: true }), true],
       ['dev strict full', getTools('dev', { strictSecretMode: true }), true],
       ['dev strict mid', getTools('dev', { tier: 'mid', strictSecretMode: true }), true],
-      ['dev strict compact', getTools('dev', { tier: 'compact', strictSecretMode: true }), true],
     ]) {
       const done = tools.find(t => t.function.name === 'done');
       assert.ok(done, `[${label}] ${modeLabel}: done tool missing`);
@@ -6629,7 +6627,7 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     const devMid = getTools('dev', { tier: 'mid' }).map(t => t.function.name);
     const devFull = getTools('dev').map(t => t.function.name);
 
-    assert.ok(devCompact.includes('done'), `[${label}] Dev Compact should expose done`);
+    assert.deepEqual(devCompact, [], `[${label}] Dev Compact should be blocked at tool-schema level`);
     for (const name of ['get_accessibility_tree', 'read_page', 'scroll', 'extract_data', 'get_selection', 'done', 'fetch_url']) {
       assert.equal(ask.includes(name), true, `[${label}] ask should expose ${name}`);
       assert.equal(compact.includes(name), true, `[${label}] compact act should expose ${name}`);
@@ -6659,7 +6657,6 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
       assert.equal(mid.includes(name), false, `[${label}] mid act should not expose ${name}`);
       assert.equal(full.includes(name), true, `[${label}] full act should expose ${name}`);
       assert.equal(devMid.includes(name), false, `[${label}] dev mid should not add ${name}`);
-      assert.equal(devCompact.includes(name), false, `[${label}] dev compact should not add ${name}`);
       assert.equal(devFull.includes(name), true, `[${label}] dev full should keep full-act ${name}`);
     }
     for (const name of ['get_shadow_dom', 'get_frames']) {
@@ -6668,7 +6665,6 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
       assert.equal(mid.includes(name), false, `[${label}] mid act should not expose ${name}`);
       assert.equal(full.includes(name), true, `[${label}] full act should expose ${name}`);
       assert.equal(devMid.includes(name), true, `[${label}] dev mid should add ${name}`);
-      assert.equal(devCompact.includes(name), true, `[${label}] dev compact should add ${name}`);
       assert.equal(devFull.includes(name), true, `[${label}] dev full should keep full-act ${name}`);
     }
 
@@ -6679,9 +6675,7 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     assert.equal(mid.includes('read_page_source'), false, `[${label}] mid act must not expose read_page_source`);
     assert.equal(mid.includes('inspect_element_styles'), false, `[${label}] mid act must not expose inspect_element_styles`);
     assert.equal(devMid.includes('read_page_source'), true, `[${label}] dev mid should expose read_page_source`);
-    assert.equal(devCompact.includes('read_page_source'), true, `[${label}] dev compact should expose read_page_source`);
     assert.equal(devMid.includes('inspect_element_styles'), true, `[${label}] dev mid should expose inspect_element_styles`);
-    assert.equal(devCompact.includes('inspect_element_styles'), true, `[${label}] dev compact should expose inspect_element_styles`);
     assert.equal(devFull.includes('read_page_source'), true, `[${label}] dev full should expose read_page_source`);
     assert.equal(devFull.includes('inspect_element_styles'), true, `[${label}] dev full should expose inspect_element_styles`);
     assert.equal(ask.includes('execute_js'), false, `[${label}] ask must not expose execute_js`);
@@ -6689,7 +6683,6 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     assert.equal(mid.includes('execute_js'), false, `[${label}] mid act must not expose execute_js`);
     assert.equal(full.includes('execute_js'), false, `[${label}] full act must not expose execute_js`);
     assert.equal(devMid.includes('execute_js'), true, `[${label}] dev mid should expose execute_js`);
-    assert.equal(devCompact.includes('execute_js'), true, `[${label}] dev compact should expose execute_js`);
     assert.equal(devFull.includes('execute_js'), true, `[${label}] dev full should expose execute_js`);
 
     assert.equal(mid.includes('upload_file'), true, `[${label}] mid act should expose upload_file`);
@@ -6781,16 +6774,14 @@ test('test/llm payload builders support Dev mode and preserve Ask cleanup', () =
   assert.equal(firefoxDevMidNames.has('shadow_dom_query'), false, 'firefox dev mid must not invent Chrome-only shadow_dom_query');
 
   for (const browser of ['chrome', 'firefox']) {
-    const devCompact = buildLlmPayload(
-      { ...baseCase, mode: 'dev' },
-      { browser, tier: 'compact', useSiteAdapters: false },
+    assert.throws(
+      () => buildLlmPayload(
+        { ...baseCase, mode: 'dev' },
+        { browser, tier: 'compact', useSiteAdapters: false },
+      ),
+      /Dev mode requires a Mid or Full prompt tier/,
+      `${browser} compact Dev should be rejected before payload construction`,
     );
-    const names = new Set(devCompact.tools.map(tool => tool.function.name));
-    assert.match(devCompact.messages[0].content, /DEV MODE APPENDIX/, `${browser} compact Dev prompt missing appendix`);
-    for (const name of ['read_page_source', 'inspect_element_styles', 'execute_js']) {
-      assert.equal(names.has(name), true, `${browser} compact Dev should include ${name}`);
-    }
-    assert.equal(names.has('hover'), false, `${browser} compact Dev should not inherit full-only hover`);
   }
 
   const chromeAsk = buildLlmPayload({ ...baseCase, mode: 'ask' }, {
@@ -7054,6 +7045,10 @@ test('getToolsForMode: skill tools are exposed only when enabled skills declare 
     ];
     for (const [mode, _runMode, _tier, tools] of toolSets) {
       const names = tools.map(t => t.function?.name).filter(Boolean);
+      if (mode === 'dev:compact') {
+        assert.deepEqual(names, [], `${label} ${mode}: Dev Compact should not expose skill tools`);
+        continue;
+      }
       assert.ok(names.includes('read_youtube_transcript'), `${label} ${mode}: transcript tool missing`);
       assert.equal(names.includes('fetch_nytimes_article'), false, `${label} ${mode}: NYTimes tool must not pollute unrelated model requests`);
       assert.ok(names.includes('resolve_public_media'), `${label} ${mode}: resolver tool missing`);
@@ -9272,7 +9267,7 @@ test('Chrome execute_js and page-debugging tools are exposed only in Dev mode', 
   assert.match(SYSTEM_PROMPT_DEV_APPENDIX_CH, /\binject_css\b/);
   assert.match(SYSTEM_PROMPT_DEV_APPENDIX_CH, /\bpatch_element\b/);
   assert.match(SYSTEM_PROMPT_DEV_APPENDIX_CH, /\binspect_network_requests\b/);
-  assert.doesNotMatch(SYSTEM_PROMPT_DEV_APPENDIX_CH, /not available for Compact-tier providers/i);
+  assert.match(SYSTEM_PROMPT_DEV_APPENDIX_CH, /not available for Compact-tier providers/i);
 });
 
 test('Firefox execute_js is exposed only as a Dev add-on', () => {
@@ -9284,7 +9279,7 @@ test('Firefox execute_js is exposed only as a Dev add-on', () => {
   assert.equal(firefoxDevMidNames.includes('execute_js'), true);
   assert.doesNotMatch(SYSTEM_PROMPT_ASK_FX + SYSTEM_PROMPT_ACT_FX + SYSTEM_PROMPT_ACT_MID_FX + SYSTEM_PROMPT_ACT_COMPACT_FX, /\bexecute_js\b/);
   assert.match(SYSTEM_PROMPT_DEV_APPENDIX_FX, /\bexecute_js\b/);
-  assert.doesNotMatch(SYSTEM_PROMPT_DEV_APPENDIX_FX, /not available for Compact-tier providers/i);
+  assert.match(SYSTEM_PROMPT_DEV_APPENDIX_FX, /not available for Compact-tier providers/i);
 });
 
 test('getToolsForMode: compact flag does not shrink ask mode', () => {
@@ -11900,8 +11895,7 @@ test('sidepanel switches Act and Dev without native confirmation dialogs', () =>
     assert.notEqual(ensureStart, -1, `${label}: ensureActMode missing`);
     const ensureBody = panel.slice(ensureStart, panel.indexOf('\n}\n\nmodeAskBtn.addEventListener', ensureStart) + 2);
     assert.match(ensureBody, /async function ensureActMode\(\) \{[\s\S]*?setMode\('act'\);[\s\S]*?return true;/, `${label}: Act should switch directly`);
-    assert.match(ensureBody, /async function ensureDevMode\(\) \{[\s\S]*?setMode\('dev'\);[\s\S]*?return true;/, `${label}: Dev should switch directly for every prompt tier`);
-    assert.doesNotMatch(ensureBody, /get_active_prompt_tier|compact_blocked/, `${label}: compact Dev should not be blocked in the sidepanel`);
+    assert.match(ensureBody, /async function ensureDevMode\(\) \{[\s\S]*?get_active_prompt_tier[\s\S]*?setMode\('dev'\);[\s\S]*?return true;/, `${label}: Dev should retain its tier guard and switch directly`);
     assert.doesNotMatch(ensureBody, /actConfirmed|devConfirmed|\bconfirm\s*\(/, `${label}: mode switching should not depend on native confirmation dialogs`);
     assert.match(
       panel,

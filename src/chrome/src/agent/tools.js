@@ -1176,9 +1176,12 @@ export function getToolsForMode(mode, opts = {}) {
   // (compact | mid | full) supersedes it.
   const tier = opts.tier || (opts.compact ? 'compact' : 'full');
   const normalizedMode = mode === 'dev' ? 'dev' : (mode === 'ask' ? 'ask' : 'act');
+  const devCompactBlocked = normalizedMode === 'dev' && tier === 'compact';
   let base;
   if (normalizedMode === 'ask') {
     base = AGENT_TOOLS.filter(t => ASK_ONLY_TOOLS.includes(t.function.name));
+  } else if (devCompactBlocked) {
+    base = [];
   } else if (tier === 'compact') {
     base = AGENT_TOOLS.filter(t => COMPACT_TOOL_NAMES.has(t.function.name));
   } else if (tier === 'mid') {
@@ -1186,18 +1189,15 @@ export function getToolsForMode(mode, opts = {}) {
   } else {
     base = AGENT_TOOLS.filter(t => FULL_TOOL_NAMES.has(t.function.name));
   }
-  // Compact Dev is intentional: the tier still limits the base Act surface,
-  // while an explicit Dev choice adds the audited Dev tools. Runtime
-  // completion invariants apply to Dev mutations at every prompt tier.
-  if (normalizedMode === 'dev') {
+  if (normalizedMode === 'dev' && tier !== 'compact') {
     const seen = new Set(base.map(t => t.function?.name).filter(Boolean));
     const devTools = AGENT_TOOLS.filter(t => DEV_EXTENDED_TOOL_NAMES.has(t.function.name) && !seen.has(t.function.name));
     base = [...base, ...devTools];
   }
-  if (tier !== 'compact' && opts.skillLoaderTool?.function?.name === 'load_skill') {
+  if (!devCompactBlocked && tier !== 'compact' && opts.skillLoaderTool?.function?.name === 'load_skill') {
     base = [...base, opts.skillLoaderTool];
   }
-  if (Array.isArray(opts.skillTools) && opts.skillTools.length) {
+  if (!devCompactBlocked && Array.isArray(opts.skillTools) && opts.skillTools.length) {
     const seen = new Set([...RESERVED_AGENT_TOOL_NAMES, ...base.map(t => t.function?.name).filter(Boolean)]);
     const extras = opts.skillTools.filter(t => {
       const name = t?.function?.name;
@@ -1555,7 +1555,7 @@ LISTINGS & PAGINATION — read this:
 
 export const SYSTEM_PROMPT_DEV_APPENDIX = `
 DEV MODE APPENDIX:
-- You are in Dev mode: the user has allowed page source, style inspection, reversible page editing, and page-debugging work in addition to the selected Act tools.
+- You are in Dev mode: the user has allowed page source, style inspection, reversible page editing, and page-debugging work in addition to the selected Mid/Full Act tools. Dev mode is not available for Compact-tier providers.
 - Use \`read_page_source\` when raw server HTML, linked stylesheet/script URLs, inline CSS/JS, SSR output, or static markup matters. Do not treat View Source as the rendered DOM or computed layout.
 - Use \`inspect_element_styles\` for live computed CSS, box model, spacing, z-index, visibility, and layout debugging on visible elements. Pair it with page/tree reads or visual context before proposing a UI/layout fix.
 - Prefer reversible edits: \`inject_css\` returns a patchId removable with \`remove_injected_css\`; \`patch_element\` returns a patchId reversible with \`revert_patch\`. Report patchIds so the user can undo experiments.
