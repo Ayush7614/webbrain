@@ -1114,7 +1114,32 @@ function persistPermissionEducationState() {
   }).catch(() => {});
 }
 
-function insertPermissionSkipCommand() {
+function normalizePermissionSkipTabId(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function permissionSkipCommandContextFromCard(card) {
+  const composerTabId = normalizePermissionSkipTabId(currentTabId);
+  const targetTabId = normalizePermissionSkipTabId(
+    card?.dataset?.scheduledTabId ?? card?.dataset?.tabId,
+  );
+  const clarifyId = String(card?.dataset?.clarifyId || '');
+  if (composerTabId == null || targetTabId == null || !clarifyId) return null;
+  return { composerTabId, targetTabId, clarifyId };
+}
+
+function isPermissionSkipCommandDraft(text) {
+  return /^\/dangerously-skip-permissions(?:\s|$)/i.test(String(text || '').trimStart());
+}
+
+function permissionSkipCommandContextForDraft(tabId, text) {
+  const numericTabId = normalizePermissionSkipTabId(tabId);
+  if (numericTabId == null || !isPermissionSkipCommandDraft(text)) return null;
+  return permissionSkipCommandContextsByTab.get(numericTabId) || null;
+}
+
+function insertPermissionSkipCommand(card) {
   if (!inputEl) return;
   if (inputEl.value.trim()) {
     showComposerToast(t('sp.perm.skip_hint_draft'), { duration: 5000 });
@@ -1122,6 +1147,8 @@ function insertPermissionSkipCommand() {
     return;
   }
   const command = '/dangerously-skip-permissions';
+  const context = permissionSkipCommandContextFromCard(card);
+  if (context) permissionSkipCommandContextsByTab.set(context.composerTabId, context);
   resetComposerHistoryNavigation(currentTabId);
   inputEl.value = command;
   inputEl.setSelectionRange(command.length, command.length);
@@ -1134,7 +1161,7 @@ function insertPermissionSkipCommand() {
 function bindPermissionEducationAction(btn) {
   if (!btn || btn.dataset.bound) return;
   btn.dataset.bound = 'true';
-  btn.addEventListener('click', insertPermissionSkipCommand);
+  btn.addEventListener('click', () => insertPermissionSkipCommand(btn.closest('.clarify-card')));
 }
 
 async function maybeShowPermissionEducationHint(card) {
@@ -1208,6 +1235,7 @@ const tabChats = new Map();
 const TAB_CHAT_PREFIX = 'tabChat:';
 const tabChatOperations = new Map();
 const tabInputDrafts = new Map();
+const permissionSkipCommandContextsByTab = new Map();
 const queuedComposerMessagesByTab = new Map();
 const composerHistoryNavigationByTab = new Map();
 let queuedComposerMessageSeq = 0;
@@ -1513,6 +1541,9 @@ function saveInputDraftForTab(tabId, text) {
   const numericTabId = Number(tabId);
   if (!Number.isFinite(numericTabId)) return;
   const draft = String(text || '');
+  if (!isPermissionSkipCommandDraft(draft)) {
+    permissionSkipCommandContextsByTab.delete(numericTabId);
+  }
   if (draft.trim()) {
     tabInputDrafts.set(numericTabId, draft);
   } else {
@@ -4159,6 +4190,10 @@ function handleSlashCommandKeydown(e) {
 
 function handleInput() {
   resetComposerHistoryNavigation(currentTabId);
+  if (!isPermissionSkipCommandDraft(inputEl?.value)) {
+    const tabId = normalizePermissionSkipTabId(currentTabId);
+    if (tabId != null) permissionSkipCommandContextsByTab.delete(tabId);
+  }
   autoResizeInput();
   updateSlashCommandAutocomplete();
   syncSendButtonState();
@@ -4340,6 +4375,20 @@ function addScreenshotResultMessage(dataUrl, options = {}) {
   return msgEl;
 }
 
+function resolvePendingPermissionPromptForContext(context) {
+  const targetTabId = normalizePermissionSkipTabId(context?.targetTabId);
+  const targetClarifyId = String(context?.clarifyId || '');
+  if (targetTabId == null || !targetClarifyId) return false;
+  for (const card of document.querySelectorAll('.clarify-card[data-permission="1"]')) {
+    if (card.classList.contains('clarify-answered')) continue;
+    if (String(card.dataset.tabId || '') !== String(targetTabId)) continue;
+    if (String(card.dataset.clarifyId || '') !== targetClarifyId) continue;
+    submitClarify(card, targetTabId, targetClarifyId, 'once', 'slash-command');
+    return true;
+  }
+  return false;
+}
+
 function resolvePendingPermissionPromptsForTab(tabId) {
   if (tabId == null) return 0;
   const targetTabId = String(tabId);
@@ -4387,7 +4436,7 @@ function requestConfigurationFile(tabId) {
   input.click();
 }
 
-async function parseSlashCommands(text, tabId = currentTabId) {
+async function parseSlashCommands(text, tabId = currentTabId, options = {}) {
   const invocation = parseSlashInvocation(text);
   if (!invocation) return text;
   if (invocation.error || invocation.unsupported) {
@@ -4469,7 +4518,11 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     askBeforeConsequential = false;
     updateActWarning();
     updateInputPlaceholder();
-    resolvePendingPermissionPromptsForTab(tabId);
+    if (options.permissionSkipContext) {
+      resolvePendingPermissionPromptForContext(options.permissionSkipContext);
+    } else {
+      resolvePendingPermissionPromptsForTab(tabId);
+    }
     addPersistentSlashMessage(systemHtml(t('sp.permissions.disabled_html')));
     return payload;
   }
@@ -4730,6 +4783,7 @@ async function sendMessage(extraChatParams = {}) {
   if (!text) return;
   const submittedText = text;
   const tabId = currentTabId;
+  const permissionSkipContext = permissionSkipCommandContextForDraft(tabId, text);
   const requestId = createRunRequestId(tabId);
   text = normalizeScreenshotCommandText(text);
   if (isAwaitingPlanReviewForTab(tabId)) {
@@ -4749,7 +4803,7 @@ async function sendMessage(extraChatParams = {}) {
       inputEl.value = '';
       autoResizeInput();
       syncSendButtonState();
-      await parseSlashCommands(text, tabId);
+      await parseSlashCommands(text, tabId, { permissionSkipContext });
       if (currentTabId === tabId) {
         if (!inputEl.value.trim() || inputEl.value.trim() === text) {
           inputEl.value = '';
@@ -4790,7 +4844,7 @@ async function sendMessage(extraChatParams = {}) {
     syncSendButtonState();
   }
 
-  if (!retryOptions) text = await parseSlashCommands(text, tabId);
+  if (!retryOptions) text = await parseSlashCommands(text, tabId, { permissionSkipContext });
   let renderToCurrentTab = sameTabId(currentTabId, tabId) && sameTabId(renderedTabId, tabId);
   if (!renderToCurrentTab) {
     if (text) saveInputDraftForTab(tabId, text);
