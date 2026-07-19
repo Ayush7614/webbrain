@@ -4776,8 +4776,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _formValidationActionLooksSubmit(toolName, args = {}, result = null, detectedSubmit = null) {
-    if (this._formValidationActionHasStrongSubmitEvidence(toolName, args, result, detectedSubmit)) return true;
     const name = String(toolName || '');
+    if (['click', 'click_ax', 'iframe_click'].includes(name)) {
+      const target = result?.frame && typeof result.frame === 'object' ? result.frame : result;
+      const type = String(target?.type || '').toLowerCase();
+      if (target?.isSubmitControl === false && type === 'button') return false;
+    }
+    if (this._formValidationActionHasStrongSubmitEvidence(toolName, args, result, detectedSubmit)) return true;
     if (!['click', 'click_ax', 'iframe_click'].includes(name)) return false;
 
     const label = String(args?.text || result?.name || result?.matched || result?.text || '').trim();
@@ -4841,6 +4846,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       context.result,
       context.detectedSubmit,
     );
+    if (!looksLikeSubmit) return null;
     const includePersistentValidation = strongSubmitEvidence
       && context.priorValidationFailure === true;
     const beforeAlerts = new Set(before.flatMap(state =>

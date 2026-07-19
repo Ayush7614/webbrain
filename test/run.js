@@ -22936,6 +22936,23 @@ test('form validation classifier surfaces native and custom submission errors', 
     });
     assert.equal(correctivePersistentAlert, null, `${AgentClass.name}: conservative preflight revived a persistent alert for a corrective button`);
 
+    const revealedRequiredRow = [{
+      ...before[0],
+      ariaInvalidFields: [{
+        label: 'Phone number',
+        type: 'tel',
+        message: 'This field is required.',
+      }],
+      controlFingerprint: 'phone-row-added',
+    }];
+    const revealedRowFailure = agent._detectFormValidationFailure(before, revealedRequiredRow, {
+      toolName: 'click',
+      args: { text: 'Add phone' },
+      result: { success: true, tag: 'BUTTON', type: 'button', isSubmitControl: false },
+      detectedSubmit: { isSubmit: true },
+    });
+    assert.equal(revealedRowFailure, null, `${AgentClass.name}: revealing a blank required row was treated as a failed submit`);
+
     const existingAlert = agent._detectFormValidationFailure(customAfter, customAfter, {
       toolName: 'click',
       args: { text: 'Open help' },
@@ -22975,6 +22992,12 @@ test('form validation classifier surfaces native and custom submission errors', 
       { text: 'Choose application' },
       { success: true, tag: 'BUTTON', type: 'button', text: 'Choose application', isSubmitControl: false },
     ), false, `${AgentClass.name}: corrective type=button was misclassified as a submit`);
+    assert.equal(agent._formValidationActionLooksSubmit(
+      'click',
+      { text: 'Add address' },
+      { success: true, tag: 'BUTTON', type: 'button', text: 'Add address', isSubmitControl: false },
+      { isSubmit: true },
+    ), false, `${AgentClass.name}: explicit non-submit metadata did not override conservative preflight`);
     assert.equal(agent._formValidationActionLooksSubmit(
       'click',
       { selector: '#open-help' },
