@@ -13189,18 +13189,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
-   * If a successful set_field touched a credential/secret field, append a
-   * note to the tool result so the model is reminded not to echo the value
-   * in subsequent text/summaries. Detection lives in credential-fields.js
-   * (pure ESM, node-testable). Content scripts ship `fieldMeta`; we apply
-   * the policy here so the regex stays in one place.
+   * If set_field touched a credential/secret field, redact any failed
+   * verification readback and annotate the result. Detection lives in
+   * credential-fields.js (pure ESM, node-testable). Content scripts ship
+   * `fieldMeta`; we apply the policy here so the regex stays in one place.
    */
   _annotateCredentialField(toolName, response) {
     if (toolName !== 'set_field') return;
-    if (!response || !response.success || !response.fieldMeta) return;
+    if (!response || !response.fieldMeta) return;
     try {
       const det = isCredentialField(response.fieldMeta);
       if (!det.sensitive) return;
+      if (Object.prototype.hasOwnProperty.call(response, 'actual')) {
+        delete response.actual;
+        response.actualRedacted = true;
+      }
       // Always set the flag — useful for trace review and downstream tooling
       // — but only emit a model-facing `note` in STRICT mode. Rationale:
       //  (1) webbrain runs small local models (qwen 3-30B class). They handle
