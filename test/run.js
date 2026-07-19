@@ -22948,6 +22948,29 @@ test('form validation classifier surfaces native and custom submission errors', 
   }
 });
 
+test('form validation probes resolve aria-errormessage text in document and shadow roots', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/agent/agent.js'],
+    ['firefox', 'src/firefox/src/agent/agent.js'],
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const probeStart = source.indexOf('static _formValidationStateProbe');
+    const probeEnd = source.indexOf('_fallbackSubmitConfirmationInfo', probeStart);
+    assert.ok(probeStart >= 0 && probeEnd > probeStart, `${label}: form validation probe should be bounded`);
+    const probe = source.slice(probeStart, probeEnd);
+    assert.match(
+      probe,
+      /\['aria-errormessage', 'aria-describedby'\]\.flatMap/,
+      `${label}: invalid-field details should include aria-errormessage references`,
+    );
+    assert.match(
+      probe,
+      /for \(const root of roots\)[\s\S]*root\.getElementById\?\.\(id\)/,
+      `${label}: ARIA error references should resolve inside collected shadow roots`,
+    );
+  }
+});
+
 test('form validation polling catches delayed errors', async () => {
   const url = 'https://example.com/form';
   for (const AgentClass of [AgentCh, AgentFx]) {

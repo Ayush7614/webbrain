@@ -5045,9 +5045,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return compact(parts.find(Boolean) || 'field', 120);
     };
     const describedMessage = (el) => {
-      const ids = compact(el.getAttribute?.('aria-describedby') || '', 240).split(/\s+/).filter(Boolean);
+      const ids = [...new Set(['aria-errormessage', 'aria-describedby'].flatMap(attr =>
+        compact(el.getAttribute?.(attr) || '', 240).split(/\s+/).filter(Boolean)
+      ))];
       const text = ids.map((id) => {
-        try { return document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || ''; } catch { return ''; }
+        for (const root of roots) {
+          try {
+            const message = root.getElementById?.(id);
+            if (message) return message.innerText || message.textContent || '';
+          } catch {}
+        }
+        return '';
       }).filter(Boolean).join(' ');
       return compact(text || el.validationMessage || '', 300);
     };
