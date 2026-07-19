@@ -16080,6 +16080,41 @@ test('CDP input dispatchers never call the nonexistent Input.enable command', as
   assert.doesNotMatch(source, /Input\.enable/, 'Chrome CDP client must not reintroduce the unsupported Input.enable command');
 });
 
+test('CDP querySelectorPierce resolves open-shadow matches to DOM nodeIds', async () => {
+  const client = new CDPClient();
+  const commands = [];
+  client.sendCommand = async (_tabId, method, params = {}) => {
+    commands.push({ method, params });
+    if (method === 'Runtime.evaluate') {
+      assert.match(params.expression, /element\.shadowRoot/);
+      assert.match(params.expression, /#shadow-upload/);
+      return { result: { objectId: 'matches-array' } };
+    }
+    if (method === 'Runtime.getProperties') {
+      return {
+        result: [
+          { name: '0', value: { objectId: 'input-a' } },
+          { name: '1', value: { objectId: 'input-b' } },
+          { name: 'length', value: { value: 2 } },
+        ],
+      };
+    }
+    if (method === 'DOM.requestNode') {
+      return { nodeId: params.objectId === 'input-a' ? 501 : 502 };
+    }
+    return {};
+  };
+
+  const nodeIds = await client.querySelectorPierce(42, '#shadow-upload');
+  assert.deepEqual(nodeIds, [501, 502]);
+  assert.equal(
+    commands.some(command => command.method === 'DOM.querySelectorAll'),
+    false,
+    'document-root DOM.querySelectorAll cannot pierce open shadow roots',
+  );
+  assert.equal(commands.at(-1).method, 'Runtime.releaseObjectGroup');
+});
+
 test('Chrome selector click distinguishes pre-dispatch failure from uncertain dispatch', async () => {
   const client = new CDPClient();
   client.resolveSelector = async () => null;
@@ -31527,6 +31562,7 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
   const realPath = '/Users/x/Downloads/real.zip';
   const stalePath = '/Users/Shared/made-up.zip';
   const uploaded = [];
+  let selectorMatches = [501];
 
   try {
     globalThis.chrome = {
@@ -31539,7 +31575,7 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
       },
     };
     cdpClientCh.attach = async (tabId) => ({ tabId, attached: true });
-    cdpClientCh.querySelectorPierce = async () => [501];
+    cdpClientCh.querySelectorPierce = async () => selectorMatches;
     cdpClientCh.probeLocalFile = async (_tabId, filePath) => {
       assert.equal(filePath, realPath, 'downloadId-resolved path should override stale filePath before probing');
       return { exists: true, readable: true, size: 123 };
@@ -31557,6 +31593,16 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
     assert.equal(result.file, realPath);
     assert.equal(args.filePath, realPath);
     assert.deepEqual(uploaded, [[realPath]]);
+
+    selectorMatches = [501, 502];
+    const ambiguous = await agent.executeTool(42, 'upload_file', {
+      selector: 'input[type=file]',
+      downloadId: 9123,
+    });
+    assert.equal(ambiguous.success, false);
+    assert.match(ambiguous.error, /matched 2 elements/);
+    assert.match(ambiguous.error, /exact, unique selector/);
+    assert.deepEqual(uploaded, [[realPath]], 'ambiguous selectors must fail before attaching the file');
   } finally {
     if (originalChrome === undefined) delete globalThis.chrome;
     else globalThis.chrome = originalChrome;

@@ -11448,6 +11448,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (!nodeIds || nodeIds.length === 0) {
           return { success: false, error: `File input not found for selector "${args.selector}". Re-inspect the page with get_interactive_elements or get_accessibility_tree to find the real <input type=file> (some upload widgets hide it until you click their "add files" button first).` };
         }
+        if (nodeIds.length > 1) {
+          return {
+            success: false,
+            error: `Selector "${args.selector}" matched ${nodeIds.length} elements across the document and open shadow roots. Use an exact, unique selector for the intended <input type=file>; do not use a generic input[type=file] selector when multiple inputs exist.`,
+          };
+        }
 
         // Pre-validate the local path BEFORE handing it to the page's input.
         // CDP's setFileInputFiles silently attaches a phantom 0-byte entry for

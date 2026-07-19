@@ -553,20 +553,57 @@ export class CDPClient {
   }
 
   /**
-   * Query a selector in the main frame or any iframe/shadow DOM (pierce).
+   * Query a selector in the main document and all open shadow roots.
+   * DOM.querySelectorAll only searches the supplied root node; its protocol
+   * schema has no shadow-piercing option. Resolve matches in page JS, then
+   * convert the returned DOM objects back to nodeIds for DOM.setFileInputFiles.
    */
   async querySelectorPierce(tabId, selector) {
     await this.sendCommand(tabId, 'DOM.enable');
-    const doc = await this.sendCommand(tabId, 'DOM.getDocument', { depth: 0, pierce: false });
-    const rootNodeId = doc.root?.nodeId;
-    if (!rootNodeId) throw new Error('No document root');
-
-    const result = await this.sendCommand(tabId, 'DOM.querySelectorAll', {
-      nodeId: rootNodeId,
-      selector,
-      piercesShadowDom: true,
-    });
-    return result.nodeIds || [];
+    await this.sendCommand(tabId, 'Runtime.enable');
+    const objectGroup = `webbrain-query-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      const evaluated = await this.sendCommand(tabId, 'Runtime.evaluate', {
+        expression: `
+          (() => {
+            const selector = ${JSON.stringify(selector)};
+            const matches = [];
+            const visit = (root) => {
+              matches.push(...root.querySelectorAll(selector));
+              for (const element of root.querySelectorAll('*')) {
+                if (element.shadowRoot) visit(element.shadowRoot);
+              }
+            };
+            visit(document);
+            return matches;
+          })()
+        `,
+        objectGroup,
+        returnByValue: false,
+      });
+      if (evaluated?.exceptionDetails) {
+        throw new Error(evaluated.exceptionDetails.text || 'Selector evaluation failed');
+      }
+      const arrayObjectId = evaluated?.result?.objectId;
+      if (!arrayObjectId) return [];
+      const properties = await this.sendCommand(tabId, 'Runtime.getProperties', {
+        objectId: arrayObjectId,
+        ownProperties: true,
+      });
+      const nodeIds = [];
+      for (const property of properties?.result || []) {
+        if (!/^\d+$/.test(property?.name || '')) continue;
+        const objectId = property?.value?.objectId;
+        if (!objectId) continue;
+        const requested = await this.sendCommand(tabId, 'DOM.requestNode', { objectId });
+        if (requested?.nodeId) nodeIds.push(requested.nodeId);
+      }
+      return nodeIds;
+    } finally {
+      try {
+        await this.sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup });
+      } catch {}
+    }
   }
 
   /**
