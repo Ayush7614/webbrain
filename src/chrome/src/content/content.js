@@ -2971,8 +2971,15 @@
 
   const SET_FIELD_VERIFY_DELAY_MS = 80;
 
-  function _setFieldValueMatches(actual, previous, text, clear) {
-    return actual === (clear ? text : previous + text);
+  function _setFieldValueMatches(actual, previous, text, clear, normalizeNewlines = false) {
+    const expected = clear ? text : previous + text;
+    if (!normalizeNewlines) return actual === expected;
+    const normalize = value => String(value).replace(/\r\n?/g, '\n');
+    return normalize(actual) === normalize(expected);
+  }
+
+  function _editableTextValue(el) {
+    return typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
   }
 
   // --- Message handler ---
@@ -3483,7 +3490,7 @@
           let prevValue = '';
           dispatched = true;
           if (el.isContentEditable) {
-            prevValue = el.textContent || '';
+            prevValue = _editableTextValue(el);
             if (clear) {
               try {
                 const sel = window.getSelection();
@@ -3520,8 +3527,8 @@
               { ref_id },
             );
           }
-          const actual = el.isContentEditable ? (el.textContent || '') : (el.value || '');
-          const verified = _setFieldValueMatches(actual, prevValue, text, clear);
+          const actual = el.isContentEditable ? _editableTextValue(el) : (el.value || '');
+          const verified = _setFieldValueMatches(actual, prevValue, text, clear, el.isContentEditable);
 
           // Collect field attributes for credential-field detection. The
           // detector itself lives in src/agent/credential-fields.js (pure

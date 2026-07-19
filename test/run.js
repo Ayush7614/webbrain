@@ -23923,7 +23923,7 @@ test('set_field waits for reconciliation and verifies the complete value', () =>
   ]) {
     const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     const helperStart = source.indexOf('function _setFieldValueMatches(');
-    const helperEnd = source.indexOf('\n\n  // --- Message handler', helperStart);
+    const helperEnd = source.indexOf('\n\n  function _editableTextValue', helperStart);
     assert.ok(helperStart >= 0 && helperEnd > helperStart, `${label}: exact-value helper should remain independently testable`);
     const matches = vm.runInNewContext(`(${source.slice(helperStart, helperEnd)})`);
 
@@ -23932,6 +23932,9 @@ test('set_field waits for reconciliation and verifies the complete value', () =>
     assert.equal(matches('xMagnetic Locks', '', 'Magnetic Locks', true), false, `${label}: leading corruption must not verify`);
     assert.equal(matches('old-new', 'old-', 'new', false), true, `${label}: exact append should verify`);
     assert.equal(matches('new', 'old-', 'new', false), false, `${label}: append verification must preserve prior content`);
+    assert.equal(matches('first\nsecond', '', 'first\r\nsecond', true, true), true, `${label}: rich-editor CRLF should match rendered newlines`);
+    assert.equal(matches('firstsecond', '', 'first\nsecond', true, true), false, `${label}: missing rich-editor newlines must still fail`);
+    assert.equal(matches('first\nsecond!', '', 'first\nsecond', true, true), false, `${label}: rich-editor normalization must not accept other corruption`);
 
     const branchStart = source.indexOf("'set_field': async () => {");
     const branchEnd = source.indexOf(label === 'chrome' ? "'ax_resolve_rect':" : "'hover':", branchStart);
@@ -23940,6 +23943,8 @@ test('set_field waits for reconciliation and verifies the complete value', () =>
     const settleIndex = branch.indexOf('await new Promise(resolve => setTimeout(resolve, SET_FIELD_VERIFY_DELAY_MS))');
     const readbackIndex = branch.indexOf("const actual = el.isContentEditable");
     assert.ok(settleIndex >= 0 && readbackIndex > settleIndex, `${label}: verification must happen after controlled-input reconciliation`);
+    assert.match(branch, /const actual = el\.isContentEditable \? _editableTextValue\(el\)/, `${label}: rich-editor verification must use rendered text`);
+    assert.match(branch, /_setFieldValueMatches\(actual, prevValue, text, clear, el\.isContentEditable\)/, `${label}: newline normalization must remain contenteditable-only`);
     assert.match(branch, /!el\.isConnected \|\| !rect \|\| rect\.w < 1 \|\| rect\.h < 1/, `${label}: stale or zero-sized targets must fail before typing`);
     assert.match(branch, /if \(submit && verified\)/, `${label}: mismatched field values must not be submitted`);
     assert.match(branch, /if \(!verified\) \{[\s\S]*return failure\(/, `${label}: mismatched field values must be explicit failed actions`);
