@@ -22912,6 +22912,14 @@ test('form validation classifier surfaces native and custom submission errors', 
     assert.ok(persistentNativeSubmit, `${AgentClass.name}: already-focused native invalid field was missed on a real submit`);
     assert.match(persistentNativeSubmit.error, /compatible with at least one application/i);
 
+    const executeJsReadback = agent._detectFormValidationFailure(alreadyActive, alreadyActive, {
+      toolName: 'execute_js',
+      args: { code: 'return document.title' },
+      result: { success: true, result: 'Example' },
+      detectedSubmit: { isSubmit: true },
+    });
+    assert.equal(executeJsReadback, null, `${AgentClass.name}: execute_js readback was treated as a failed submit`);
+
     const customAfter = [{
       ...before[0],
       invalidFields: [],
@@ -22999,6 +23007,17 @@ test('form validation classifier surfaces native and custom submission errors', 
       { isSubmit: true },
     ), false, `${AgentClass.name}: explicit non-submit metadata did not override conservative preflight`);
     assert.equal(agent._formValidationActionLooksSubmit(
+      'execute_js',
+      { code: 'return document.title' },
+      { success: true, result: 'Example' },
+      { isSubmit: true },
+    ), false, `${AgentClass.name}: non-submit execute_js inherited conservative submit detection`);
+    assert.equal(agent._formValidationActionLooksSubmit(
+      'execute_js',
+      { code: 'document.querySelector("form").requestSubmit()' },
+      { success: true, result: null },
+    ), true, `${AgentClass.name}: requestSubmit execute_js was not recognized as a submit`);
+    assert.equal(agent._formValidationActionLooksSubmit(
       'click',
       { selector: '#open-help' },
       { success: true, tag: 'BUTTON', text: 'Open help' },
@@ -23052,7 +23071,7 @@ test('form validation probes resolve aria-errormessage text in document and shad
   }
 });
 
-test('form validation probes distinguish same-length password corrections without returning passwords', () => {
+test('form validation probes fingerprint password and ARIA checked-state corrections', () => {
   const secretControl = {
     tagName: 'INPUT',
     name: 'password',
@@ -23066,7 +23085,21 @@ test('form validation probes distinguish same-length password corrections withou
     hasAttribute() { return false; },
     getBoundingClientRect() { return { width: 120, height: 24 }; },
   };
-  const controlsSelector = 'input, textarea, select, [contenteditable="true"], button, [role="button"], [onclick], [data-action]';
+  let ariaChecked = 'false';
+  const ariaCheckedControl = {
+    tagName: 'DIV',
+    name: 'application',
+    id: 'application',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'role') return 'checkbox';
+      if (name === 'aria-checked') return ariaChecked;
+      return '';
+    },
+    hasAttribute(name) { return name === 'aria-checked'; },
+    getBoundingClientRect() { return { width: 120, height: 24 }; },
+  };
+  const controlsSelector = 'input, textarea, select, [contenteditable="true"], [role="checkbox"], [role="radio"], [role="switch"], [aria-checked], button, [role="button"], [onclick], [data-action]';
   const sandbox = {
     NodeFilter: { SHOW_ELEMENT: 1 },
     getComputedStyle: () => ({
@@ -23083,7 +23116,7 @@ test('form validation probes distinguish same-length password corrections withou
         };
       },
       querySelectorAll(selector) {
-        return selector === controlsSelector ? [secretControl] : [];
+        return selector === controlsSelector ? [secretControl, ariaCheckedControl] : [];
       },
     },
   };
@@ -23103,6 +23136,17 @@ test('form validation probes distinguish same-length password corrections withou
       JSON.stringify([first, second]),
       /first1|second/,
       `${AgentClass.name}: validation snapshot exposed a password value`,
+    );
+
+    secretControl.value = 'second';
+    ariaChecked = 'false';
+    const unchecked = vm.runInNewContext(`(${probeSource})()`, sandbox);
+    ariaChecked = 'true';
+    const checked = vm.runInNewContext(`(${probeSource})()`, sandbox);
+    assert.notEqual(
+      unchecked.controlFingerprint,
+      checked.controlFingerprint,
+      `${AgentClass.name}: aria-checked correction kept the validation state unchanged`,
     );
   }
 });

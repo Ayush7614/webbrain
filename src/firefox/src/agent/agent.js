@@ -4753,10 +4753,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return Object.keys(identity).length ? `${name}:${JSON.stringify(identity)}` : '';
   }
 
+  _executeJsLooksLikeFormSubmit(code) {
+    const source = String(code || '');
+    return /\brequestSubmit\s*\(|\.submit\s*\(|\bdispatchEvent\s*\([^)]*\bsubmit\b|(?:submit|checkout|confirm|place.?order|pay)[^;\n]{0,160}\.click\s*\(/i.test(source);
+  }
+
   _formValidationActionHasStrongSubmitEvidence(toolName, args = {}, result = null, detectedSubmit = null) {
     const name = String(toolName || '');
     if (name === 'set_field') return args?.submit === true;
-    if (name === 'execute_js') return true;
+    if (name === 'execute_js') return this._executeJsLooksLikeFormSubmit(args?.code);
     if (name === 'press_keys') {
       const keys = JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
       return /\b(?:enter|return)\b/.test(keys);
@@ -5163,9 +5168,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         hash = Math.imul(hash, 16777619);
       }
     };
-    for (const el of queryAll('input, textarea, select, [contenteditable="true"], button, [role="button"], [onclick], [data-action]')) {
+    for (const el of queryAll('input, textarea, select, [contenteditable="true"], [role="checkbox"], [role="radio"], [role="switch"], [aria-checked], button, [role="button"], [onclick], [data-action]')) {
       const tag = String(el.tagName || '').toLowerCase();
       const type = String(el.getAttribute?.('type') || el.tagName || '').toLowerCase();
+      const role = String(el.getAttribute?.('role') || '').toLowerCase();
       let state = '';
       if (type === 'checkbox' || type === 'radio') {
         state = el.checked ? 'checked' : 'unchecked';
@@ -5173,9 +5179,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         state = Array.from(el.selectedOptions || []).map(option => option.value).join('\u001f');
       } else if (type === 'file') {
         state = String(el.files?.length || 0);
+      } else if (el.hasAttribute?.('aria-checked') || role === 'checkbox' || role === 'radio' || role === 'switch') {
+        state = `aria-checked:${compact(el.getAttribute?.('aria-checked') || 'undefined', 40)}`;
       } else if (
         tag === 'button'
-        || String(el.getAttribute?.('role') || '').toLowerCase() === 'button'
+        || role === 'button'
         || el.hasAttribute?.('onclick')
         || el.hasAttribute?.('data-action')
       ) {
