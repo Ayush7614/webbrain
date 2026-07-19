@@ -31421,6 +31421,9 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
   assert.match(expressions[0], /event\.stopImmediatePropagation\(\)/);
   assert.match(expressions[0], /tagName === 'INPUT'[\s\S]*=== 'file'/);
   assert.match(expressions[0], /matches\.length === 1 && matches\[0\] === input/);
+  assert.match(expressions[0], /Object\.getOwnPropertyDescriptor\(showPickerProto,\s*'showPicker'\)/);
+  assert.match(expressions[0], /value:\s*guardedShowPicker/);
+  assert.match(expressions[0], /selector:\s*uniqueFileInputSelector\(this\)/);
   const consumed = await cdp.consumeFileInputClickGuard(42, 0);
   assert.equal(consumed.blocked, true);
   assert.equal(consumed.selector, '#upload-addon');
@@ -31497,7 +31500,10 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
     assert.match(source, /matches\.length === 1 && matches\[0\] === input/, `${relPath}: selector should be proven unique`);
     assert.match(source, /const FILE_PICKER_GUARD_SETTLE_MS = 100/, `${relPath}: missing deferred picker settle window`);
     assert.match(source, /function clickWithoutNativeFilePicker\(runClick,\s*settleMs\s*=\s*FILE_PICKER_GUARD_SETTLE_MS\)/, `${relPath}: missing one-click file chooser guard`);
-    assert.match(source, /setTimeout\(\(\) => \{[\s\S]*removeEventListener\('click', guard, true\)/, `${relPath}: guard should survive deferred picker clicks`);
+    assert.match(source, /setTimeout\(\(\) => \{\s*cleanupGuard\(\)/, `${relPath}: guard should survive deferred picker clicks`);
+    assert.match(source, /Object\.getOwnPropertyDescriptor\(proto,\s*'showPicker'\)/, `${relPath}: missing showPicker interception`);
+    assert.match(source, /if \(isFileInput\(this\)\)[\s\S]*blockFileInput\(this\)/, `${relPath}: showPicker should record file inputs`);
+    assert.match(source, /Object\.defineProperty\(proto,\s*'showPicker',\s*descriptor\)/, `${relPath}: showPicker interception should be restored`);
     assert.match(source, /clickWithoutNativeFilePicker\(\(\) => el\.click\(\)\)/, `${relPath}: synthetic clicks should use the chooser guard`);
     assert.match(source, /_filePickerGuardId:\s*filePickerGuard\.guardId/, `${relPath}: click response should return without waiting on the unloading document`);
     assert.match(source, /'consume_file_picker_guard':\s*\(\) => consumeFilePickerGuard/, `${relPath}: missing deferred guard result handshake`);

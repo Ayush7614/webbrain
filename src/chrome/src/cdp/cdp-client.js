@@ -997,8 +997,58 @@ export class CDPClient {
           };
           document.addEventListener('click', window.__wb_file_input_click_guard, true);
         }
+        if (typeof window.__wb_file_input_show_picker_guard_restore === 'function') {
+          window.__wb_file_input_show_picker_guard_restore();
+        }
+        if (window.__wb_file_input_show_picker_guard_timer) {
+          clearTimeout(window.__wb_file_input_show_picker_guard_timer);
+          window.__wb_file_input_show_picker_guard_timer = null;
+        }
+        const showPickerProto = window.HTMLInputElement?.prototype;
+        const showPickerDescriptor = showPickerProto
+          && Object.getOwnPropertyDescriptor(showPickerProto, 'showPicker');
+        const originalShowPicker = showPickerDescriptor?.value;
+        if (typeof originalShowPicker === 'function') {
+          const guardedShowPicker = function(...args) {
+            const isFileInput = this?.tagName === 'INPUT'
+              && String(this.getAttribute?.('type') || this.type || '').toLowerCase() === 'file';
+            if (
+              isFileInput
+              && Date.now() <= Number(window.__wb_file_input_click_guard_until || 0)
+            ) {
+              window.__wb_file_input_click_guard_last = {
+                blocked: true,
+                selector: uniqueFileInputSelector(this),
+                ts: Date.now(),
+              };
+              return undefined;
+            }
+            return Reflect.apply(originalShowPicker, this, args);
+          };
+          try {
+            Object.defineProperty(showPickerProto, 'showPicker', {
+              ...showPickerDescriptor,
+              value: guardedShowPicker,
+            });
+            window.__wb_file_input_show_picker_guard_restore = () => {
+              try {
+                if (showPickerProto.showPicker === guardedShowPicker) {
+                  Object.defineProperty(showPickerProto, 'showPicker', showPickerDescriptor);
+                }
+              } catch {}
+              window.__wb_file_input_show_picker_guard_restore = null;
+            };
+          } catch {
+            window.__wb_file_input_show_picker_guard_restore = null;
+          }
+        }
         window.__wb_file_input_click_guard_last = null;
         window.__wb_file_input_click_guard_until = Date.now() + ${ttl};
+        window.__wb_file_input_show_picker_guard_timer = setTimeout(() => {
+          if (Date.now() <= Number(window.__wb_file_input_click_guard_until || 0)) return;
+          window.__wb_file_input_show_picker_guard_timer = null;
+          window.__wb_file_input_show_picker_guard_restore?.();
+        }, ${ttl} + 25);
         return true;
       })()
     `);
@@ -1019,6 +1069,11 @@ export class CDPClient {
           const blocked = window.__wb_file_input_click_guard_last || null;
           window.__wb_file_input_click_guard_until = 0;
           window.__wb_file_input_click_guard_last = null;
+          if (window.__wb_file_input_show_picker_guard_timer) {
+            clearTimeout(window.__wb_file_input_show_picker_guard_timer);
+            window.__wb_file_input_show_picker_guard_timer = null;
+          }
+          window.__wb_file_input_show_picker_guard_restore?.();
           return blocked;
         })()
       `);

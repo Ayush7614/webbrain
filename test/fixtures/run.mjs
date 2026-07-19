@@ -782,6 +782,10 @@ const deferredFilePickerOpeners = [
   ['timer', 'setTimeout(openPicker, 0)'],
   ['animation-frame', 'requestAnimationFrame(openPicker)'],
 ];
+const showPickerOpeners = [
+  ['immediate', 'openPicker()'],
+  ...deferredFilePickerOpeners,
+];
 
 for (const browserKind of ['chrome', 'firefox']) {
   for (const [deferral, scheduleOpen] of deferredFilePickerOpeners) {
@@ -818,7 +822,65 @@ for (const browserKind of ['chrome', 'firefox']) {
       }
     });
   }
+
+  for (const [deferral, scheduleOpen] of showPickerOpeners) {
+    test(`file picker guard (${browserKind}): blocks ${deferral} showPicker activation`, async (page) => {
+      const inputId = `show-picker-${browserKind}-${deferral}`;
+      await setupContentHtml(page, `<!doctype html>
+        <button id="choose">Show a file picker...</button>
+        <input id=${JSON.stringify(inputId)} type="file" hidden>
+        <script>
+          document.querySelector('#choose').addEventListener('click', () => {
+            const input = document.querySelector('#' + ${JSON.stringify(inputId)});
+            const openPicker = () => input.showPicker();
+            ${scheduleOpen};
+          });
+        </script>`, browserKind);
+
+      let chooserOpened = false;
+      page.once('filechooser', () => { chooserOpened = true; });
+      const result = await call(page, 'click', { text: 'Show a file picker...' });
+      await page.waitForTimeout(20);
+      if (chooserOpened) throw new Error(`${deferral} showPicker native chooser was not suppressed`);
+      if (!result?.filePickerBlocked || result.success !== false || result.selector !== `#${inputId}`) {
+        throw new Error(`expected blocked showPicker with #${inputId}, got ${JSON.stringify(result)}`);
+      }
+    });
+  }
 }
+
+test('Chrome CDP file picker guard blocks trusted showPicker activation and restores the prototype', async (page) => {
+  await page.setContent(`<!doctype html>
+    <button id="choose">Open trusted picker</button>
+    <input id="trusted-show-picker" type="file" hidden>
+    <script>
+      window.__originalShowPicker = HTMLInputElement.prototype.showPicker;
+      document.querySelector('#choose').addEventListener('click', () => {
+        document.querySelector('#trusted-show-picker').showPicker();
+      });
+    </script>`);
+
+  const client = new CDPClient();
+  client.evaluate = async (_tabId, expression) => ({
+    result: { value: await page.evaluate(expression) },
+  });
+
+  let chooserOpened = false;
+  page.once('filechooser', () => { chooserOpened = true; });
+  await client.armFileInputClickGuard(77, 500);
+  await page.click('#choose');
+  const blocked = await client.consumeFileInputClickGuard(77, 0);
+  await page.waitForTimeout(20);
+
+  if (chooserOpened) throw new Error('trusted showPicker native chooser was not suppressed');
+  if (!blocked?.blocked || blocked.selector !== '#trusted-show-picker') {
+    throw new Error(`expected trusted showPicker block, got ${JSON.stringify(blocked)}`);
+  }
+  const restored = await page.evaluate(
+    () => HTMLInputElement.prototype.showPicker === window.__originalShowPicker,
+  );
+  if (!restored) throw new Error('showPicker prototype was not restored after guard consumption');
+});
 
 test('Firefox upload_file resolves one open-shadow input and rejects ambiguous pierced selectors', async (page) => {
   await page.setContent(`<!doctype html>

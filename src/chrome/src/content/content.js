@@ -912,39 +912,76 @@
       blocked: null,
       settled: false,
       guard: null,
+      restoreShowPicker: null,
       settleTimer: null,
       cleanupTimer: null,
+    };
+    const isFileInput = (input) =>
+      input?.tagName === 'INPUT'
+      && String(input.getAttribute?.('type') || input.type || '').toLowerCase() === 'file';
+    const blockFileInput = (input) => {
+      state.blocked = { selector: uniqueFileInputSelector(input) };
     };
     const guard = (event) => {
       const path = typeof event.composedPath === 'function'
         ? event.composedPath()
         : [event.target];
-      const input = path.find(node =>
-        node?.tagName === 'INPUT'
-        && String(node.getAttribute?.('type') || node.type || '').toLowerCase() === 'file'
-      );
+      const input = path.find(isFileInput);
       if (!input) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      state.blocked = { selector: uniqueFileInputSelector(input) };
+      blockFileInput(input);
+    };
+    const installShowPickerGuard = () => {
+      const proto = window.HTMLInputElement?.prototype;
+      const descriptor = proto && Object.getOwnPropertyDescriptor(proto, 'showPicker');
+      const originalShowPicker = descriptor?.value;
+      if (typeof originalShowPicker !== 'function') return () => {};
+      const guardedShowPicker = function(...args) {
+        if (isFileInput(this)) {
+          blockFileInput(this);
+          return undefined;
+        }
+        return Reflect.apply(originalShowPicker, this, args);
+      };
+      try {
+        Object.defineProperty(proto, 'showPicker', { ...descriptor, value: guardedShowPicker });
+      } catch {
+        return () => {};
+      }
+      let restored = false;
+      return () => {
+        if (restored) return;
+        restored = true;
+        try {
+          if (proto.showPicker === guardedShowPicker) {
+            Object.defineProperty(proto, 'showPicker', descriptor);
+          }
+        } catch {}
+      };
+    };
+    const cleanupGuard = () => {
+      document.removeEventListener('click', guard, true);
+      state.restoreShowPicker?.();
     };
     state.guard = guard;
     _filePickerGuardStates.set(guardId, state);
     document.addEventListener('click', guard, true);
+    state.restoreShowPicker = installShowPickerGuard();
     try {
       runClick();
     } catch (error) {
-      document.removeEventListener('click', guard, true);
+      cleanupGuard();
       _filePickerGuardStates.delete(guardId);
       throw error;
     }
     if (state.blocked) {
-      document.removeEventListener('click', guard, true);
+      cleanupGuard();
       _filePickerGuardStates.delete(guardId);
       return { blocked: state.blocked, guardId: null };
     }
     state.settleTimer = setTimeout(() => {
-      document.removeEventListener('click', guard, true);
+      cleanupGuard();
       state.settled = true;
       state.cleanupTimer = setTimeout(() => {
         if (_filePickerGuardStates.get(guardId) === state) {
