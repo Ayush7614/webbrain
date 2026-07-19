@@ -6143,14 +6143,23 @@ test('offscreen cloud bridge preserves failed run envelopes and rejects unauthor
   assert.equal(missing.error, 'Unknown cloud run.');
 
   const callCount = runtimeCalls.length;
-  socket.emit('message', {
-    data: JSON.stringify({ id: 'forbidden-1', action: 'get_providers', payload: {} }),
-  });
-  await new Promise(resolve => setImmediate(resolve));
-  const forbidden = socket.sent.find(message => message.id === 'forbidden-1');
-  assert.equal(forbidden.ok, false);
-  assert.match(forbidden.error, /unsupported cloud bridge action/i);
-  assert.equal(runtimeCalls.length, callCount, 'unauthorized bridge actions must not reach the background handler');
+  for (const [id, action] of [
+    ['forbidden-provider-read', 'get_providers'],
+    ['forbidden-config-write', 'import_config_patch'],
+  ]) {
+    socket.emit('message', {
+      data: JSON.stringify({ id, action, payload: {} }),
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    const forbidden = socket.sent.find(message => message.id === id);
+    assert.equal(forbidden.ok, false);
+    assert.match(forbidden.error, /unsupported cloud bridge action/i);
+  }
+  assert.equal(
+    runtimeCalls.length,
+    callCount,
+    'provider reads and provisioning config writes must not cross the run-only cloud bridge',
+  );
 });
 
 test('offscreen cloud bridge ignores asynchronous close events from replaced sockets', () => {

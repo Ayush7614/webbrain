@@ -2037,6 +2037,9 @@ async function handleMessage(msg, sender) {
       };
     }
 
+    // The cloud launcher calls import_config_patch directly from a privileged
+    // extension page. It must not be exposed through the offscreen WebSocket
+    // bridge, whose allowlist is limited to managed run operations.
     case 'import_config':
     case 'import_config_patch': {
       const imported = msg.action === 'import_config_patch'
