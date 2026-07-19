@@ -4856,6 +4856,33 @@ test('recommended actions match issue scenarios', () => {
   }
 });
 
+test('Tweet about WebBrain is permanent and carries a ready-to-go plan', () => {
+  const pages = [
+    {},
+    { url: 'https://example.com/', title: 'Example page' },
+    { url: 'https://mail.google.com/mail/u/0/#inbox/FMfc123', title: 'Gmail - Project update', text: 'From Ada Subject Project update Reply' },
+  ];
+
+  for (const buildRecommendedActions of [buildRecommendedActionsCh, buildRecommendedActionsFx]) {
+    for (const pageInfo of pages) {
+      const actions = buildRecommendedActions(pageInfo, { max: 1 });
+      const tweet = actions.find((action) => action.id === 'tweet-webbrain');
+      assert.equal(tweet?.label, 'Tweet about WebBrain');
+      assert.equal(tweet?.mode, 'act');
+      assert.match(tweet?.prompt || '', /visible X interface/);
+      assert.equal(tweet?.runOptions?.skipPlanner, true);
+      assert.equal(tweet?.runOptions?.tool, 'navigate');
+      assert.match(tweet?.runOptions?.summary || '', /Publish a concise promotional tweet about WebBrain/);
+      assert.ok(tweet?.runOptions?.steps?.some((step) => step.includes('https://x.com/compose/post')));
+      assert.ok(tweet?.runOptions?.steps?.some((step) => step.includes('https://webbrain.one')));
+      assert.ok(tweet?.runOptions?.steps?.some((step) => /Verify the new tweet appears/.test(step)));
+    }
+
+    const fallbackActions = buildRecommendedActions({ url: 'https://example.com/', title: 'Example page' });
+    assert.equal(fallbackActions.some((action) => action.id === 'explain-page'), true, 'permanent action should not suppress the generic page action');
+  }
+});
+
 test('actionable recommendations opt into Act mode', () => {
   const actionablePages = [
     { url: 'https://github.com/esokullu/webbrain/releases', title: 'Releases · esokullu/webbrain' },
@@ -32572,6 +32599,65 @@ test('planner gate: trusted recommended media action skips planner and pins read
       );
       assert.equal(noSkillOutcome.proceed, true, `${label} missing skill should still proceed through normal planner`);
       assert.equal(noSkillPlannerCalls, 1, `${label} missing skill should run planner`);
+    }
+  });
+});
+
+test('planner gate: trusted WebBrain tweet action skips planner and pins ready plan', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9211 : 9212;
+      const agent = new AgentClass({ getActive: () => ({}) });
+      agent.setPlanBeforeActMode('strict');
+      agent.setPlanReviewSettings({ mode: 'always' });
+      agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+      let plannerCalls = 0;
+      agent._runPlannerGate = async () => {
+        plannerCalls += 1;
+        throw new Error('recommended action fast path should not call planner');
+      };
+
+      const readyPlan = {
+        id: 'tweet-webbrain',
+        skipPlanner: true,
+        tool: 'navigate',
+        summary: 'Publish a concise promotional tweet about WebBrain.',
+        steps: [
+          'Open https://x.com/compose/post in the current tab through the visible browser UI.',
+          'Include https://webbrain.one and publish through the visible X composer.',
+          'Verify the new tweet appears and report its URL.',
+        ],
+      };
+      const outcome = await agent._maybeRunPlannerGate(
+        tabId,
+        agent.conversations.get(tabId),
+        { role: 'user', content: 'Publish a concise tweet about WebBrain.' },
+        () => {},
+        'act',
+        null,
+        null,
+        null,
+        { recommendedAction: readyPlan },
+      );
+
+      assert.equal(outcome.proceed, true, `${label} should proceed`);
+      assert.equal(plannerCalls, 0, `${label} should skip the planner call`);
+      const messages = agent.conversations.get(tabId);
+      const idx = agent._findScratchpadIndex(messages);
+      assert.ok(idx >= 0, `${label} should pin the ready tweet plan`);
+      const body = agent._extractScratchpadBody(messages[idx].content);
+      assert.match(body, /\[Approved plan — pinned by recommended action\]/);
+      assert.match(body, /https:\/\/x\.com\/compose\/post/);
+      assert.match(body, /https:\/\/webbrain\.one/);
+      assert.match(body, /Immediate tool[\s\S]*navigate/);
+
+      assert.equal(
+        agent._recommendedActionFastPathPlan({
+          recommendedAction: { ...readyPlan, tool: 'click_ax' },
+        }),
+        null,
+        `${label} should reject a forged immediate tool for the tweet fast path`,
+      );
     }
   });
 });
