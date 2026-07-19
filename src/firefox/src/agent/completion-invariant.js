@@ -80,6 +80,16 @@ function keyText(args = {}) {
   return JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
 }
 
+function isSelfVerifyingActionResult(name, result) {
+  if (name !== 'schedule_task' && name !== 'schedule_resume') return false;
+  return !!(
+    result?.success === true
+    && result?.scheduled === true
+    && String(result?.jobId || '').trim()
+    && Number.isFinite(Date.parse(String(result?.scheduledAt || '')))
+  );
+}
+
 export function isCompletionActionTool(name, args = {}) {
   if (
     DIRECT_ACTION_TOOLS.has(name)
@@ -201,11 +211,16 @@ export function recordCompletionToolResult(state, name, args = {}, result) {
   const next = { ...current, sequence };
 
   if (didCompletionActionExecute(name, args, result)) {
+    const selfVerified = isSelfVerifyingActionResult(name, result);
     next.hadAction = true;
-    next.verificationDebt = true;
+    // A persisted scheduler result proves its own mutation, but it must never
+    // erase verification debt opened by an earlier page action.
+    if (selfVerified && current.verificationDebt) return next;
+    next.verificationDebt = !selfVerified;
     next.lastAction = {
       name,
       sequence,
+      ...(selfVerified ? { selfVerified: true } : {}),
       uncertain: !!(
         result == null
         || result?.missingToolResponse

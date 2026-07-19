@@ -8575,10 +8575,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._resizeWindow(tabId, args || {});
     }
     if (name === 'schedule_resume') {
-      if (!this.scheduler) return { success: false, error: 'Scheduling is not available in this build.' };
+      if (!this.scheduler) {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'Scheduling is not available in this build.',
+        };
+      }
       let tab = null;
       try { tab = await browser.tabs.get(tabId); } catch {}
-      return await this.scheduler.createResumeJob({
+      const result = await this.scheduler.createResumeJob({
         tabId,
         conversationId: this.conversationIds.get(tabId) || null,
         mode: this.conversationModes.get(tabId) || 'act',
@@ -8586,12 +8593,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         currentUrl: tab?.url || '',
         currentTitle: tab?.title || '',
       });
+      return result?.success === false
+        ? { ...result, dispatched: false, noDispatch: true }
+        : result;
     }
     if (name === 'schedule_task') {
-      if (!this.scheduler) return { success: false, error: 'Scheduling is not available in this build.' };
+      if (!this.scheduler) {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'Scheduling is not available in this build.',
+        };
+      }
       let tab = null;
       try { tab = await browser.tabs.get(tabId); } catch {}
-      return await this.scheduler.createTaskJob({
+      const result = await this.scheduler.createTaskJob({
         tabId,
         conversationId: this.conversationIds.get(tabId) || null,
         args: args || {},
@@ -8599,6 +8616,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         currentUrl: tab?.url || '',
         currentTitle: tab?.title || '',
       });
+      return result?.success === false
+        ? { ...result, dispatched: false, noDispatch: true }
+        : result;
     }
 
     // clarify: pause the run and wait for the user to answer. This tool

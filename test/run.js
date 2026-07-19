@@ -6117,6 +6117,75 @@ test('completion invariant state machine enforces post-action observation with C
     assert.equal(observationWithoutAction.verificationDebt, false, `${label}: observation-only run opened debt`);
     assert.equal(observationWithoutAction.lastObservation?.name, 'read_page', `${label}: successful observation without an action was not recorded`);
 
+    for (const name of ['schedule_task', 'schedule_resume']) {
+      const scheduled = invariant.recordCompletionToolResult(
+        invariant.createCompletionInvariantState(`${label}-${name}-success`),
+        name,
+        {},
+        {
+          success: true,
+          scheduled: true,
+          jobId: `${name}_job`,
+          scheduledAt: '2026-07-20T10:00:00.000Z',
+        },
+      );
+      assert.equal(scheduled.hadAction, true, `${label}: ${name} did not count as a consequential action`);
+      assert.equal(scheduled.verificationDebt, false, `${label}: authoritative ${name} result opened page verification debt`);
+      assert.equal(scheduled.lastAction?.selfVerified, true, `${label}: ${name} was not marked self-verifying`);
+      assert.match(invariant.completionPlainFinalBlock(scheduled), /plain final answer cannot end/i, `${label}: ${name} allowed a plain final`);
+      assert.equal(
+        invariant.completionDoneBlock(scheduled, 'done', { outcome: 'success' }),
+        null,
+        `${label}: ${name} blocked explicit success despite its authoritative scheduler result`,
+      );
+    }
+
+    const incompleteScheduledResult = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-schedule-incomplete`),
+      'schedule_task',
+      {},
+      {
+        success: true,
+        scheduled: true,
+        scheduledAt: '2026-07-20T10:00:00.000Z',
+      },
+    );
+    assert.equal(incompleteScheduledResult.verificationDebt, true, `${label}: incomplete scheduler result did not fail closed`);
+
+    let earlierPageDebt = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-schedule-preserves-debt`),
+      'click_ax',
+      { ref_id: 'ref_submit' },
+      { success: true, dispatched: true },
+    );
+    earlierPageDebt = invariant.recordCompletionToolResult(
+      earlierPageDebt,
+      'schedule_task',
+      {},
+      {
+        success: true,
+        scheduled: true,
+        jobId: 'scheduled_after_click',
+        scheduledAt: '2026-07-20T10:00:00.000Z',
+      },
+    );
+    assert.equal(earlierPageDebt.verificationDebt, true, `${label}: self-verifying schedule cleared earlier page debt`);
+    assert.equal(earlierPageDebt.lastAction?.name, 'click_ax', `${label}: earlier unverified page action was replaced`);
+
+    const schedulePreflight = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-schedule-preflight`),
+      'schedule_task',
+      {},
+      {
+        success: false,
+        error: 'schedule is invalid',
+        dispatched: false,
+        noDispatch: true,
+      },
+    );
+    assert.equal(schedulePreflight.hadAction, false, `${label}: scheduler preflight failure counted as an action`);
+    assert.equal(schedulePreflight.verificationDebt, false, `${label}: scheduler preflight failure opened debt`);
+
     const noDispatch = invariant.recordCompletionToolResult(
       invariant.createCompletionInvariantState(`${label}-no-dispatch`),
       'click_ax',
@@ -6378,12 +6447,21 @@ test('pre-dispatch action failures opt out without weakening ambiguous iframe fa
       ['iframe_type', {}],
       ['press_keys', { key: 'F5' }],
       ['go_back', {}],
+      ['schedule_task', {}],
+      ['schedule_resume', {}],
     ]) {
       assertNoDebt('chrome', CompletionInvariantCh, name, args, await chromeAgent.executeTool(6401, name, args));
     }
     for (const name of ['iframe_click', 'iframe_type']) {
       const args = { selector: '#missing' };
       assertNoDebt('chrome', CompletionInvariantCh, name, args, await chromeAgent.executeTool(6401, name, args));
+    }
+    chromeAgent.scheduler = {
+      createTaskJob: async () => ({ success: false, error: 'schedule_task validation failed' }),
+      createResumeJob: async () => ({ success: false, error: 'schedule_resume validation failed' }),
+    };
+    for (const name of ['schedule_task', 'schedule_resume']) {
+      assertNoDebt('chrome', CompletionInvariantCh, name, {}, await chromeAgent.executeTool(6401, name, {}));
     }
 
     globalThis.chrome.scripting.executeScript = async () => [{
@@ -6425,12 +6503,21 @@ test('pre-dispatch action failures opt out without weakening ambiguous iframe fa
       ['iframe_click', {}],
       ['iframe_type', {}],
       ['go_forward', {}],
+      ['schedule_task', {}],
+      ['schedule_resume', {}],
     ]) {
       assertNoDebt('firefox', CompletionInvariantFx, name, args, await firefoxAgent.executeTool(6402, name, args));
     }
     for (const name of ['iframe_click', 'iframe_type']) {
       const args = { selector: '#missing' };
       assertNoDebt('firefox', CompletionInvariantFx, name, args, await firefoxAgent.executeTool(6402, name, args));
+    }
+    firefoxAgent.scheduler = {
+      createTaskJob: async () => ({ success: false, error: 'schedule_task validation failed' }),
+      createResumeJob: async () => ({ success: false, error: 'schedule_resume validation failed' }),
+    };
+    for (const name of ['schedule_task', 'schedule_resume']) {
+      assertNoDebt('firefox', CompletionInvariantFx, name, {}, await firefoxAgent.executeTool(6402, name, {}));
     }
 
     globalThis.browser.tabs.executeScript = async () => [{
