@@ -4802,19 +4802,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const after = Array.isArray(afterStates) ? afterStates : [];
     if (!after.length) return null;
 
-    const beforeUrls = new Set(before.map(state => String(state?.url || '')).filter(Boolean));
+    const beforeRoutes = new Set(before
+      .map(state => this._normalizeUrlPath(String(state?.url || '')))
+      .filter(Boolean));
     const comparableAfter = after.filter((state) => {
-      const url = String(state?.url || '');
-      return beforeUrls.size === 0 || !url || beforeUrls.has(url);
+      const route = this._normalizeUrlPath(String(state?.url || ''));
+      return beforeRoutes.size === 0 || !route || beforeRoutes.has(route);
     });
     if (!comparableAfter.length) return null;
 
     const beforeAlerts = new Set(before.flatMap(state =>
-      this._formValidationAlertTexts(state).map(text => `${state?.url || ''}|${text}`)
+      this._formValidationAlertTexts(state)
+        .map(text => `${this._normalizeUrlPath(String(state?.url || ''))}|${text}`)
     ));
     const beforeAriaInvalid = new Set(before.flatMap(state =>
       (Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : [])
-        .map(field => `${state?.url || ''}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`)
+        .map(field => `${this._normalizeUrlPath(String(state?.url || ''))}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`)
     ));
     const newAlerts = [];
     const newAriaInvalid = [];
@@ -4822,11 +4825,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // by the action. With no baseline we still detect native validation via
     // activeInvalid, but do not mislabel an unrelated pre-existing alert.
     for (const state of before.length ? comparableAfter : []) {
+      const route = this._normalizeUrlPath(String(state?.url || ''));
       for (const text of this._formValidationAlertTexts(state)) {
-        if (text && !beforeAlerts.has(`${state?.url || ''}|${text}`)) newAlerts.push(text);
+        if (text && !beforeAlerts.has(`${route}|${text}`)) newAlerts.push(text);
       }
       for (const field of Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : []) {
-        const key = `${state?.url || ''}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`;
+        const key = `${route}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`;
         if (!beforeAriaInvalid.has(key)) newAriaInvalid.push(field);
       }
     }
@@ -4888,7 +4892,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     { allFrames = false, checkpointsMs = [0, 120, 350, 800, 1200] } = {},
   ) {
     const before = Array.isArray(beforeStates) ? beforeStates : [];
-    const beforeUrls = new Set(before.map(state => String(state?.url || '')).filter(Boolean));
+    const beforeRoutes = new Set(before
+      .map(state => this._normalizeUrlPath(String(state?.url || '')))
+      .filter(Boolean));
     const startedAt = Date.now();
     for (const checkpoint of checkpointsMs) {
       const targetDelay = Math.max(0, Number(checkpoint) || 0);
@@ -4897,11 +4903,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const after = await this._captureFormValidationState(tabId, { allFrames });
       const failure = this._detectFormValidationFailure(before, after, context);
       if (failure) return failure;
-      const afterUrls = new Set(after.map(state => String(state?.url || '')).filter(Boolean));
+      const afterRoutes = new Set(after
+        .map(state => this._normalizeUrlPath(String(state?.url || '')))
+        .filter(Boolean));
       if (
-        beforeUrls.size > 0
-        && afterUrls.size > 0
-        && ![...afterUrls].some(url => beforeUrls.has(url))
+        beforeRoutes.size > 0
+        && afterRoutes.size > 0
+        && ![...afterRoutes].some(route => beforeRoutes.has(route))
       ) {
         break;
       }
@@ -4920,6 +4928,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     toolResult.validationMessages = failure.validationMessages;
     toolResult.error = failure.error;
     delete toolResult.warning;
+    // A validation-rejected click did not complete the destructive action.
+    // Do not let its generic duplicate-submit entry block the corrected retry.
+    this._recentSubmitClicks.delete(tabId);
     this._formValidationBlocks.set(tabId, {
       stateKey: failure.stateKey,
       actionKey: failure.actionKey,

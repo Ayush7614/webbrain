@@ -22952,14 +22952,18 @@ test('form validation polling catches delayed errors', async () => {
       alerts: [],
       controlFingerprint: 'unchanged',
     }];
-    const delayed = [{
+    const redirected = [{
       ...before[0],
+      url: `${url}?error=pending#payment`,
+    }];
+    const delayed = [{
+      ...redirected[0],
       alerts: ['Server rejected this value.'],
     }];
     let captures = 0;
     agent._captureFormValidationState = async () => {
       captures += 1;
-      return structuredClone(captures === 1 ? before : delayed);
+      return structuredClone(captures === 1 ? redirected : delayed);
     };
 
     const failure = await agent._waitForFormValidationFailure(
@@ -22974,7 +22978,7 @@ test('form validation polling catches delayed errors', async () => {
     );
     assert.ok(failure, `${AgentClass.name}: delayed validation feedback was missed`);
     assert.match(failure.error, /server rejected this value/i);
-    assert.equal(captures, 2, `${AgentClass.name}: validation polling did not retry after the immediate snapshot`);
+    assert.equal(captures, 2, `${AgentClass.name}: validation polling did not retry after a same-form redirect`);
   }
 });
 
@@ -23061,11 +23065,18 @@ test('agent returns form validation messages and blocks unchanged repeat submits
     };
 
     const runSubmit = id => runClick(id, 'Continue');
+    agent._recentSubmitClicks.set(tabId, [{
+      key: `continue|${url}`,
+      ts: Date.now(),
+      url,
+      text: 'Continue',
+    }]);
     const failed = await runSubmit('submit_validation_failure');
     assert.equal(failed.success, false, `${AgentClass.name}: invalid submit was reported successful`);
     assert.equal(failed.formValidationFailed, true, `${AgentClass.name}: missing formValidationFailed marker`);
     assert.match(failed.error, /compatible with at least one application/i);
     assert.equal(executions, 1, `${AgentClass.name}: first submit did not execute exactly once`);
+    assert.equal(agent._recentSubmitClicks.has(tabId), false, `${AgentClass.name}: rejected submit kept a stale duplicate-click block`);
 
     const blocked = await runSubmit('submit_validation_retry');
     assert.equal(blocked.blockedValidationRetry, true, `${AgentClass.name}: unchanged invalid form was resubmitted`);
