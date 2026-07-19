@@ -912,7 +912,7 @@
       blocked: null,
       settled: false,
       guard: null,
-      restoreShowPicker: null,
+      cleanupPageShowPickerGuard: null,
       settleTimer: null,
       cleanupTimer: null,
     };
@@ -932,42 +932,43 @@
       event.stopImmediatePropagation();
       blockFileInput(input);
     };
-    const installShowPickerGuard = () => {
-      const proto = window.HTMLInputElement?.prototype;
-      const descriptor = proto && Object.getOwnPropertyDescriptor(proto, 'showPicker');
-      const originalShowPicker = descriptor?.value;
-      if (typeof originalShowPicker !== 'function') return () => {};
-      const guardedShowPicker = function(...args) {
-        if (isFileInput(this)) {
-          blockFileInput(this);
-          return undefined;
-        }
-        return Reflect.apply(originalShowPicker, this, args);
+    const installPageShowPickerGuard = () => {
+      const root = document.documentElement;
+      if (!root) return () => {};
+      const guardAttr = 'data-webbrain-file-picker-guard';
+      const blockedAttr = 'data-webbrain-file-picker-blocked';
+      const blockedEvent = 'webbrain:file-picker-guard-blocked';
+      const signal = (eventName) => {
+        root.setAttribute(guardAttr, guardId);
+        document.dispatchEvent(new Event(eventName));
+        root.removeAttribute(guardAttr);
       };
-      try {
-        Object.defineProperty(proto, 'showPicker', { ...descriptor, value: guardedShowPicker });
-      } catch {
-        return () => {};
-      }
-      let restored = false;
-      return () => {
-        if (restored) return;
-        restored = true;
+      const onBlocked = () => {
         try {
-          if (proto.showPicker === guardedShowPicker) {
-            Object.defineProperty(proto, 'showPicker', descriptor);
-          }
+          const payload = JSON.parse(root.getAttribute(blockedAttr) || 'null');
+          if (payload?.guardId !== guardId) return;
+          state.blocked = {
+            selector: typeof payload.selector === 'string' && payload.selector
+              ? payload.selector
+              : null,
+          };
         } catch {}
+      };
+      document.addEventListener(blockedEvent, onBlocked, true);
+      signal('webbrain:file-picker-guard-arm');
+      return () => {
+        signal('webbrain:file-picker-guard-disarm');
+        document.removeEventListener(blockedEvent, onBlocked, true);
       };
     };
     const cleanupGuard = () => {
       document.removeEventListener('click', guard, true);
-      state.restoreShowPicker?.();
+      state.cleanupPageShowPickerGuard?.();
     };
     state.guard = guard;
     _filePickerGuardStates.set(guardId, state);
     document.addEventListener('click', guard, true);
-    state.restoreShowPicker = installShowPickerGuard();
+    state.cleanupPageShowPickerGuard = installPageShowPickerGuard();
     try {
       runClick();
     } catch (error) {

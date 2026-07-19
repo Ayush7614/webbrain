@@ -31501,13 +31501,43 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
     assert.match(source, /const FILE_PICKER_GUARD_SETTLE_MS = 100/, `${relPath}: missing deferred picker settle window`);
     assert.match(source, /function clickWithoutNativeFilePicker\(runClick,\s*settleMs\s*=\s*FILE_PICKER_GUARD_SETTLE_MS\)/, `${relPath}: missing one-click file chooser guard`);
     assert.match(source, /setTimeout\(\(\) => \{\s*cleanupGuard\(\)/, `${relPath}: guard should survive deferred picker clicks`);
-    assert.match(source, /Object\.getOwnPropertyDescriptor\(proto,\s*'showPicker'\)/, `${relPath}: missing showPicker interception`);
-    assert.match(source, /if \(isFileInput\(this\)\)[\s\S]*blockFileInput\(this\)/, `${relPath}: showPicker should record file inputs`);
-    assert.match(source, /Object\.defineProperty\(proto,\s*'showPicker',\s*descriptor\)/, `${relPath}: showPicker interception should be restored`);
+    assert.match(source, /const installPageShowPickerGuard = \(\) =>/, `${relPath}: missing page-world showPicker bridge handshake`);
+    assert.match(source, /webbrain:file-picker-guard-arm/, `${relPath}: missing page-world showPicker arm event`);
+    assert.match(source, /webbrain:file-picker-guard-blocked/, `${relPath}: missing page-world blocked result event`);
     assert.match(source, /clickWithoutNativeFilePicker\(\(\) => el\.click\(\)\)/, `${relPath}: synthetic clicks should use the chooser guard`);
     assert.match(source, /_filePickerGuardId:\s*filePickerGuard\.guardId/, `${relPath}: click response should return without waiting on the unloading document`);
     assert.match(source, /'consume_file_picker_guard':\s*\(\) => consumeFilePickerGuard/, `${relPath}: missing deferred guard result handshake`);
     assert.match(source, /filePickerBlocked:\s*true/, `${relPath}: blocked chooser should be explicit to the model`);
+  }
+
+  const chromeManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/chrome/manifest.json'), 'utf8'));
+  const chromeMainGuard = chromeManifest.content_scripts.find(entry =>
+    entry.world === 'MAIN'
+    && entry.js?.includes('src/content/file-picker-guard-page.js')
+  );
+  assert.ok(chromeMainGuard, 'chrome: showPicker guard must run in the page MAIN world');
+  assert.equal(chromeMainGuard.run_at, 'document_start');
+
+  const firefoxManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/firefox/manifest.json'), 'utf8'));
+  const firefoxGuardLoader = firefoxManifest.content_scripts.find(entry =>
+    entry.js?.includes('src/content/file-picker-guard-loader.js')
+  );
+  assert.ok(firefoxGuardLoader, 'firefox: showPicker page-world loader is missing');
+  assert.equal(firefoxGuardLoader.run_at, 'document_start');
+  assert.ok(
+    firefoxManifest.web_accessible_resources.includes('src/content/file-picker-guard-page.js'),
+    'firefox: page-world showPicker guard must be web-accessible',
+  );
+
+  const pageGuardPaths = [
+    'src/chrome/src/content/file-picker-guard-page.js',
+    'src/firefox/src/content/file-picker-guard-page.js',
+  ];
+  for (const relPath of pageGuardPaths) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.match(source, /Object\.getOwnPropertyDescriptor\(proto,\s*'showPicker'\)/, `${relPath}: missing main-world showPicker interception`);
+    assert.match(source, /reportBlocked\(this\)/, `${relPath}: main-world showPicker should record the input`);
+    assert.match(source, /Object\.defineProperty\(proto,\s*'showPicker',\s*descriptor\)/, `${relPath}: showPicker interception should be restored`);
   }
 
   for (const relPath of [

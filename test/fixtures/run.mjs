@@ -26,6 +26,8 @@ const accessibilityTreeJsPath = path.join(root, 'src', 'chrome', 'src', 'content
 const firefoxAccessibilityTreeJsPath = path.join(root, 'src', 'firefox', 'src', 'content', 'accessibility-tree.js');
 const contentJsPath = path.join(root, 'src', 'chrome', 'src', 'content', 'content.js');
 const firefoxContentJsPath = path.join(root, 'src', 'firefox', 'src', 'content', 'content.js');
+const filePickerGuardPageJsPath = path.join(root, 'src', 'chrome', 'src', 'content', 'file-picker-guard-page.js');
+const firefoxFilePickerGuardPageJsPath = path.join(root, 'src', 'firefox', 'src', 'content', 'file-picker-guard-page.js');
 const selectionShortcutJsPath = path.join(root, 'src', 'chrome', 'src', 'content', 'selection-shortcut.js');
 const firefoxSelectionShortcutJsPath = path.join(root, 'src', 'firefox', 'src', 'content', 'selection-shortcut.js');
 const smdJsPath = path.join(root, 'src', 'chrome', 'src', 'agent', 'social-media-downloader.js');
@@ -78,10 +80,85 @@ async function setupContentFixture(page, fixture, browserKind) {
 async function setupContentHtml(page, html, browserKind) {
   const firefox = browserKind === 'firefox';
   await page.setContent(html, { waitUntil: 'domcontentloaded' });
+  const pageGuardSrc = await readFile(
+    firefox ? firefoxFilePickerGuardPageJsPath : filePickerGuardPageJsPath,
+    'utf-8',
+  );
+  await page.addScriptTag({ content: pageGuardSrc });
   await page.addScriptTag({ content: firefox ? stubFirefoxBrowser : stubChrome });
   const src = await readFile(firefox ? firefoxContentJsPath : contentJsPath, 'utf-8');
   await page.addScriptTag({ content: src });
   await page.waitForFunction(() => typeof window.__wb_handler === 'function');
+}
+
+async function setupIsolatedContentHtml(page, html, browserKind) {
+  const firefox = browserKind === 'firefox';
+  await page.setContent(html, { waitUntil: 'domcontentloaded' });
+  const pageGuardSrc = await readFile(
+    firefox ? firefoxFilePickerGuardPageJsPath : filePickerGuardPageJsPath,
+    'utf-8',
+  );
+  await page.addScriptTag({ content: pageGuardSrc });
+
+  const session = await page.context().newCDPSession(page);
+  await session.send('Page.enable');
+  await session.send('Runtime.enable');
+  const frameTree = await session.send('Page.getFrameTree');
+  const isolatedWorld = await session.send('Page.createIsolatedWorld', {
+    frameId: frameTree.frameTree.frame.id,
+    worldName: `webbrain-${browserKind}-fixture`,
+  });
+  const contextId = isolatedWorld.executionContextId;
+  const contentSrc = await readFile(firefox ? firefoxContentJsPath : contentJsPath, 'utf-8');
+  const injected = await session.send('Runtime.evaluate', {
+    contextId,
+    expression: `${firefox ? stubFirefoxBrowser : stubChrome}\n${contentSrc}`,
+    awaitPromise: true,
+  });
+  if (injected.exceptionDetails) {
+    throw new Error(`isolated content injection failed: ${injected.exceptionDetails.text}`);
+  }
+
+  const rawIsolatedCall = async (action, params) => {
+    const message = JSON.stringify({ target: 'content', action, params });
+    const evaluated = await session.send('Runtime.evaluate', {
+      contextId,
+      expression: `new Promise((resolve) => {
+        const ret = window.__wb_handler(${message}, {}, (resp) => resolve(resp));
+        if (ret !== true && ret !== undefined) resolve(ret);
+      })`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (evaluated.exceptionDetails) {
+      throw new Error(`isolated content call failed: ${evaluated.exceptionDetails.text}`);
+    }
+    return evaluated.result.value;
+  };
+
+  return async (action, params) => {
+    const response = await rawIsolatedCall(action, params);
+    const guardId = response?._filePickerGuardId;
+    if (!guardId) return response;
+
+    const originalResponse = { ...response };
+    delete originalResponse._filePickerGuardId;
+    await page.waitForTimeout(120);
+    let settled = await rawIsolatedCall('consume_file_picker_guard', { guardId });
+    if (settled?.settled === false) {
+      await page.waitForTimeout(50);
+      settled = await rawIsolatedCall('consume_file_picker_guard', { guardId });
+    }
+    if (!settled?.filePickerBlocked) return originalResponse;
+
+    const blockedResponse = { ...settled };
+    delete blockedResponse.settled;
+    return {
+      ...blockedResponse,
+      ...(originalResponse.rect ? { rect: originalResponse.rect } : {}),
+      ...(originalResponse.ref_id ? { ref_id: originalResponse.ref_id } : {}),
+    };
+  };
 }
 
 async function setupFirefoxHtml(page, html) {
@@ -826,7 +903,7 @@ for (const browserKind of ['chrome', 'firefox']) {
   for (const [deferral, scheduleOpen] of showPickerOpeners) {
     test(`file picker guard (${browserKind}): blocks ${deferral} showPicker activation`, async (page) => {
       const inputId = `show-picker-${browserKind}-${deferral}`;
-      await setupContentHtml(page, `<!doctype html>
+      const isolatedCall = await setupIsolatedContentHtml(page, `<!doctype html>
         <button id="choose">Show a file picker...</button>
         <input id=${JSON.stringify(inputId)} type="file" hidden>
         <script>
@@ -839,7 +916,7 @@ for (const browserKind of ['chrome', 'firefox']) {
 
       let chooserOpened = false;
       page.once('filechooser', () => { chooserOpened = true; });
-      const result = await call(page, 'click', { text: 'Show a file picker...' });
+      const result = await isolatedCall('click', { text: 'Show a file picker...' });
       await page.waitForTimeout(20);
       if (chooserOpened) throw new Error(`${deferral} showPicker native chooser was not suppressed`);
       if (!result?.filePickerBlocked || result.success !== false || result.selector !== `#${inputId}`) {
