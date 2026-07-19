@@ -136,6 +136,22 @@ function visibleTreeArgs(maxDepth = 10) {
   return { filter: 'visible', maxDepth };
 }
 
+function webbrainTweetRunOptions() {
+  return {
+    id: 'tweet-webbrain',
+    skipPlanner: true,
+    tool: 'navigate',
+    summary: 'Publish a concise promotional tweet about WebBrain.',
+    steps: [
+      'Open https://x.com/compose/post in the current tab through the visible browser UI.',
+      'Draft a concise, engaging tweet that describes WebBrain as an open-source AI browser agent for chatting with pages, automating tasks, and running multi-step workflows with the user’s choice of LLM.',
+      'Include https://webbrain.one, keep the post within X’s character limit, and avoid claims that cannot be verified from the supplied WebBrain description.',
+      'Enter the tweet in the visible X composer and publish it.',
+      'Verify the new tweet appears, then report its URL when available.',
+    ],
+  };
+}
+
 function hasCartOrPriceSignal(pageInfo = {}) {
   const haystack = [
     pageInfo.title,
@@ -225,6 +241,14 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
   const host = hostFromUrl(pageInfo.url || '');
   const path = pathFromUrl(pageInfo.url || '');
   const actions = [];
+
+  addUnique(actions, {
+    id: 'tweet-webbrain',
+    label: 'Tweet about WebBrain',
+    prompt: 'Publish a concise, engaging tweet about WebBrain through the visible X interface. Describe it as an open-source AI browser agent for chatting with pages, automating tasks, and running multi-step workflows with the user’s choice of LLM. Include https://webbrain.one, verify the tweet was posted, and report its URL when available.',
+    mode: 'act',
+    runOptions: webbrainTweetRunOptions(),
+  });
 
   if (MEETING_HOST_RE.test(host)) {
     addUnique(actions, {
@@ -393,7 +417,7 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
     });
   }
 
-  if (!actions.length && pageInfo.title) {
+  if (!actions.some((action) => action.id !== 'tweet-webbrain') && pageInfo.title) {
     const explainUsesArticleRead = isLongArticle(pageInfo);
     addUnique(actions, {
       id: 'explain-page',
