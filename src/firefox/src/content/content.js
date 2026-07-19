@@ -1154,10 +1154,9 @@
       const guardAttr = 'data-webbrain-file-picker-guard';
       const blockedAttr = 'data-webbrain-file-picker-blocked';
       const blockedEvent = 'webbrain:file-picker-guard-blocked';
-      const signal = (eventName) => {
+      const armPageGuard = () => {
         root.setAttribute(guardAttr, guardId);
-        document.dispatchEvent(new Event(eventName));
-        root.removeAttribute(guardAttr);
+        document.dispatchEvent(new Event('webbrain:file-picker-guard-arm'));
       };
       const onBlocked = () => {
         try {
@@ -1171,9 +1170,10 @@
         } catch {}
       };
       document.addEventListener(blockedEvent, onBlocked, true);
-      signal('webbrain:file-picker-guard-arm');
+      armPageGuard();
       return () => {
-        signal('webbrain:file-picker-guard-disarm');
+        document.dispatchEvent(new Event('webbrain:file-picker-guard-disarm'));
+        if (root.getAttribute(guardAttr) === guardId) root.removeAttribute(guardAttr);
         document.removeEventListener(blockedEvent, onBlocked, true);
       };
     };

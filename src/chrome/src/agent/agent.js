@@ -9425,19 +9425,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await chrome.tabs.sendMessage(tabId, { target: 'content', action, params });
     } catch (e) {
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: [
-            'src/content/accessibility-tree.js',
-            'src/content/content.js',
-            'src/content/agent-visual-indicator.js',
-          ],
-        });
+        await this._injectCoreContentScripts(tabId);
         return await chrome.tabs.sendMessage(tabId, { target: 'content', action, params });
       } catch (e2) {
         return { success: false, error: `Failed to communicate with page: ${e2.message || e2}` };
       }
     }
+  }
+
+  async _injectCoreContentScripts(tabId) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      files: ['src/content/file-picker-guard-page.js'],
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [
+        'src/content/accessibility-tree.js',
+        'src/content/content.js',
+        'src/content/agent-visual-indicator.js',
+      ],
+    });
   }
 
   _devCssPatchStorageKey(patchId) {
@@ -13236,14 +13245,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // get_accessibility_tree / click_ax / type_ax handlers can reach
         // window.__generateAccessibilityTree and window.__wb_ax_lookup.
         try {
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: [
-              'src/content/accessibility-tree.js',
-              'src/content/content.js',
-              'src/content/agent-visual-indicator.js',
-            ],
-          });
+          await this._injectCoreContentScripts(tabId);
           // Re-stamp after inject so the safety window does not include the
           // injection gap (which can exceed 400ms on cold tabs).
           await captureClickAxBaseline();

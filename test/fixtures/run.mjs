@@ -85,6 +85,8 @@ async function setupContentHtml(page, html, browserKind) {
     'utf-8',
   );
   await page.addScriptTag({ content: pageGuardSrc });
+  // Simulate manifest injection followed by extension-reload recovery.
+  await page.addScriptTag({ content: pageGuardSrc });
   await page.addScriptTag({ content: firefox ? stubFirefoxBrowser : stubChrome });
   const src = await readFile(firefox ? firefoxContentJsPath : contentJsPath, 'utf-8');
   await page.addScriptTag({ content: src });
@@ -98,6 +100,8 @@ async function setupIsolatedContentHtml(page, html, browserKind) {
     firefox ? firefoxFilePickerGuardPageJsPath : filePickerGuardPageJsPath,
     'utf-8',
   );
+  await page.addScriptTag({ content: pageGuardSrc });
+  // Simulate recovery reinjection while keeping the content world separate.
   await page.addScriptTag({ content: pageGuardSrc });
 
   const session = await page.context().newCDPSession(page);
@@ -921,6 +925,15 @@ for (const browserKind of ['chrome', 'firefox']) {
       if (chooserOpened) throw new Error(`${deferral} showPicker native chooser was not suppressed`);
       if (!result?.filePickerBlocked || result.success !== false || result.selector !== `#${inputId}`) {
         throw new Error(`expected blocked showPicker with #${inputId}, got ${JSON.stringify(result)}`);
+      }
+      const footprint = await page.evaluate(() => ({
+        stableGlobal: Object.hasOwn(window, '__webbrainFilePickerGuardBridge'),
+        attributes: Array.from(document.documentElement.attributes)
+          .map(attribute => attribute.name)
+          .filter(name => name.startsWith('data-webbrain-file-picker-')),
+      }));
+      if (footprint.stableGlobal || footprint.attributes.length) {
+        throw new Error(`page-world guard left a detectable marker: ${JSON.stringify(footprint)}`);
       }
     });
   }

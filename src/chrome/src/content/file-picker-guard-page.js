@@ -7,15 +7,26 @@
  * and attributes to coordinate with content.js.
  */
 (() => {
-  if (window.__webbrainFilePickerGuardBridge) return;
-  window.__webbrainFilePickerGuardBridge = true;
-
+  const PROBE_EVENT = 'webbrain:file-picker-guard-probe';
+  const PROBE_ATTR = 'data-webbrain-file-picker-probe';
+  const PROBE_ACK_ATTR = 'data-webbrain-file-picker-probe-ack';
   const ARM_EVENT = 'webbrain:file-picker-guard-arm';
   const DISARM_EVENT = 'webbrain:file-picker-guard-disarm';
   const BLOCKED_EVENT = 'webbrain:file-picker-guard-blocked';
   const GUARD_ATTR = 'data-webbrain-file-picker-guard';
   const BLOCKED_ATTR = 'data-webbrain-file-picker-blocked';
   const MAX_GUARD_MS = 5000;
+
+  const probeRoot = document.documentElement;
+  if (probeRoot) {
+    const probeToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    probeRoot.setAttribute(PROBE_ATTR, probeToken);
+    document.dispatchEvent(new Event(PROBE_EVENT));
+    const alreadyInstalled = probeRoot.getAttribute(PROBE_ACK_ATTR) === probeToken;
+    probeRoot.removeAttribute(PROBE_ATTR);
+    probeRoot.removeAttribute(PROBE_ACK_ATTR);
+    if (alreadyInstalled) return;
+  }
 
   let activeGuardId = null;
   let restoreShowPicker = null;
@@ -134,6 +145,14 @@
     if (guardId && guardId === activeGuardId) clearGuard();
   }
 
+  function acknowledgeProbe() {
+    const root = document.documentElement;
+    const probeToken = root?.getAttribute(PROBE_ATTR);
+    if (probeToken) root.setAttribute(PROBE_ACK_ATTR, probeToken);
+  }
+
+  document.addEventListener(PROBE_EVENT, acknowledgeProbe, true);
   document.addEventListener(ARM_EVENT, armGuard, true);
   document.addEventListener(DISARM_EVENT, disarmGuard, true);
+  armGuard();
 })();

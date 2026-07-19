@@ -10182,9 +10182,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     } catch (e) {
       // Content script might not be injected — try injecting it
       try {
-        await browser.tabs.executeScript(tabId, {
-          file: 'src/content/content.js',
-        });
+        await this._injectCoreContentScripts(tabId);
         let response = await browser.tabs.sendMessage(tabId, {
           target: 'content',
           action,
@@ -10211,6 +10209,27 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { error: `Failed to communicate with page: ${e2.message}` };
       }
     }
+  }
+
+  async _injectCoreContentScripts(tabId) {
+    await browser.tabs.executeScript(tabId, {
+      file: 'src/content/file-picker-guard-loader.js',
+    });
+    // The loader fetches a web-accessible extension script into the page's
+    // main world. Give that local load a brief head start before content.js
+    // can dispatch an action; content.js also leaves its arm token in the
+    // shared DOM for the bridge to pick up if the load completes slightly
+    // later.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    await browser.tabs.executeScript(tabId, {
+      file: 'src/content/accessibility-tree.js',
+    });
+    await browser.tabs.executeScript(tabId, {
+      file: 'src/content/content.js',
+    });
+    await browser.tabs.executeScript(tabId, {
+      file: 'src/content/agent-visual-indicator.js',
+    });
   }
 
   /**

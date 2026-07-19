@@ -17160,7 +17160,7 @@ test('Chrome executeTool re-stamps the click_ax safety window after content-scri
 
   try {
     const result = await agent.executeTool(42, 'click_ax', { ref_id: 'ref_inject' });
-    assert.equal(injectCalls, 1);
+    assert.equal(injectCalls, 2, 'recovery should inject the MAIN-world guard before isolated content');
     assert.equal(sendAttempts, 2);
     assert.equal(captureTimes.length, 2, 'baseline must be re-captured after inject');
     assert.ok(
@@ -31535,9 +31535,64 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
   ];
   for (const relPath of pageGuardPaths) {
     const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.doesNotMatch(source, /window\.__webbrainFilePickerGuardBridge/, `${relPath}: must not expose a stable page global`);
+    assert.match(source, /webbrain:file-picker-guard-probe/, `${relPath}: recovery reinjection should use an ephemeral idempotence probe`);
     assert.match(source, /Object\.getOwnPropertyDescriptor\(proto,\s*'showPicker'\)/, `${relPath}: missing main-world showPicker interception`);
     assert.match(source, /reportBlocked\(this\)/, `${relPath}: main-world showPicker should record the input`);
     assert.match(source, /Object\.defineProperty\(proto,\s*'showPicker',\s*descriptor\)/, `${relPath}: showPicker interception should be restored`);
+  }
+
+  const previousChrome = globalThis.chrome;
+  const chromeInjections = [];
+  globalThis.chrome = {
+    scripting: {
+      async executeScript(details) { chromeInjections.push(details); },
+    },
+  };
+  try {
+    const agent = Object.create(AgentCh.prototype);
+    await agent._injectCoreContentScripts(42);
+    assert.deepEqual(chromeInjections[0], {
+      target: { tabId: 42 },
+      world: 'MAIN',
+      files: ['src/content/file-picker-guard-page.js'],
+    });
+    assert.ok(
+      chromeInjections[1].files.includes('src/content/content.js'),
+      'chrome: recovery should inject isolated content after the MAIN-world guard',
+    );
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+  }
+
+  const previousBrowser = globalThis.browser;
+  const firefoxInjections = [];
+  globalThis.browser = {
+    tabs: {
+      async executeScript(tabId, details) { firefoxInjections.push({ tabId, ...details }); },
+    },
+  };
+  try {
+    const agent = Object.create(AgentFx.prototype);
+    await agent._injectCoreContentScripts(43);
+    assert.deepEqual(firefoxInjections.map(injection => injection.file), [
+      'src/content/file-picker-guard-loader.js',
+      'src/content/accessibility-tree.js',
+      'src/content/content.js',
+      'src/content/agent-visual-indicator.js',
+    ]);
+  } finally {
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
+  }
+
+  for (const relPath of [
+    'src/chrome/src/background.js',
+    'src/firefox/src/background.js',
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.match(source, /agent\._injectCoreContentScripts\(tabId\)/, `${relPath}: background recovery should include the page guard`);
   }
 
   for (const relPath of [
