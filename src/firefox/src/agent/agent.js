@@ -192,12 +192,6 @@ export class Agent {
     this._doneBlockCount = new Map();
     this._recentSubmitClicks = new Map();
     this._formValidationBlocks = new Map(); // tabId -> validation state that must change before another submit
-    const formValidationSaltBytes = new Uint32Array(4);
-    globalThis.crypto.getRandomValues(formValidationSaltBytes);
-    this._formValidationFingerprintSalt = Array.from(
-      formValidationSaltBytes,
-      value => value.toString(16).padStart(8, '0'),
-    ).join('');
     this._runningTabs = new Set(); // tabIds with an active processMessage/Stream in flight
     this.completionInvariants = new Map(); // tabId -> run-scoped post-action verification state
     this._completionRunCounter = 0;
@@ -4980,7 +4974,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         rawResults = await chrome.scripting.executeScript({
           target: { tabId, ...(allFrames ? { allFrames: true } : {}) },
           func: Agent._formValidationStateProbe,
-          args: [this._formValidationFingerprintSalt],
         });
         return (Array.isArray(rawResults) ? rawResults : [])
           .map(item => ({ frameId: item?.frameId ?? null, ...(item?.result || {}) }))
@@ -4989,8 +4982,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (globalThis.browser?.tabs?.executeScript) {
         let probeSource = Agent._formValidationStateProbe.toString();
         if (!/^\s*(?:async\s+)?function\b/.test(probeSource)) probeSource = `function ${probeSource}`;
-        const probeSalt = JSON.stringify(this._formValidationFingerprintSalt);
-        const code = `(() => { const __wbFormValidationProbe = (${probeSource}); return __wbFormValidationProbe(${probeSalt}); })()`;
+        const code = `(() => { const __wbFormValidationProbe = (${probeSource}); return __wbFormValidationProbe(); })()`;
         rawResults = await browser.tabs.executeScript(tabId, { code, allFrames });
         return (Array.isArray(rawResults) ? rawResults : [])
           .map((result, frameId) => ({ frameId, ...(result || {}) }))
@@ -5007,7 +4999,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * Page-side form validation snapshot. Keep self-contained: Firefox
    * serializes this function into tabs and neither browser may close over Agent.
    */
-  static _formValidationStateProbe = function _formValidationStateProbe(fingerprintSalt = '') {
+  static _formValidationStateProbe = function _formValidationStateProbe() {
     const compact = (value, max = 300) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
     const roots = [document];
     try {
@@ -5132,9 +5124,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         hash = Math.imul(hash, 16777619);
       }
     };
-    // Mix a per-agent secret into the page-side fingerprint. Password values
-    // can then affect retry detection without ever leaving the probe as text.
-    addHash(`salt:${fingerprintSalt}\u001e`);
     for (const el of queryAll('input, textarea, select, [contenteditable="true"], button, [role="button"], [onclick], [data-action]')) {
       const tag = String(el.tagName || '').toLowerCase();
       const type = String(el.getAttribute?.('type') || el.tagName || '').toLowerCase();
@@ -5154,6 +5143,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         state = compact(el.innerText || el.textContent || el.getAttribute?.('aria-label') || '', 120);
       } else {
         const value = String(el.value ?? el.textContent ?? '');
+        // Fold password text into the aggregate page-side hash so same-length
+        // corrections differ, but never include the value in the snapshot.
         state = type === 'password' ? `password-value:${value}` : value;
       }
       addHash(`${el.tagName}|${type}|${el.name || ''}|${el.id || ''}|${visible(el) ? 'visible' : 'hidden'}|${el.disabled ? 'disabled' : 'enabled'}|${state}\u001e`);

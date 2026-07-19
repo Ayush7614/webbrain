@@ -23001,16 +23001,12 @@ test('form validation probes resolve aria-errormessage text in document and shad
 });
 
 test('form validation probes distinguish same-length password corrections without returning passwords', () => {
-  const priorDocument = globalThis.document;
-  const priorNodeFilter = globalThis.NodeFilter;
-  const priorGetComputedStyle = globalThis.getComputedStyle;
-  let passwordValue = 'first1';
-  const passwordField = {
+  const secretControl = {
     tagName: 'INPUT',
     name: 'password',
     id: 'password',
     disabled: false,
-    get value() { return passwordValue; },
+    value: 'first1',
     getAttribute(name) {
       if (name === 'type') return 'password';
       return '';
@@ -23019,15 +23015,14 @@ test('form validation probes distinguish same-length password corrections withou
     getBoundingClientRect() { return { width: 120, height: 24 }; },
   };
   const controlsSelector = 'input, textarea, select, [contenteditable="true"], button, [role="button"], [onclick], [data-action]';
-
-  try {
-    globalThis.NodeFilter = { SHOW_ELEMENT: 1 };
-    globalThis.getComputedStyle = () => ({
+  const sandbox = {
+    NodeFilter: { SHOW_ELEMENT: 1 },
+    getComputedStyle: () => ({
       display: 'block',
       visibility: 'visible',
       opacity: '1',
-    });
-    globalThis.document = {
+    }),
+    document: {
       activeElement: null,
       createTreeWalker() {
         return {
@@ -23036,33 +23031,27 @@ test('form validation probes distinguish same-length password corrections withou
         };
       },
       querySelectorAll(selector) {
-        return selector === controlsSelector ? [passwordField] : [];
+        return selector === controlsSelector ? [secretControl] : [];
       },
-    };
+    },
+  };
 
-    for (const AgentClass of [AgentCh, AgentFx]) {
-      passwordValue = 'first1';
-      const first = AgentClass._formValidationStateProbe('test-only-secret');
-      passwordValue = 'second';
-      const second = AgentClass._formValidationStateProbe('test-only-secret');
-      assert.notEqual(
-        first.controlFingerprint,
-        second.controlFingerprint,
-        `${AgentClass.name}: same-length password correction kept the validation state unchanged`,
-      );
-      assert.doesNotMatch(
-        JSON.stringify([first, second]),
-        /first1|second/,
-        `${AgentClass.name}: validation snapshot exposed a password value`,
-      );
-    }
-  } finally {
-    if (priorDocument === undefined) delete globalThis.document;
-    else globalThis.document = priorDocument;
-    if (priorNodeFilter === undefined) delete globalThis.NodeFilter;
-    else globalThis.NodeFilter = priorNodeFilter;
-    if (priorGetComputedStyle === undefined) delete globalThis.getComputedStyle;
-    else globalThis.getComputedStyle = priorGetComputedStyle;
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const probeSource = AgentClass._formValidationStateProbe.toString();
+    secretControl.value = 'first1';
+    const first = vm.runInNewContext(`(${probeSource})()`, sandbox);
+    secretControl.value = 'second';
+    const second = vm.runInNewContext(`(${probeSource})()`, sandbox);
+    assert.notEqual(
+      first.controlFingerprint,
+      second.controlFingerprint,
+      `${AgentClass.name}: same-length password correction kept the validation state unchanged`,
+    );
+    assert.doesNotMatch(
+      JSON.stringify([first, second]),
+      /first1|second/,
+      `${AgentClass.name}: validation snapshot exposed a password value`,
+    );
   }
 });
 
