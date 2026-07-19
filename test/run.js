@@ -2310,6 +2310,41 @@ test('config transfer exports and restores Settings values including provider ke
   assert.equal(imported.settings.downloadDirectory, 'Work/WebBrain');
   assert.equal(imported.settings.themeMode, 'system', 'missing Settings values should restore their product defaults');
   assert.equal(Object.keys(imported.settings).length, ConfigTransferCh.CONFIG_STORAGE_KEYS.length);
+
+  const sparseJson = JSON.stringify({
+    schema: 'webbrain-config/1',
+    webbrainVersion: '24.0.2',
+    settings: {
+      verboseMode: true,
+      providers: {
+        openai: {
+          type: 'openai',
+          apiKey: 'provider-secret',
+          configured: true,
+          deviceGuid: 'must-not-import',
+        },
+      },
+      futureSetting: 'ignored',
+    },
+  });
+  const chromePatch = ConfigTransferCh.parseConfigPatchImport(sparseJson);
+  const firefoxPatch = ConfigTransferFx.parseConfigPatchImport(sparseJson);
+  assert.deepEqual(firefoxPatch, chromePatch, 'Chrome and Firefox sparse config imports should remain identical');
+  assert.deepEqual(Object.keys(chromePatch.settings), ['verboseMode', 'providers']);
+  assert.equal(chromePatch.settings.themeMode, undefined, 'sparse import must leave omitted settings untouched');
+  assert.equal(chromePatch.settings.providers.openai.deviceGuid, undefined);
+  assert.deepEqual(chromePatch.ignoredKeys, ['futureSetting']);
+  const currentSettings = {
+    providers: {
+      webbrain_cloud: { type: 'openai', deviceGuid: 'platform-device' },
+      anthropic: { type: 'anthropic', apiKey: 'existing-secret' },
+    },
+  };
+  const mergedPatch = ConfigTransferCh.mergeConfigPatchSettings(currentSettings, chromePatch.settings);
+  assert.equal(mergedPatch.providers.webbrain_cloud.deviceGuid, 'platform-device');
+  assert.equal(mergedPatch.providers.anthropic.apiKey, 'existing-secret');
+  assert.equal(mergedPatch.providers.openai.apiKey, 'provider-secret');
+  assert.equal(currentSettings.providers.openai, undefined, 'provider merge must not mutate current storage');
 });
 
 test('config transfer validates schema, size, containers, and unknown keys', () => {
@@ -2537,7 +2572,8 @@ test('/export --config and /import JSON or --file are wired in both browsers', (
     assert.match(panel, /command\.value === '\/import' && action === 'file'[\s\S]*?requestConfigurationFile\(tabId\)/, `${label}: file config import handler missing`);
     assert.match(panel, /input\.accept = '\.json,application\/json'[\s\S]*?file\.text\(\)/, `${label}: file picker should read JSON files`);
     assert.match(bg, /case 'export_config':[\s\S]*?createConfigExport\(stored/, `${label}: background config export missing`);
-    assert.match(bg, /case 'import_config':[\s\S]*?parseConfigImport\(msg\.json\)[\s\S]*?storage\.local\.set\(imported\.settings\)[\s\S]*?providerManager\.load\(\)/, `${label}: background config import and live provider reload missing`);
+    assert.match(bg, /case 'import_config':[\s\S]*?parseConfigImport\(msg\.json\)[\s\S]*?storage\.local\.set\(settings\)[\s\S]*?providerManager\.load\(\)/, `${label}: background config import and live provider reload missing`);
+    assert.match(bg, /case 'import_config_patch':[\s\S]*?parseConfigPatchImport\(msg\.json\)[\s\S]*?mergeConfigPatchSettings/, `${label}: background sparse config import and provider merge missing`);
   }
 });
 
