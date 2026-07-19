@@ -31428,7 +31428,8 @@ test('click_ax captures bounded nearest product/card context in both content scr
     const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     const axSource = fs.readFileSync(path.join(ROOT, axRel), 'utf8');
     assert.match(source, /const targetContext = \(\(\) => \{/, `${label}: targetContext capture missing`);
-    assert.match(source, /const targetName = _axAccessibleName\(el\)/, `${label}: click target does not cache the canonical AX accessible name`);
+    assert.match(source, /const canonicalTargetName = _axCanonicalName\(el\)/, `${label}: broad-target guard does not cache the canonical AX accessible name`);
+    assert.match(source, /const targetName = canonicalTargetName \|\| _axAccessibleName\(el\)/, `${label}: click result loses its bounded display-name fallback`);
     assert.match(source, /const ownText = String\(targetName \|\| el\.innerText \|\| ''\)/, `${label}: targetContext does not use the AX accessible name`);
     assert.match(axSource, /window\.__wb_ax_name = getAccessibleName;/, `${label}: accessibility tree does not expose its canonical name helper`);
     assert.match(source, /depth < 6/, `${label}: ancestor search is not bounded`);
@@ -31438,6 +31439,7 @@ test('click_ax captures bounded nearest product/card context in both content scr
     assert.match(source, /\.slice\(0,\s*500\)/, `${label}: href is not bounded`);
     assert.match(source, /const productCard = .*node\.matches/s, `${label}: product/card ancestor detection missing`);
     assert.match(source, /ambiguousTarget: true/, `${label}: unnamed broad generic click guard missing`);
+    assert.match(source, /if \(!canonicalTargetName && genericTags\.has\(tag\)/, `${label}: broad-target guard still trusts innerText fallback names`);
     assert.match(source, /expectedDocumentToken/, `${label}: document-scoped AX ref guard missing`);
     assert.match(source, /expectedPageUrl/, `${label}: route-scoped AX ref guard missing`);
     assert.match(source, /\.\.\.\(targetContext \? \{ targetContext \} : \{\}\)/, `${label}: click_ax result does not expose targetContext`);

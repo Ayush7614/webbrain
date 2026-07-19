@@ -894,7 +894,7 @@
     return false;
   }
 
-  function _axAccessibleName(el) {
+  function _axCanonicalName(el) {
     try {
       if (typeof window.__wb_ax_name === 'function') {
         const name = window.__wb_ax_name(el);
@@ -913,12 +913,16 @@
         el?.getAttribute?.('aria-label')
         || labelledText
         || el?.getAttribute?.('title')
-        || el?.innerText
         || ''
       ).trim().slice(0, 160);
     } catch {
       return '';
     }
+  }
+
+  function _axAccessibleName(el) {
+    return _axCanonicalName(el)
+      || String(el?.innerText || '').trim().slice(0, 160);
   }
 
   function _axDocumentToken() {
@@ -2564,7 +2568,8 @@
           }
           const tag = el.tagName ? el.tagName.toLowerCase() : '';
           const targetRole = String(el.getAttribute?.('role') || '').toLowerCase();
-          const targetName = _axAccessibleName(el);
+          const canonicalTargetName = _axCanonicalName(el);
+          const targetName = canonicalTargetName || _axAccessibleName(el);
           try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
           try { el.focus({ preventScroll: true }); } catch {}
           const rect = el.getBoundingClientRect();
@@ -2607,7 +2612,7 @@
           })();
           const genericTags = new Set(['body', 'div', 'span', 'section', 'main', 'article', 'nav', 'ul', 'ol', 'li']);
           const genericRoles = new Set(['', 'generic', 'group', 'list', 'listitem', 'region', 'none', 'presentation']);
-          if (!targetName && genericTags.has(tag) && genericRoles.has(targetRole) && targetContext?.truncated) {
+          if (!canonicalTargetName && genericTags.has(tag) && genericRoles.has(targetRole) && targetContext?.truncated) {
             return failure(
               `ref_id ${ref_id} resolves to an unnamed generic element inside a broad container. Re-read the accessibility tree and choose a named row or control instead of clicking this ambiguous target.`,
               { ambiguousTarget: true, targetContext, documentToken, refScopeUrl: location.href },
