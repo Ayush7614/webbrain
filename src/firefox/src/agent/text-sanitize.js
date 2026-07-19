@@ -84,7 +84,7 @@ export function repairDoubleEscapedAssistantText(value) {
 }
 
 function repairJsonQuotedPageTitleLines(value) {
-  if (typeof value !== 'string' || !value || !value.includes('\\"')) return value;
+  if (typeof value !== 'string' || !value) return value;
 
   const parts = value.split(/(\r\n|\n|\r)/);
   let fence = null;
@@ -106,7 +106,7 @@ function repairJsonQuotedPageTitleLines(value) {
     const titleMatch = line.match(
       /^([ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?Page title:[ \t]*)("(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")([ \t]*)$/i,
     );
-    if (!titleMatch || !titleMatch[2].includes('\\"')) continue;
+    if (!titleMatch) continue;
 
     try {
       const decodedTitle = JSON.parse(titleMatch[2]);

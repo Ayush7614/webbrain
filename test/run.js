@@ -20187,23 +20187,27 @@ test('assistant response repair preserves escapes inside double-escaped fenced c
 });
 
 test('assistant display repair decodes JSON-quoted page title verification lines', () => {
-  const title = 'Emre Sokullu on X: "Introducing WebBrain — an open-source AI browser agent…"';
-  const malformed = [
-    'Verification:',
-    `- Page title: ${JSON.stringify(title)}`,
-    '- Timestamp: 3:39 PM · Jul 19, 2026',
-  ].join('\r\n');
-  const expected = [
-    'Verification:',
-    `- Page title: ${title}`,
-    '- Timestamp: 3:39 PM · Jul 19, 2026',
-  ].join('\r\n');
-
-  for (const [label, repair] of [
-    ['chrome', repairAssistantDisplayTextCh],
-    ['firefox', repairAssistantDisplayTextFx],
+  for (const title of [
+    'Example Domain',
+    'Emre Sokullu on X: "Introducing WebBrain — an open-source AI browser agent…"',
   ]) {
-    assert.equal(repair(malformed), expected, `${label}: page title JSON scalar should decode`);
+    const malformed = [
+      'Verification:',
+      `- Page title: ${JSON.stringify(title)}`,
+      '- Timestamp: 3:39 PM · Jul 19, 2026',
+    ].join('\r\n');
+    const expected = [
+      'Verification:',
+      `- Page title: ${title}`,
+      '- Timestamp: 3:39 PM · Jul 19, 2026',
+    ].join('\r\n');
+
+    for (const [label, repair] of [
+      ['chrome', repairAssistantDisplayTextCh],
+      ['firefox', repairAssistantDisplayTextFx],
+    ]) {
+      assert.equal(repair(malformed), expected, `${label}: page title JSON scalar should decode`);
+    }
   }
 });
 
@@ -20212,8 +20216,10 @@ test('assistant display repair preserves unrelated, fenced, and malformed escape
   const jsonTitle = JSON.stringify(title);
   const unchanged = [
     `Other field: ${jsonTitle}`,
+    'Other field: "Example Domain"',
     `Use this example: Page title: ${jsonTitle}`,
     `Page title: ${jsonTitle} trailing text`,
+    'Page title: "Example Domain" trailing text',
     String.raw`Page title: "Emre Sokullu on X: \q"`,
     `\`\`\`text\nPage title: ${jsonTitle}\n\`\`\``,
     `~~~text\n- Page title: ${jsonTitle}\n~~~`,
@@ -20258,7 +20264,7 @@ test('provider response path preserves raw assistant content and metadata', asyn
 });
 
 test('terminal display repair normalizes JSON-quoted page title lines', async () => {
-  const title = 'Emre Sokullu on X: "Introducing WebBrain"';
+  const title = 'Example Domain';
   const malformed = `Verification:\n- Page title: ${JSON.stringify(title)}\n- Timestamp: 3:39 PM`;
   const expected = `Verification:\n- Page title: ${title}\n- Timestamp: 3:39 PM`;
 
