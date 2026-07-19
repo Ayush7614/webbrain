@@ -13865,6 +13865,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let pressedDelivered = false;
     try {
       await cdpClient.attach(tabId);
+      dispatchStage = 'filePickerGuardArm';
+      await cdpClient.armFileInputClickGuard(tabId);
       dispatchStage = 'mouseMoved';
       await cdpClient.dispatchMouseEvent(tabId, 'mouseMoved', target.x, target.y);
       dispatchedEvents++;
@@ -13883,6 +13885,22 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       dispatchStage = 'mouseReleased';
       await cdpClient.dispatchMouseEvent(tabId, 'mouseReleased', target.x, target.y);
       dispatchedEvents++;
+      dispatchStage = 'filePickerGuardConsume';
+      const blockedFileInput = await cdpClient.consumeFileInputClickGuard(tabId);
+      if (blockedFileInput?.blocked) {
+        return withSnapshot({
+          ...cdpClient.fileInputClickBlockedResult(
+            blockedFileInput,
+            `Do not click ${args?.ref_id || 'this upload control'} before uploading.`,
+          ),
+          ref_id: args?.ref_id,
+          fallback: 'cdp_after_synthetic_no_progress',
+          fallbackAttempted: true,
+          trusted: true,
+          verified: true,
+          rect: target.rect || response.rect,
+        }, settledObservation);
+      }
       dispatchStage = 'complete';
     } catch (error) {
       const fallbackAttempted = dispatchedEvents > 0;

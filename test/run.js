@@ -16168,6 +16168,17 @@ test('Chrome focused type_text marks missing focus as a pre-dispatch failure', a
   }
 });
 
+function stubChromeCdpFileInputClickGuard(blocked = null) {
+  const arm = cdpClientCh.armFileInputClickGuard;
+  const consume = cdpClientCh.consumeFileInputClickGuard;
+  cdpClientCh.armFileInputClickGuard = async () => {};
+  cdpClientCh.consumeFileInputClickGuard = async () => blocked;
+  return () => {
+    cdpClientCh.armFileInputClickGuard = arm;
+    cdpClientCh.consumeFileInputClickGuard = consume;
+  };
+}
+
 test('Chrome click_ax keeps successful synthetic clicks and skips trusted fallback', async () => {
   const agent = new AgentCh({});
   let resolved = false;
@@ -16208,6 +16219,7 @@ test('Chrome click_ax treats broad page churn as weak evidence and still uses on
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   const weakObservation = {
     changed: true, proved: false, weakEvidence: true, safetyVeto: false, observable: true,
     reasons: ['page_text'], proofReasons: [], weakReasons: ['page_text'], safetyReasons: [],
@@ -16322,7 +16334,100 @@ test('Chrome click_ax treats broad page churn as weak evidence and still uses on
     assert.ok(result.observedHints?.includes('target_state_weak'));
     assert.ok(result.observedHints?.includes('page_controls'));
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
+    cdpClientCh.dispatchMouseEvent = originals.dispatch;
+  }
+});
+
+test('Chrome click_ax guards the trusted CDP fallback against native file choosers', async () => {
+  const originals = {
+    attach: cdpClientCh.attach,
+    arm: cdpClientCh.armFileInputClickGuard,
+    consume: cdpClientCh.consumeFileInputClickGuard,
+    dispatch: cdpClientCh.dispatchMouseEvent,
+  };
+  const agent = new AgentCh({});
+  const dispatched = [];
+  let armed = 0;
+  let consumed = 0;
+  agent._clickAxFinalSettleMs = () => 0;
+  agent._observeClickAxSideEffect = async () => ({
+    changed: false,
+    proved: false,
+    weakEvidence: false,
+    safetyVeto: false,
+    observable: true,
+    reasons: [],
+    proofReasons: [],
+    weakReasons: [],
+    safetyReasons: [],
+    snapshot: '{"text":"same","active":""}',
+  });
+  agent._captureClickAxObservation = async (_tabId, snapshot, sideEffectWatch, startedAt) => ({
+    startedAt,
+    snapshot,
+    tabIds: '1,42',
+    sideEffectWatch,
+  });
+  agent._resolveClickAxFallbackTarget = async () => ({
+    success: true,
+    fallbackEligible: true,
+    documentToken: 'doc-upload',
+    fallbackState: '{"aria-current":"<absent>"}',
+    fallbackStrongState: '{"aria-current":"<absent>"}',
+    fallbackWeakState: '{"className":""}',
+    x: 120,
+    y: 80,
+    rect: { x: 70, y: 60, w: 100, h: 40 },
+  });
+
+  try {
+    cdpClientCh.attach = async () => ({ tabId: 42, attached: true });
+    cdpClientCh.armFileInputClickGuard = async () => { armed++; };
+    cdpClientCh.consumeFileInputClickGuard = async () => {
+      consumed++;
+      return { blocked: true, selector: '#trusted-upload' };
+    };
+    cdpClientCh.dispatchMouseEvent = async (_tabId, type) => {
+      dispatched.push(type);
+    };
+
+    const result = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_upload' },
+      {
+        success: true,
+        method: 'click_ax',
+        ref_id: 'ref_upload',
+        tag: 'div',
+        _fallbackStateBefore: '{"full":"same"}',
+        _fallbackStateAfterImmediate: '{"full":"same"}',
+        _fallbackStrongStateBefore: '{"aria-current":"<absent>"}',
+        _fallbackStrongStateAfterImmediate: '{"aria-current":"<absent>"}',
+        _fallbackWeakStateBefore: '{"className":""}',
+        _fallbackWeakStateAfterImmediate: '{"className":""}',
+      },
+      { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
+    );
+
+    assert.equal(armed, 1);
+    assert.equal(consumed, 1);
+    assert.deepEqual(dispatched, ['mouseMoved', 'mousePressed', 'mouseReleased']);
+    assert.equal(result.success, false);
+    assert.equal(result.dispatched, true);
+    assert.equal(result.filePickerBlocked, true);
+    assert.equal(result.selector, '#trusted-upload');
+    assert.equal(result.ref_id, 'ref_upload');
+    assert.equal(result.fallback, 'cdp_after_synthetic_no_progress');
+    assert.equal(result.fallbackAttempted, true);
+    assert.equal(result.trusted, true);
+    assert.equal(result.verified, true);
+    assert.match(result.error, /upload_file/);
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.armFileInputClickGuard = originals.arm;
+    cdpClientCh.consumeFileInputClickGuard = originals.consume;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
 });
@@ -16333,6 +16438,7 @@ test('Chrome click_ax never trusts ineligible targets and never retries one trus
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   agent._clickAxFinalSettleMs = () => 0;
   agent._observeClickAxSideEffect = async () => ({
@@ -16414,6 +16520,7 @@ test('Chrome click_ax never trusts ineligible targets and never retries one trus
     assert.match(second.fallbackSkipped, /already attempted/);
     assert.equal(dispatched, 3, 'the same document/ref target must receive at most one trusted fallback');
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -16425,6 +16532,7 @@ test('Chrome click_ax only consumes the one-shot slot after a CDP press is deliv
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   const dispatched = [];
   let attachAttempts = 0;
   agent._clickAxFinalSettleMs = () => 0;
@@ -16519,6 +16627,7 @@ test('Chrome click_ax only consumes the one-shot slot after a CDP press is deliv
     assert.match(repeated.fallbackSkipped, /already attempted/);
     assert.deepEqual(dispatched, ['mouseMoved', 'mousePressed', 'mouseReleased']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -16689,6 +16798,7 @@ test('Chrome click_ax trusted phase carries preparedActive so blur-only is not p
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let capturedPrepared = null;
   agent._clickAxFinalSettleMs = () => 0;
   agent._observeClickAxSideEffect = async (_tabId, baseline) => {
@@ -16785,6 +16895,7 @@ test('Chrome click_ax trusted phase carries preparedActive so blur-only is not p
     assert.equal(result.fallbackAttempted, true);
     assert.equal(result.verified, false);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17204,6 +17315,7 @@ test('Chrome click_ax accepts a delayed semantic target-state change without sen
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   agent._observeClickAxSideEffect = async () => ({
     changed: false,
@@ -17250,6 +17362,7 @@ test('Chrome click_ax accepts a delayed semantic target-state change without sen
     assert.deepEqual(result.observedEffects, ['target_state']);
     assert.equal(dispatched, 0);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17261,6 +17374,7 @@ test('Chrome click_ax accepts a target-state-only change after the trusted fallb
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   let resolves = 0;
   agent._clickAxFinalSettleMs = () => 0;
@@ -17333,6 +17447,7 @@ test('Chrome click_ax accepts a target-state-only change after the trusted fallb
     assert.equal(result.verified, true);
     assert.deepEqual(result.observedEffects, ['target_state']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17344,6 +17459,7 @@ test('Chrome click_ax accepts weak-only target state (class/data-status) after t
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   let resolves = 0;
   agent._clickAxFinalSettleMs = () => 0;
@@ -17421,6 +17537,7 @@ test('Chrome click_ax accepts weak-only target state (class/data-status) after t
     assert.equal(result.verified, true);
     assert.deepEqual(result.observedEffects, ['target_state_weak']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17432,6 +17549,7 @@ test('Chrome click_ax keeps an unobservable post-CDP navigation successful but u
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   let observeCalls = 0;
   let resolves = 0;
@@ -17531,6 +17649,7 @@ test('Chrome click_ax keeps an unobservable post-CDP navigation successful but u
     assert.equal(result.error, undefined);
     assert.match(result.warning, /navigation or reload/);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17542,6 +17661,7 @@ test('Chrome executeTool runs automatic click_ax fallback and reuses its observe
     attach: cdpClientCh.attach,
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   const actions = [];
   const dispatched = [];
   let snapshotCalls = 0;
@@ -17686,6 +17806,7 @@ test('Chrome executeTool runs automatic click_ax fallback and reuses its observe
     assert.equal(requestRemoves, 1);
     assert.deepEqual(requestFilter?.types, ['xmlhttprequest', 'ping']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
     if (originalChrome === undefined) delete globalThis.chrome;
