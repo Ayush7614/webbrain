@@ -22899,6 +22899,8 @@ test('form validation classifier surfaces native and custom submission errors', 
       toolName: 'click',
       args: { text: 'Continue' },
       result: { success: true, tag: 'BUTTON', type: 'button', isSubmitControl: false },
+      detectedSubmit: { isSubmit: true },
+      priorValidationFailure: true,
     });
     assert.equal(correctiveNative, null, `${AgentClass.name}: pre-existing native validation blocked a corrective button`);
 
@@ -22924,6 +22926,15 @@ test('form validation classifier surfaces native and custom submission errors', 
     });
     assert.ok(customFailure, `${AgentClass.name}: custom validation alert was missed`);
     assert.match(customFailure.error, /correct the highlighted fields/i);
+
+    const correctivePersistentAlert = agent._detectFormValidationFailure(customAfter, customAfter, {
+      toolName: 'click',
+      args: { text: 'Continue' },
+      result: { success: true, tag: 'BUTTON', type: 'button', isSubmitControl: false },
+      detectedSubmit: { isSubmit: true },
+      priorValidationFailure: true,
+    });
+    assert.equal(correctivePersistentAlert, null, `${AgentClass.name}: conservative preflight revived a persistent alert for a corrective button`);
 
     const existingAlert = agent._detectFormValidationFailure(customAfter, customAfter, {
       toolName: 'click',

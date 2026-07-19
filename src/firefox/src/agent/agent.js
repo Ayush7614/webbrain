@@ -4754,7 +4754,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _formValidationActionHasStrongSubmitEvidence(toolName, args = {}, result = null, detectedSubmit = null) {
-    if (detectedSubmit?.isSubmit === true) return true;
     const name = String(toolName || '');
     if (name === 'set_field') return args?.submit === true;
     if (name === 'execute_js') return true;
@@ -4765,9 +4764,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!['click', 'click_ax', 'iframe_click'].includes(name)) return false;
 
     const target = result?.frame && typeof result.frame === 'object' ? result.frame : result;
-    if (target?.isSubmitControl === true) return true;
     const tag = String(target?.tag || '').toUpperCase();
     const type = String(target?.type || '').toLowerCase();
+    if (target?.isSubmitControl === false && type === 'button') return false;
+    if (detectedSubmit?.isSubmit === true) return true;
+    if (target?.isSubmitControl === true) return true;
     if (tag === 'BUTTON' && type === 'submit') return true;
     if (tag === 'INPUT' && (type === 'submit' || type === 'image')) return true;
     const selector = String(args?.selector || '').toLowerCase();
@@ -4840,7 +4841,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       context.result,
       context.detectedSubmit,
     );
-    const includePersistentValidation = looksLikeSubmit
+    const includePersistentValidation = strongSubmitEvidence
       && context.priorValidationFailure === true;
     const beforeAlerts = new Set(before.flatMap(state =>
       this._formValidationAlertTexts(state)
