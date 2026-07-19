@@ -9294,10 +9294,38 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         const injectCode = `
           (function() {
-            const el = document.querySelector(${JSON.stringify(args.selector)});
-            if (!el) return { success: false, dispatched: false, error: 'Element not found matching selector: ' + ${JSON.stringify(args.selector)} };
+            const selector = ${JSON.stringify(args.selector)};
+            const matches = [];
+            const collectDeepMatches = (root) => {
+              matches.push(...root.querySelectorAll(selector));
+              for (const element of root.querySelectorAll('*')) {
+                if (element.shadowRoot) collectDeepMatches(element.shadowRoot);
+              }
+            };
+            try {
+              collectDeepMatches(document);
+            } catch (e) {
+              return {
+                success: false,
+                dispatched: false,
+                error: 'Invalid file input selector: ' + selector + ' (' + (e.message || String(e)) + ')',
+              };
+            }
+            if (matches.length === 0) {
+              return { success: false, dispatched: false, error: 'Element not found matching selector: ' + selector };
+            }
+            if (matches.length > 1) {
+              return {
+                success: false,
+                dispatched: false,
+                ambiguous: true,
+                matchCount: matches.length,
+                error: 'Selector matched ' + matches.length + ' elements across the document and open shadow roots. Use an exact, unique selector for the intended <input type="file">.',
+              };
+            }
+            const el = matches[0];
             if (!(el instanceof HTMLInputElement) || el.type !== 'file') {
-              return { success: false, dispatched: false, error: 'Selector does not match an <input type="file"> element: ' + ${JSON.stringify(args.selector)} };
+              return { success: false, dispatched: false, error: 'Selector does not match an <input type="file"> element: ' + selector };
             }
             let dispatched = false;
             try {
@@ -9334,6 +9362,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return {
             success: false,
             dispatched: res?.dispatched === true,
+            ...(res?.ambiguous ? {
+              ambiguous: true,
+              matchCount: Number(res.matchCount) || 0,
+            } : {}),
             error: res ? res.error : 'Failed to attach file to input element',
           };
         }

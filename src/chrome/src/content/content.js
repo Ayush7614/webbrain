@@ -850,7 +850,7 @@
   }
 
   /**
-   * Run one synthetic agent click while suppressing any synchronous
+   * Run one synthetic agent click while suppressing any immediate or deferred
    * <input type=file>.click() it triggers. Uploads should go through
    * upload_file, which attaches the bytes directly; allowing the page click
    * first opens an OS picker that remains orphaned after the direct upload.
@@ -901,7 +901,9 @@
     return null;
   }
 
-  function clickWithoutNativeFilePicker(runClick) {
+  const FILE_PICKER_GUARD_SETTLE_MS = 100;
+
+  function clickWithoutNativeFilePicker(runClick, settleMs = FILE_PICKER_GUARD_SETTLE_MS) {
     let blocked = null;
     const guard = (event) => {
       const path = typeof event.composedPath === 'function'
@@ -919,10 +921,16 @@
     document.addEventListener('click', guard, true);
     try {
       runClick();
-    } finally {
+    } catch (error) {
       document.removeEventListener('click', guard, true);
+      throw error;
     }
-    return blocked;
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        document.removeEventListener('click', guard, true);
+        resolve(blocked);
+      }, Math.max(0, Number(settleMs) || 0));
+    });
   }
 
   function filePickerBlockedResponse(blocked, label = '') {
@@ -946,7 +954,7 @@
   /**
    * Click an element by selector or coordinates.
    */
-  function clickElement(params) {
+  async function clickElement(params) {
     let el;
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
       return {
@@ -1263,7 +1271,7 @@
     }
 
     const clickedRect = rememberInteractionPoint(el, 'click');
-    const blockedFileInput = clickWithoutNativeFilePicker(() => el.click());
+    const blockedFileInput = await clickWithoutNativeFilePicker(() => el.click());
     if (blockedFileInput) {
       return {
         ...filePickerBlockedResponse(blockedFileInput, params.text || el.innerText?.trim() || ''),
@@ -3171,7 +3179,7 @@
           return { error: 'Failed to build accessibility tree: ' + (e && e.message || String(e)) };
         }
       },
-      'click_ax': () => {
+      'click_ax': async () => {
         let dispatched = false;
         const failure = (error, extra = {}) => ({
           success: false,
@@ -3341,7 +3349,9 @@
           rememberInteractionPoint(el, 'click_ax');
           const syntheticClickStartedAt = Date.now();
           dispatched = true;
-          const blockedFileInput = clickWithoutNativeFilePicker(() => el.click());
+          const blockedFileInputPromise = clickWithoutNativeFilePicker(() => el.click());
+          const fallbackStateAfterImmediate = _axFallbackState(el);
+          const blockedFileInput = await blockedFileInputPromise;
           if (blockedFileInput) {
             return failure(
               filePickerBlockedResponse(blockedFileInput, targetName || '').error,
@@ -3352,7 +3362,6 @@
               },
             );
           }
-          const fallbackStateAfterImmediate = _axFallbackState(el);
           // If the model just clicked a text-entry element, its next call must
           // be type_ax on the same ref_id. Putting the directive in the tool
           // payload (rather than only in the system prompt) keeps it in the

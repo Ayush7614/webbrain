@@ -24307,7 +24307,7 @@ test('click_ax rejects stale zero-sized targets before activation', () => {
     ['firefox', 'src/firefox/src/content/content.js'],
   ]) {
     const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    const branchStart = source.indexOf("'click_ax': () => {");
+    const branchStart = source.search(/'click_ax': (?:async )?\(\) => \{/);
     const branchEnd = source.indexOf("'type_ax':", branchStart);
     assert.ok(branchStart >= 0 && branchEnd > branchStart, `${label}: click_ax handler should be bounded for regression checks`);
     const branch = source.slice(branchStart, branchEnd);
@@ -31265,7 +31265,7 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
   assert.match(expressions[0], /event\.stopImmediatePropagation\(\)/);
   assert.match(expressions[0], /tagName === 'INPUT'[\s\S]*=== 'file'/);
   assert.match(expressions[0], /matches\.length === 1 && matches\[0\] === input/);
-  const consumed = await cdp.consumeFileInputClickGuard(42);
+  const consumed = await cdp.consumeFileInputClickGuard(42, 0);
   assert.equal(consumed.blocked, true);
   assert.equal(consumed.selector, '#upload-addon');
   assert.equal(typeof consumed.ts, 'number');
@@ -31339,8 +31339,11 @@ test('Chrome click paths suppress native file choosers and redirect to upload_fi
     const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
     assert.match(source, /function uniqueFileInputSelector\(input\)/, `${relPath}: missing unique selector builder`);
     assert.match(source, /matches\.length === 1 && matches\[0\] === input/, `${relPath}: selector should be proven unique`);
-    assert.match(source, /function clickWithoutNativeFilePicker\(runClick\)/, `${relPath}: missing one-click file chooser guard`);
+    assert.match(source, /const FILE_PICKER_GUARD_SETTLE_MS = 100/, `${relPath}: missing deferred picker settle window`);
+    assert.match(source, /function clickWithoutNativeFilePicker\(runClick,\s*settleMs\s*=\s*FILE_PICKER_GUARD_SETTLE_MS\)/, `${relPath}: missing one-click file chooser guard`);
+    assert.match(source, /setTimeout\(\(\) => \{[\s\S]*removeEventListener\('click', guard, true\)/, `${relPath}: guard should survive deferred picker clicks`);
     assert.match(source, /clickWithoutNativeFilePicker\(\(\) => el\.click\(\)\)/, `${relPath}: synthetic clicks should use the chooser guard`);
+    assert.match(source, /await (?:blockedFileInputPromise|clickWithoutNativeFilePicker)/, `${relPath}: click response should await the deferred guard`);
     assert.match(source, /filePickerBlocked:\s*true/, `${relPath}: blocked chooser should be explicit to the model`);
   }
 });
@@ -31528,6 +31531,9 @@ test('upload_file (firefox) re-fetches downloadId with manual redirect handling 
     assert.ok(executedScripts[0].includes('dt.items.add(file)'), 'Script should add file to DataTransfer');
     assert.ok(executedScripts[0].includes('el.files = dt.files'), 'Script should assign DataTransfer files to input');
     assert.ok(executedScripts[0].includes('el.type !== \'file\''), 'Script should require input[type=file]');
+    assert.ok(executedScripts[0].includes('collectDeepMatches(element.shadowRoot)'), 'Script should search open shadow roots');
+    assert.ok(executedScripts[0].includes('matches.length > 1'), 'Script should reject ambiguous selectors');
+    assert.ok(executedScripts[0].includes('exact, unique selector'), 'Script should return actionable ambiguity guidance');
   } finally {
     if (originalBrowser === undefined) delete globalThis.browser;
     else globalThis.browser = originalBrowser;

@@ -1066,7 +1066,7 @@
   }
 
   /**
-   * Run one synthetic agent click while suppressing any synchronous
+   * Run one synthetic agent click while suppressing any immediate or deferred
    * <input type=file>.click() it triggers. upload_file attaches a downloaded
    * file directly (or presents WebBrain's own picker when no downloadId is
    * available); clicking the page control first only opens a stale OS dialog.
@@ -1117,7 +1117,9 @@
     return null;
   }
 
-  function clickWithoutNativeFilePicker(runClick) {
+  const FILE_PICKER_GUARD_SETTLE_MS = 100;
+
+  function clickWithoutNativeFilePicker(runClick, settleMs = FILE_PICKER_GUARD_SETTLE_MS) {
     let blocked = null;
     const guard = (event) => {
       const path = typeof event.composedPath === 'function'
@@ -1135,10 +1137,16 @@
     document.addEventListener('click', guard, true);
     try {
       runClick();
-    } finally {
+    } catch (error) {
       document.removeEventListener('click', guard, true);
+      throw error;
     }
-    return blocked;
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        document.removeEventListener('click', guard, true);
+        resolve(blocked);
+      }, Math.max(0, Number(settleMs) || 0));
+    });
   }
 
   function filePickerBlockedResponse(blocked, label = '') {
@@ -1160,7 +1168,7 @@
   /**
    * Click an element by selector or coordinates.
    */
-  function clickElement(params) {
+  async function clickElement(params) {
     let el;
     // Reject jQuery/Playwright selectors with a clear error.
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
@@ -1541,7 +1549,7 @@
     }
 
     const clickedRect = rememberInteractionPoint(el, 'click');
-    const blockedFileInput = clickWithoutNativeFilePicker(() => el.click());
+    const blockedFileInput = await clickWithoutNativeFilePicker(() => el.click());
     if (blockedFileInput) {
       return {
         ...filePickerBlockedResponse(blockedFileInput, params.text || el.innerText?.trim() || ''),
@@ -2634,7 +2642,7 @@
           return { error: 'Failed to build accessibility tree: ' + (e && e.message || String(e)) };
         }
       },
-      'click_ax': () => {
+      'click_ax': async () => {
         let dispatched = false;
         const failure = (error, extra = {}) => ({
           success: false,
@@ -2785,7 +2793,7 @@
           }
           rememberInteractionPoint(el, 'click_ax');
           dispatched = true;
-          const blockedFileInput = clickWithoutNativeFilePicker(() => el.click());
+          const blockedFileInput = await clickWithoutNativeFilePicker(() => el.click());
           if (blockedFileInput) {
             return failure(
               filePickerBlockedResponse(blockedFileInput, targetName || '').error,

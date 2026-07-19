@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Agent } from '../../src/chrome/src/agent/agent.js';
+import { Agent as FirefoxAgent } from '../../src/firefox/src/agent/agent.js';
 import { CDPClient, cdpClient } from '../../src/chrome/src/cdp/cdp-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -751,6 +752,155 @@ for (const browserKind of ['chrome', 'firefox']) {
     }
   });
 }
+
+const deferredFilePickerOpeners = [
+  ['promise', 'Promise.resolve().then(openPicker)'],
+  ['timer', 'setTimeout(openPicker, 0)'],
+  ['animation-frame', 'requestAnimationFrame(openPicker)'],
+];
+
+for (const browserKind of ['chrome', 'firefox']) {
+  for (const [deferral, scheduleOpen] of deferredFilePickerOpeners) {
+    test(`file picker guard (${browserKind}): blocks lazy ${deferral} chooser activation`, async (page) => {
+      const inputId = `lazy-${browserKind}-${deferral}`;
+      await setupContentHtml(page, `<!doctype html>
+        <button id="choose">Add a deferred file...</button>
+        <script>
+          document.querySelector('#choose').addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.id = ${JSON.stringify(inputId)};
+            input.hidden = true;
+            document.body.appendChild(input);
+            const openPicker = () => input.click();
+            ${scheduleOpen};
+          });
+        </script>`, browserKind);
+
+      let chooserOpened = false;
+      page.once('filechooser', () => { chooserOpened = true; });
+      const result = await call(page, 'click', { text: 'Add a deferred file...' });
+      await page.waitForTimeout(20);
+      if (chooserOpened) throw new Error(`${deferral} native file chooser was not suppressed`);
+      if (!result?.filePickerBlocked || result.success !== false || result.selector !== `#${inputId}`) {
+        throw new Error(`expected blocked lazy picker with #${inputId}, got ${JSON.stringify(result)}`);
+      }
+      const selectorCheck = await page.evaluate((selector) => {
+        const matches = document.querySelectorAll(selector);
+        return { count: matches.length, id: matches[0]?.id || '' };
+      }, result.selector);
+      if (selectorCheck.count !== 1 || selectorCheck.id !== inputId) {
+        throw new Error(`lazy selector did not resolve uniquely: ${JSON.stringify({ result, selectorCheck })}`);
+      }
+    });
+  }
+}
+
+test('Firefox upload_file resolves one open-shadow input and rejects ambiguous pierced selectors', async (page) => {
+  await page.setContent(`<!doctype html>
+    <div id="host-a"></div>
+    <div id="host-b"></div>
+    <script>
+      const inputA = document.createElement('input');
+      inputA.type = 'file';
+      inputA.id = 'shadow-upload';
+      window.__uploadEvents = { input: 0, change: 0 };
+      inputA.addEventListener('input', () => window.__uploadEvents.input++);
+      inputA.addEventListener('change', () => window.__uploadEvents.change++);
+      document.querySelector('#host-a').attachShadow({ mode: 'open' }).appendChild(inputA);
+      const inputB = document.createElement('input');
+      inputB.type = 'file';
+      document.querySelector('#host-b').attachShadow({ mode: 'open' }).appendChild(inputB);
+    </script>`);
+
+  const originalBrowser = globalThis.browser;
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.browser = {
+      downloads: {
+        async search(query) {
+          if (query?.id !== 9001) throw new Error(`unexpected download query ${JSON.stringify(query)}`);
+          return [{
+            id: 9001,
+            state: 'complete',
+            url: 'https://example.com/shadow-upload.txt',
+            filename: '/home/user/Downloads/shadow-upload.txt',
+            mime: 'text/plain',
+          }];
+        },
+      },
+      tabs: {
+        async get(tabId) {
+          return { id: tabId, url: 'https://example.com/form' };
+        },
+        async executeScript(_tabId, details) {
+          return [await page.evaluate((source) => window.eval(source), details.code)];
+        },
+      },
+    };
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get(name) {
+          const key = String(name).toLowerCase();
+          if (key === 'content-length') return '2';
+          if (key === 'content-type') return 'text/plain';
+          return null;
+        },
+      },
+      async arrayBuffer() {
+        return new Uint8Array([111, 107]).buffer;
+      },
+    });
+
+    const agent = new FirefoxAgent({});
+    const uploaded = await agent.executeTool(77, 'upload_file', {
+      selector: '#shadow-upload',
+      downloadId: 9001,
+    });
+    if (!uploaded?.success || uploaded.attached?.name !== 'shadow-upload.txt' || uploaded.attached?.size !== 2) {
+      throw new Error(`open-shadow upload failed: ${JSON.stringify(uploaded)}`);
+    }
+    const state = await page.evaluate(() => {
+      const input = document.querySelector('#host-a').shadowRoot.querySelector('#shadow-upload');
+      return {
+        count: input.files.length,
+        name: input.files[0]?.name || '',
+        size: input.files[0]?.size ?? -1,
+        events: window.__uploadEvents,
+      };
+    });
+    if (
+      state.count !== 1
+      || state.name !== 'shadow-upload.txt'
+      || state.size !== 2
+      || state.events.input !== 1
+      || state.events.change !== 1
+    ) {
+      throw new Error(`open-shadow upload state mismatch: ${JSON.stringify(state)}`);
+    }
+
+    const ambiguous = await agent.executeTool(77, 'upload_file', {
+      selector: 'input[type="file"]',
+      downloadId: 9001,
+    });
+    if (
+      ambiguous?.success !== false
+      || ambiguous.dispatched !== false
+      || ambiguous.ambiguous !== true
+      || ambiguous.matchCount !== 2
+      || !/exact, unique selector/.test(ambiguous.error || '')
+    ) {
+      throw new Error(`ambiguous pierced selector did not fail closed: ${JSON.stringify(ambiguous)}`);
+    }
+  } finally {
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
+});
 
 for (const browserKind of ['chrome', 'firefox']) {
   test(`click_ax (${browserKind}): stale refs are explicit pre-dispatch failures`, async (page) => {
