@@ -1117,7 +1117,7 @@
     return null;
   }
 
-  const FILE_PICKER_GUARD_SETTLE_MS = 100;
+  const FILE_PICKER_GUARD_SETTLE_MS = 250;
   const FILE_PICKER_GUARD_RETENTION_MS = 5000;
   const _filePickerGuardStates = new Map();
   let _filePickerGuardSequence = 0;
@@ -1198,10 +1198,10 @@
       return { blocked: state.blocked, guardId: null };
     }
     state.settleTimer = setTimeout(() => {
-      cleanupGuard();
       state.settled = true;
       state.cleanupTimer = setTimeout(() => {
         if (_filePickerGuardStates.get(guardId) === state) {
+          cleanupGuard();
           _filePickerGuardStates.delete(guardId);
         }
       }, FILE_PICKER_GUARD_RETENTION_MS);
@@ -1214,6 +1214,8 @@
     if (!state) return { success: true, settled: true, filePickerBlocked: false };
     if (!state.settled) return { success: true, settled: false, filePickerBlocked: false };
     if (state.cleanupTimer) clearTimeout(state.cleanupTimer);
+    document.removeEventListener('click', state.guard, true);
+    state.cleanupPageShowPickerGuard?.();
     _filePickerGuardStates.delete(guardId);
     if (state.blocked) {
       return { ...filePickerBlockedResponse(state.blocked), settled: true };

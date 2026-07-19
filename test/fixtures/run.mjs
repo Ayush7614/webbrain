@@ -147,7 +147,7 @@ async function setupIsolatedContentHtml(page, html, browserKind) {
 
     const originalResponse = { ...response };
     delete originalResponse._filePickerGuardId;
-    await page.waitForTimeout(120);
+    await page.waitForTimeout(275);
     let settled = await rawIsolatedCall('consume_file_picker_guard', { guardId });
     if (settled?.settled === false) {
       await page.waitForTimeout(50);
@@ -198,7 +198,7 @@ async function call(page, action, params) {
 
   const originalResponse = { ...response };
   delete originalResponse._filePickerGuardId;
-  await page.waitForTimeout(120);
+  await page.waitForTimeout(275);
   let settled = await rawContentCall(page, 'consume_file_picker_guard', { guardId });
   if (settled?.settled === false) {
     await page.waitForTimeout(50);
@@ -861,6 +861,7 @@ for (const browserKind of ['chrome', 'firefox']) {
 const deferredFilePickerOpeners = [
   ['promise', 'Promise.resolve().then(openPicker)'],
   ['timer', 'setTimeout(openPicker, 0)'],
+  ['debounce-150ms', 'setTimeout(openPicker, 150)'],
   ['animation-frame', 'requestAnimationFrame(openPicker)'],
 ];
 const showPickerOpeners = [

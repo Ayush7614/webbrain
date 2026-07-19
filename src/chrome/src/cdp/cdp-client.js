@@ -1058,7 +1058,7 @@ export class CDPClient {
    * Disarm the temporary file-input click guard and return any intercepted
    * chooser activation from the current agent click.
    */
-  async consumeFileInputClickGuard(tabId, settleMs = 100) {
+  async consumeFileInputClickGuard(tabId, settleMs = 250) {
     try {
       const delayMs = Math.max(0, Number(settleMs) || 0);
       if (delayMs > 0) {
