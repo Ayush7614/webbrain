@@ -561,11 +561,12 @@ export class CDPClient {
   /**
    * Query a selector in the main document and all open shadow roots.
    * DOM.querySelectorAll only searches the supplied root node; its protocol
-   * schema has no shadow-piercing option. Resolve matches in page JS, then
-   * convert the returned DOM objects back to nodeIds for DOM.setFileInputFiles.
+   * schema has no shadow-piercing option. Resolve matches in page JS and keep
+   * their Runtime object handles alive until the caller finishes using them.
+   * This avoids frontend nodeIds, which are invalidated whenever another CDP
+   * consumer refreshes Chrome's DOM mirror with DOM.getDocument.
    */
   async querySelectorPierce(tabId, selector) {
-    await this.sendCommand(tabId, 'DOM.enable');
     await this.sendCommand(tabId, 'Runtime.enable');
     const objectGroup = `webbrain-query-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
@@ -591,25 +592,36 @@ export class CDPClient {
         throw new Error(evaluated.exceptionDetails.text || 'Selector evaluation failed');
       }
       const arrayObjectId = evaluated?.result?.objectId;
-      if (!arrayObjectId) return [];
+      if (!arrayObjectId) {
+        await this.releaseObjectGroup(tabId, objectGroup);
+        return { objectIds: [], objectGroup: null };
+      }
       const properties = await this.sendCommand(tabId, 'Runtime.getProperties', {
         objectId: arrayObjectId,
         ownProperties: true,
       });
-      const nodeIds = [];
+      const objectIds = [];
       for (const property of properties?.result || []) {
         if (!/^\d+$/.test(property?.name || '')) continue;
         const objectId = property?.value?.objectId;
         if (!objectId) continue;
-        const requested = await this.sendCommand(tabId, 'DOM.requestNode', { objectId });
-        if (requested?.nodeId) nodeIds.push(requested.nodeId);
+        objectIds.push(objectId);
       }
-      return nodeIds;
-    } finally {
-      try {
-        await this.sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup });
-      } catch {}
+      return { objectIds, objectGroup };
+    } catch (error) {
+      await this.releaseObjectGroup(tabId, objectGroup);
+      throw error;
     }
+  }
+
+  /**
+   * Release Runtime objects returned by querySelectorPierce.
+   */
+  async releaseObjectGroup(tabId, objectGroup) {
+    if (!objectGroup) return;
+    try {
+      await this.sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup });
+    } catch {}
   }
 
   /**
@@ -913,10 +925,9 @@ export class CDPClient {
   /**
    * Set file input files (for upload).
    */
-  async setFileInputFiles(tabId, nodeId, filePaths) {
-    await this.sendCommand(tabId, 'DOM.enable');
+  async setFileInputFiles(tabId, objectId, filePaths) {
     await this.sendCommand(tabId, 'DOM.setFileInputFiles', {
-      nodeId,
+      objectId,
       files: filePaths,
     });
     return { success: true };
@@ -1228,12 +1239,8 @@ export class CDPClient {
    * is not a file input / could not be resolved. `readable` is true/false when
    * the probe ran, or null if it couldn't be determined.
    */
-  async getFileInputFiles(tabId, nodeId) {
-    await this.sendCommand(tabId, 'DOM.enable');
+  async getFileInputFiles(tabId, objectId) {
     await this.sendCommand(tabId, 'Runtime.enable');
-    const resolved = await this.sendCommand(tabId, 'DOM.resolveNode', { nodeId });
-    const objectId = resolved?.object?.objectId;
-    if (!objectId) return null;
     const res = await this.sendCommand(tabId, 'Runtime.callFunctionOn', {
       functionDeclaration: `async function () {
         if (!this.files) return null;

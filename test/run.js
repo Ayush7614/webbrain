@@ -16264,7 +16264,7 @@ test('CDP input dispatchers never call the nonexistent Input.enable command', as
   assert.doesNotMatch(source, /Input\.enable/, 'Chrome CDP client must not reintroduce the unsupported Input.enable command');
 });
 
-test('CDP querySelectorPierce resolves open-shadow matches to DOM nodeIds', async () => {
+test('CDP querySelectorPierce keeps open-shadow Runtime object handles alive until release', async () => {
   const client = new CDPClient();
   const commands = [];
   client.sendCommand = async (_tabId, method, params = {}) => {
@@ -16283,20 +16283,31 @@ test('CDP querySelectorPierce resolves open-shadow matches to DOM nodeIds', asyn
         ],
       };
     }
-    if (method === 'DOM.requestNode') {
-      return { nodeId: params.objectId === 'input-a' ? 501 : 502 };
-    }
     return {};
   };
 
-  const nodeIds = await client.querySelectorPierce(42, '#shadow-upload');
-  assert.deepEqual(nodeIds, [501, 502]);
+  const query = await client.querySelectorPierce(42, '#shadow-upload');
+  assert.deepEqual(query.objectIds, ['input-a', 'input-b']);
+  assert.ok(query.objectGroup, 'querySelectorPierce must return the owning object group');
+  assert.equal(
+    commands.some(command => command.method === 'DOM.getDocument' || command.method === 'DOM.requestNode'),
+    false,
+    'Runtime handles must not depend on Chrome frontend nodeIds or the mutable DOM mirror',
+  );
   assert.equal(
     commands.some(command => command.method === 'DOM.querySelectorAll'),
     false,
     'document-root DOM.querySelectorAll cannot pierce open shadow roots',
   );
+  assert.equal(
+    commands.some(command => command.method === 'Runtime.releaseObjectGroup'),
+    false,
+    'query handles must remain alive for upload_file to consume',
+  );
+
+  await client.releaseObjectGroup(42, query.objectGroup);
   assert.equal(commands.at(-1).method, 'Runtime.releaseObjectGroup');
+  assert.deepEqual(commands.at(-1).params, { objectGroup: query.objectGroup });
 });
 
 test('Chrome selector click distinguishes pre-dispatch failure from uncertain dispatch', async () => {
@@ -33028,6 +33039,7 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
   const originalCdp = {
     attach: cdpClientCh.attach,
     querySelectorPierce: cdpClientCh.querySelectorPierce,
+    releaseObjectGroup: cdpClientCh.releaseObjectGroup,
     probeLocalFile: cdpClientCh.probeLocalFile,
     setFileInputFiles: cdpClientCh.setFileInputFiles,
     getFileInputFiles: cdpClientCh.getFileInputFiles,
@@ -33035,7 +33047,9 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
   const realPath = '/Users/x/Downloads/real.zip';
   const stalePath = '/Users/Shared/made-up.zip';
   const uploaded = [];
-  let selectorMatches = [501];
+  const releasedGroups = [];
+  let queryCount = 0;
+  let selectorMatches = ['input-501'];
 
   try {
     globalThis.chrome = {
@@ -33048,12 +33062,19 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
       },
     };
     cdpClientCh.attach = async (tabId) => ({ tabId, attached: true });
-    cdpClientCh.querySelectorPierce = async () => selectorMatches;
+    cdpClientCh.querySelectorPierce = async () => ({
+      objectIds: selectorMatches,
+      objectGroup: `upload-query-${++queryCount}`,
+    });
+    cdpClientCh.releaseObjectGroup = async (_tabId, objectGroup) => {
+      releasedGroups.push(objectGroup);
+    };
     cdpClientCh.probeLocalFile = async (_tabId, filePath) => {
       assert.equal(filePath, realPath, 'downloadId-resolved path should override stale filePath before probing');
       return { exists: true, readable: true, size: 123 };
     };
-    cdpClientCh.setFileInputFiles = async (_tabId, _nodeId, files) => {
+    cdpClientCh.setFileInputFiles = async (_tabId, objectId, files) => {
+      assert.equal(objectId, 'input-501');
       uploaded.push(files);
     };
     cdpClientCh.getFileInputFiles = async () => [{ name: 'real.zip', size: 123, readable: true }];
@@ -33066,8 +33087,9 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
     assert.equal(result.file, realPath);
     assert.equal(args.filePath, realPath);
     assert.deepEqual(uploaded, [[realPath]]);
+    assert.deepEqual(releasedGroups, ['upload-query-1'], 'successful uploads must release selector handles');
 
-    selectorMatches = [501, 502];
+    selectorMatches = ['input-501', 'input-502'];
     const ambiguous = await agent.executeTool(42, 'upload_file', {
       selector: 'input[type=file]',
       downloadId: 9123,
@@ -33076,6 +33098,11 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
     assert.match(ambiguous.error, /matched 2 elements/);
     assert.match(ambiguous.error, /exact, unique selector/);
     assert.deepEqual(uploaded, [[realPath]], 'ambiguous selectors must fail before attaching the file');
+    assert.deepEqual(
+      releasedGroups,
+      ['upload-query-1', 'upload-query-2'],
+      'early upload failures must release selector handles',
+    );
   } finally {
     if (originalChrome === undefined) delete globalThis.chrome;
     else globalThis.chrome = originalChrome;
@@ -33461,6 +33488,157 @@ test('getScratchpad returns the current pinned scratchpad body (chrome & firefox
 test('resize_window is gated as a browser-window action', () => {
   assert.equal(capabilityFor('resize_window', { width: 1280, height: 720 }), Capability.WINDOW);
   assert.equal(capabilityForCh('resize_window', { width: 1280, height: 720 }), CapabilityCh.WINDOW);
+});
+
+test('navigate rejects non-web schemes and contains browser API failures', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+  const originalSetTimeout = globalThis.setTimeout;
+  const unsafeUrls = [
+    'javascript:document.body.textContent="owned"',
+    'java\nscript:alert(1)',
+    'data:text/html,<h1>owned</h1>',
+    'file:///Users/example/secret.txt',
+    'chrome-extension://abcdefghijklmnop/page.html',
+    'moz-extension://abcdefghijklmnop/page.html',
+  ];
+  try {
+    globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+
+    let chromeUrl = 'https://trusted.example/base/page';
+    const chromeUpdates = [];
+    globalThis.chrome = {
+      tabs: {
+        async get() {
+          return { id: 42, url: chromeUrl };
+        },
+        async update(_tabId, { url }) {
+          chromeUpdates.push(url);
+          if (url === 'https://reject.example/') throw new Error('synthetic Chrome rejection');
+          chromeUrl = url;
+          return { id: 42, url };
+        },
+      },
+    };
+    const chromeAgent = new AgentCh({});
+    for (const url of unsafeUrls) {
+      const result = await chromeAgent.executeTool(42, 'navigate', { url, force: true });
+      assert.equal(result.success, false, `chrome should reject ${url}`);
+      assert.equal(result.dispatched, false);
+      assert.equal(result.noDispatch, true);
+      assert.match(result.error, /Only http:\/\/ and https:\/\//);
+    }
+    assert.deepEqual(chromeUpdates, [], 'Chrome must reject unsafe schemes before tabs.update');
+
+    const chromeMalformed = await chromeAgent.executeTool(42, 'navigate', {
+      url: 'https://',
+      force: true,
+    });
+    assert.equal(chromeMalformed.success, false);
+    assert.equal(chromeMalformed.dispatched, false);
+    assert.equal(chromeMalformed.noDispatch, true);
+    assert.match(chromeMalformed.error, /invalid URL/);
+    assert.deepEqual(chromeUpdates, [], 'Chrome must reject malformed URLs before tabs.update');
+
+    const chromeRelative = await chromeAgent.executeTool(42, 'navigate', { url: '/next', force: true });
+    assert.equal(chromeRelative.success, true);
+    assert.equal(chromeUpdates.at(-1), 'https://trusted.example/next');
+    assert.equal(chromeRelative.requestedUrl, '/next');
+
+    const chromeHttps = await chromeAgent.executeTool(42, 'navigate', {
+      url: 'https://safe.example/path',
+      force: true,
+    });
+    assert.equal(chromeHttps.success, true);
+    assert.equal(chromeUpdates.at(-1), 'https://safe.example/path');
+
+    const chromeBareHost = await chromeAgent.executeTool(42, 'navigate', {
+      url: 'https://mastodon.turk',
+      force: true,
+    });
+    assert.equal(chromeBareHost.success, true);
+    assert.equal(chromeBareHost.url, 'https://mastodon.turk/');
+    assert.equal(chromeBareHost.requestedUrl, 'https://mastodon.turk');
+
+    const chromeRejected = await chromeAgent.executeTool(42, 'navigate', {
+      url: 'https://reject.example/',
+      force: true,
+    });
+    assert.equal(chromeRejected.success, false);
+    assert.equal(chromeRejected.dispatched, false);
+    assert.equal(chromeRejected.noDispatch, true);
+    assert.match(chromeRejected.error, /synthetic Chrome rejection/);
+
+    let firefoxUrl = 'https://trusted.example/base/page';
+    const firefoxUpdates = [];
+    globalThis.browser = {
+      tabs: {
+        async get() {
+          return { id: 42, url: firefoxUrl };
+        },
+        async update(_tabId, { url }) {
+          firefoxUpdates.push(url);
+          if (url === 'https://reject.example/') throw new Error('synthetic Firefox rejection');
+          firefoxUrl = url;
+          return { id: 42, url };
+        },
+      },
+    };
+    const firefoxAgent = new AgentFx({});
+    for (const url of unsafeUrls) {
+      const result = await firefoxAgent.executeTool(42, 'navigate', { url, force: true });
+      assert.equal(result.success, false, `firefox should reject ${url}`);
+      assert.equal(result.dispatched, false);
+      assert.equal(result.noDispatch, true);
+      assert.match(result.error, /Only http:\/\/ and https:\/\//);
+    }
+    assert.deepEqual(firefoxUpdates, [], 'Firefox must reject unsafe schemes before tabs.update');
+
+    const firefoxMalformed = await firefoxAgent.executeTool(42, 'navigate', {
+      url: 'https://',
+      force: true,
+    });
+    assert.equal(firefoxMalformed.success, false);
+    assert.equal(firefoxMalformed.dispatched, false);
+    assert.equal(firefoxMalformed.noDispatch, true);
+    assert.match(firefoxMalformed.error, /invalid URL/);
+    assert.deepEqual(firefoxUpdates, [], 'Firefox must reject malformed URLs before tabs.update');
+
+    const firefoxRelative = await firefoxAgent.executeTool(42, 'navigate', { url: '/next', force: true });
+    assert.equal(firefoxRelative.success, true);
+    assert.equal(firefoxUpdates.at(-1), 'https://trusted.example/next');
+    assert.equal(firefoxRelative.requestedUrl, '/next');
+
+    const firefoxProtocolRelative = await firefoxAgent.executeTool(42, 'navigate', {
+      url: '//cdn.example/a',
+      force: true,
+    });
+    assert.equal(firefoxProtocolRelative.success, true);
+    assert.equal(firefoxUpdates.at(-1), 'https://cdn.example/a');
+    assert.equal(firefoxProtocolRelative.requestedUrl, '//cdn.example/a');
+
+    const firefoxHttps = await firefoxAgent.executeTool(42, 'navigate', {
+      url: 'https://safe.example/path',
+      force: true,
+    });
+    assert.equal(firefoxHttps.success, true);
+    assert.equal(firefoxUpdates.at(-1), 'https://safe.example/path');
+
+    const firefoxRejected = await firefoxAgent.executeTool(42, 'navigate', {
+      url: 'https://reject.example/',
+      force: true,
+    });
+    assert.equal(firefoxRejected.success, false);
+    assert.equal(firefoxRejected.dispatched, false);
+    assert.equal(firefoxRejected.noDispatch, true);
+    assert.match(firefoxRejected.error, /synthetic Firefox rejection/);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+  }
 });
 
 test('navigation host resolves relative / protocol-relative against current page', () => {
