@@ -1305,12 +1305,17 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
   const originalAttach = cdpClientCh.attach;
   const originalClickElement = cdpClientCh.clickElement;
   const messages = [];
+  let trustedClickCompletedAt = 0;
   try {
     globalThis.chrome = {
       runtime: {},
       tabs: {
         async sendMessage(_tabId, message) {
           messages.push(message);
+          assert.ok(
+            Date.now() - trustedClickCompletedAt >= 70,
+            'trusted checkbox verification must wait for controlled state reconciliation',
+          );
           return {
             success: true,
             method: 'set_checked',
@@ -1330,6 +1335,7 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
     cdpClientCh.clickElement = async (_tabId, selector, options) => {
       clickedSelector = selector;
       assert.deepEqual(options, { trustedOnly: true });
+      trustedClickCompletedAt = Date.now();
       return { success: true, method: 'cdp-mouse', rect: { x: 1, y: 2, w: 20, h: 20 } };
     };
 

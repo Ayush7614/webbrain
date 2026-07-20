@@ -64,6 +64,7 @@ const DEFAULT_INPUT_COST_PER_MILLION_USD = 3;
 const DEFAULT_OUTPUT_COST_PER_MILLION_USD = 15;
 const DONE_OUTCOMES = new Set(['success', 'partial', 'failed']);
 const BROWSER_NEW_TAB_URL_PREFIXES = ['chrome://newtab', 'edge://newtab'];
+const SET_CHECKED_VERIFY_DELAY_MS = 80;
 
 function normalizeDoneOutcome(value) {
   const outcome = String(value || '').trim().toLowerCase();
@@ -10530,6 +10531,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       clickError = error;
     }
 
+    const clickDispatched = clickResult?.dispatched === true || clickResult?.success === true;
+    if (clickDispatched) {
+      await new Promise(resolve => setTimeout(resolve, SET_CHECKED_VERIFY_DELAY_MS));
+    }
+
     let verified = null;
     try {
       verified = await chrome.tabs.sendMessage(tabId, {
@@ -10552,7 +10558,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const stateMatches = checkedAfter === args.checked;
     const success = trustedClickSucceeded && stateMatches;
     const checkboxIdentity = verified?.checkboxIdentity || response.checkboxIdentity;
-    const clickDispatched = clickResult?.dispatched === true || clickResult?.success === true;
     return {
       ...response,
       ...(verified || {}),

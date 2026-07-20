@@ -1407,6 +1407,26 @@ for (const browserKind of ['chrome', 'firefox']) {
       throw new Error(`set_checked repeated action was not idempotent: ${JSON.stringify(idempotent)}`);
     }
   });
+
+  test(`click_ax (${browserKind}): an already-selected radio keeps desired checked state`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });
+    const match = String(tree?.pageContent || '').match(/radio "Selected channel" \[(ref_\d+)\][^\n]*checked=true/);
+    if (!match) throw new Error(`expected selected radio state in AX tree: ${tree?.pageContent}`);
+
+    const result = await call(page, 'click_ax', { ref_id: match[1] });
+    if (
+      result?.success !== true
+      || result.checkedBefore !== true
+      || result.checkedAfter !== true
+      || result.checkedChanged !== false
+      || result.desiredChecked !== true
+      || result.checkboxState?.desiredChecked !== true
+      || result.checkboxState?.actualChecked !== true
+    ) {
+      throw new Error(`selected radio was represented as needing an uncheck: ${JSON.stringify(result)}`);
+    }
+  });
 }
 
 test('set_checked (firefox): waits for controlled checkbox reconciliation before verifying', async (page) => {

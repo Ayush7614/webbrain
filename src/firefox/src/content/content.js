@@ -2938,7 +2938,7 @@
               ...(filePickerGuard.guardId ? { _filePickerGuardId: filePickerGuard.guardId } : {}),
             };
             if (nativeCheckable) {
-              const desiredChecked = !checkedBefore;
+              const desiredChecked = inputType === 'radio' ? true : !checkedBefore;
               const checkboxIdentity = _axCheckboxIdentity(el, ref_id);
               resp.checkedBefore = checkedBefore;
               resp.checkedAfter = checkedAfter;
