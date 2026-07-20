@@ -783,7 +783,7 @@ export const AGENT_TOOLS = [
           body: { type: 'string', description: 'Optional request body for POST/PUT' },
           replayRequestId: { type: 'string', description: 'Optional opaque id from a bulk API mutation hint. Reuses captured same-origin XHR/fetch body and safe headers without exposing hidden form tokens.' },
           offset: { type: 'number', description: 'Character offset for text/JSON pagination. Default 0; continue with the returned nextOffset.' },
-          maxChars: { type: 'number', description: 'Maximum text/JSON characters to return. Default 6000, clamped to 1000..7000.' },
+          maxChars: { type: 'number', description: 'Maximum text/JSON characters to return. Default 7000, clamped to 1000..7000.' },
           find: { type: 'string', description: 'Optional case-insensitive literal search across the full decoded text/JSON response. Returns bounded matches with line and character offsets instead of a text window.' },
         },
         required: ['url'],
