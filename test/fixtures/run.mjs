@@ -1409,6 +1409,34 @@ for (const browserKind of ['chrome', 'firefox']) {
   });
 }
 
+test('set_checked (firefox): waits for controlled checkbox reconciliation before verifying', async (page) => {
+  await setupContentFixture(page, 'trusted-click-fallback.html', 'firefox');
+  const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });
+  const match = String(tree?.pageContent || '').match(/checkbox "Firefox compatibility" \[(ref_\d+)\][^\n]*checked=false/);
+  if (!match) throw new Error(`expected Firefox checkbox ref in AX tree: ${tree?.pageContent}`);
+
+  await page.evaluate(() => {
+    const checkbox = document.getElementById('firefox-checkbox');
+    checkbox.addEventListener('click', () => {
+      setTimeout(() => {
+        checkbox.checked = false;
+      }, 0);
+    }, { once: true });
+  });
+
+  const result = await call(page, 'set_checked', { ref_id: match[1], checked: true });
+  if (
+    result?.success !== false
+    || result.dispatched !== true
+    || result.checkedBefore !== false
+    || result.checkedAfter !== false
+    || result.verified !== false
+    || result.noProgress !== true
+  ) {
+    throw new Error(`Firefox set_checked verified before controlled rollback settled: ${JSON.stringify(result)}`);
+  }
+});
+
 for (const browserKind of ['chrome', 'firefox']) {
   test(`click_ax (${browserKind}): aria-labelledby action returns bounded nearest card context`, async (page) => {
     await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
@@ -1619,13 +1647,17 @@ test('set_checked: Agent.executeTool uses one trusted selector click and then be
     };
     let trustedClicks = 0;
     cdpClient.attach = async () => ({ attached: true });
-    cdpClient.clickElement = async (_tabId, selector) => {
+    cdpClient.clickElement = async (_tabId, selector, options) => {
+      if (options?.trustedOnly !== true) {
+        throw new Error(`expected trusted-only checkbox click, got: ${JSON.stringify(options)}`);
+      }
       trustedClicks += 1;
       const locator = page.locator(selector);
       const box = await locator.boundingBox();
       await locator.click();
       return {
         success: true,
+        method: 'cdp-mouse',
         rect: box ? {
           x: Math.round(box.x),
           y: Math.round(box.y),

@@ -1327,9 +1327,10 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
     };
     let clickedSelector = '';
     cdpClientCh.attach = async () => ({ attached: true });
-    cdpClientCh.clickElement = async (_tabId, selector) => {
+    cdpClientCh.clickElement = async (_tabId, selector, options) => {
       clickedSelector = selector;
-      return { success: true, rect: { x: 1, y: 2, w: 20, h: 20 } };
+      assert.deepEqual(options, { trustedOnly: true });
+      return { success: true, method: 'cdp-mouse', rect: { x: 1, y: 2, w: 20, h: 20 } };
     };
 
     const agent = new AgentCh({});
@@ -1361,6 +1362,64 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
     assert.equal(response.checkboxState.actualChecked, true);
     assert.equal(response.marker, undefined);
     assert.equal(response.trustedSelector, undefined);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
+test('Chrome set_checked rejects successful untrusted click fallbacks', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage() {
+          return {
+            success: true,
+            method: 'set_checked',
+            ref_id: 'ref_9',
+            checkedBefore: false,
+            checkedAfter: true,
+            desiredChecked: true,
+            checkboxIdentity: 'id:firefox',
+            selector: '#firefox',
+          };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: true,
+      method: 'js-click',
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_9', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-9',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-9"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_9', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, false);
+    assert.equal(response.trusted, false);
+    assert.equal(response.dispatched, true);
+    assert.notEqual(response.noDispatch, true);
+    assert.equal(response.verified, false);
+    assert.match(response.error, /did not use CDP mouse input/);
   } finally {
     cdpClientCh.attach = originalAttach;
     cdpClientCh.clickElement = originalClickElement;
@@ -1417,7 +1476,7 @@ test('Chrome set_checked preserves partial trusted click dispatch on failure', a
     assert.equal(response.success, false);
     assert.equal(response.dispatched, true);
     assert.notEqual(response.noDispatch, true);
-    assert.equal(response.trusted, true);
+    assert.equal(response.trusted, false);
     assert.equal(response.noProgress, true);
     assert.match(response.error, /mouse release failed after press/);
     assert.equal(
@@ -16575,6 +16634,29 @@ test('Chrome selector click distinguishes pre-dispatch failure from uncertain di
   assert.equal(uncertain.success, false);
   assert.equal(uncertain.dispatched, true, 'a mousePressed attempt must fail closed when later fallback also fails');
 
+  client.resolveSelector = async () => ({
+    inViewport: false,
+    hitOk: false,
+    nodeId: 99,
+    x: 10,
+    y: 20,
+    width: 30,
+    height: 40,
+    tag: 'INPUT',
+    type: 'checkbox',
+  });
+  let trustedOnlyFallbackCalls = 0;
+  client.evaluate = async () => {
+    trustedOnlyFallbackCalls++;
+    return { result: { value: { success: true, method: 'js-click' } } };
+  };
+  const trustedOnly = await client.clickElement(42, '#trusted-checkbox', { trustedOnly: true });
+  assert.equal(trustedOnly.success, false);
+  assert.equal(trustedOnly.dispatched, false);
+  assert.equal(trustedOnly.noDispatch, true);
+  assert.equal(trustedOnly.trusted, false);
+  assert.equal(trustedOnlyFallbackCalls, 0, 'trusted-only clicks must not invoke DOM/JS fallbacks');
+
   const source = fs.readFileSync(path.join(ROOT, 'src/chrome/src/cdp/cdp-client.js'), 'utf8');
   assert.match(
     source,
@@ -23804,6 +23886,53 @@ test('unchanged failed-submit state permits one verify_form then directs checkbo
     const corrected = agent._applyVerifyFormRecovery(tabId, makeResult(), correctedStates);
     assert.equal(corrected.formValidationRecovery, undefined);
     assert.equal(agent._formValidationBlocks.has(tabId), false, `${AgentClass.name}: changed form state should clear recovery block`);
+  }
+});
+
+test('unchanged non-checkbox validation failures do not invent checkbox recovery', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5121;
+    const states = [{
+      frameId: 0,
+      url: 'https://example.com/profile',
+      activeInvalid: true,
+      invalidFields: [{
+        label: 'Display name',
+        type: 'text',
+        message: 'Please fill out this field.',
+      }],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'display-name:',
+    }];
+    const block = {
+      stateKey: agent._formValidationStateKey(states),
+      actionKey: 'click|save',
+      invalidFields: states[0].invalidFields,
+      validationMessages: [states[0].invalidFields[0].message],
+      verifyFormCount: 0,
+    };
+    agent._formValidationBlocks.set(tabId, block);
+    const makeResult = () => ({
+      success: true,
+      found: true,
+      fields: [{
+        name: 'display_name',
+        id: 'display-name',
+        selector: '#display-name',
+        type: 'text',
+        value: '',
+      }],
+    });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
+      assert.equal(result.success, true, `${AgentClass.name}: ordinary verify_form result should remain unchanged`);
+      assert.equal(result.formValidationRecovery, undefined);
+      assert.equal(result.blockedValidationVerifyRepeat, undefined);
+    }
+    assert.equal(block.verifyFormCount, 0, `${AgentClass.name}: non-checkbox validation must not consume checkbox recovery`);
   }
 });
 

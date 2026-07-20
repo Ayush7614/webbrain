@@ -5054,7 +5054,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return result;
     }
 
-    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
+    const hasCheckboxFailure = (Array.isArray(block.invalidFields) ? block.invalidFields : [])
+      .some(field => String(field?.type || '').toLowerCase() === 'checkbox');
+    if (!hasCheckboxFailure) return result;
+
     const uncheckedCheckboxes = (Array.isArray(result.fields) ? result.fields : [])
       .filter(field => field?.type === 'checkbox' && field.checked === false)
       .map(field => ({
@@ -5063,6 +5066,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         selector: field.selector || '',
         checked: false,
       }));
+    if (uncheckedCheckboxes.length === 0) return result;
+
+    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
     result.formValidationRecovery = {
       stateUnchanged: true,
       verifyFormCount: block.verifyFormCount,

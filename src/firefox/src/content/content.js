@@ -3030,7 +3030,7 @@
           return failure(e && e.message || String(e));
         }
       },
-      'set_checked': () => {
+      'set_checked': async () => {
         let dispatched = false;
         const failure = (error, extra = {}) => ({
           success: false,
@@ -3101,6 +3101,7 @@
           }
           dispatched = true;
           el.click();
+          await new Promise(resolve => setTimeout(resolve, SET_FIELD_VERIFY_DELAY_MS));
           const checkedAfter = !!el.checked;
           const success = checkedAfter === checked;
           return {

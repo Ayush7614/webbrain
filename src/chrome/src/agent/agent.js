@@ -5804,7 +5804,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return result;
     }
 
-    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
+    const hasCheckboxFailure = (Array.isArray(block.invalidFields) ? block.invalidFields : [])
+      .some(field => String(field?.type || '').toLowerCase() === 'checkbox');
+    if (!hasCheckboxFailure) return result;
+
     const uncheckedCheckboxes = (Array.isArray(result.fields) ? result.fields : [])
       .filter(field => field?.type === 'checkbox' && field.checked === false)
       .map(field => ({
@@ -5813,6 +5816,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         selector: field.selector || '',
         checked: false,
       }));
+    if (uncheckedCheckboxes.length === 0) return result;
+
+    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
     result.formValidationRecovery = {
       stateUnchanged: true,
       verifyFormCount: block.verifyFormCount,
@@ -10510,12 +10516,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const marker = String(response.marker || '');
     let clickResult = null;
     let clickError = null;
+    let trustedClickSucceeded = false;
     try {
       if (!trustedSelector) throw new Error('Checkbox preflight did not return a trusted selector');
       await cdpClient.attach(tabId);
-      clickResult = await cdpClient.clickElement(tabId, trustedSelector);
-      if (clickResult?.success === false) {
-        throw new Error(clickResult.error || 'Trusted selector click failed');
+      clickResult = await cdpClient.clickElement(tabId, trustedSelector, { trustedOnly: true });
+      trustedClickSucceeded = clickResult?.success === true
+        && (clickResult.method === 'cdp-mouse' || clickResult.method === 'cdp-mouse-closed-shadow');
+      if (!trustedClickSucceeded) {
+        throw new Error(clickResult?.error || 'Trusted selector click did not use CDP mouse input');
       }
     } catch (error) {
       clickError = error;
@@ -10540,7 +10549,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const checkedAfter = typeof verified?.checkedAfter === 'boolean'
       ? verified.checkedAfter
       : response.checkedAfter;
-    const success = checkedAfter === args.checked;
+    const stateMatches = checkedAfter === args.checked;
+    const success = trustedClickSucceeded && stateMatches;
     const checkboxIdentity = verified?.checkboxIdentity || response.checkboxIdentity;
     const clickDispatched = clickResult?.dispatched === true || clickResult?.success === true;
     return {
@@ -10549,7 +10559,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       success,
       dispatched: clickDispatched,
       noDispatch: clickDispatched ? undefined : true,
-      trusted: clickDispatched,
+      trusted: trustedClickSucceeded,
       verified: success,
       needsTrustedClick: false,
       checkedBefore: response.checkedBefore,
@@ -10572,7 +10582,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         error: undefined,
       } : {
         noProgress: true,
-        error: `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after one trusted selector click${clickError ? `: ${clickError.message || clickError}` : '.'}`,
+        error: clickError
+          ? `Trusted checkbox click did not complete: ${clickError.message || clickError}`
+          : `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after one trusted selector click.`,
       }),
     };
   }
