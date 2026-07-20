@@ -3,6 +3,7 @@ const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const DIRECT_ACTION_TOOLS = new Set([
   'click',
   'click_ax',
+  'set_checked',
   'iframe_click',
   'drag_drop',
   'type_text',

@@ -772,6 +772,23 @@ class LoopDetectorShim {
     if (result?.nonRetryableScope) {
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
     }
+    const checkboxState = result?.checkboxState;
+    if (
+      checkboxState
+      && typeof checkboxState.desiredChecked === 'boolean'
+      && typeof checkboxState.actualChecked === 'boolean'
+      && checkboxState.desiredChecked !== checkboxState.actualChecked
+    ) {
+      const identity = String(
+        checkboxState.identity
+        || result.checkboxIdentity
+        || result.ref_id
+        || '',
+      ).trim().slice(0, 240);
+      if (identity) {
+        return `checkbox|${identity}|desired:${checkboxState.desiredChecked}|actual:${checkboxState.actualChecked}`;
+      }
+    }
     // Mirror agent.js: URL-family tools bucket by resource identity so
     // the agent can't escape loop detection by fetching the same file
     // via 8 different API endpoints. Falls back to exact JSON for other
@@ -812,6 +829,11 @@ class LoopDetectorShim {
     if (result?.nonRetryable) {
       const repeats = buf.filter(entry => entry.key === key).length;
       if (repeats >= 2) return { kind: 'stop' };
+    }
+    if (key.startsWith('checkbox|')) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 3) return { kind: 'stop' };
+      if (repeats >= 2) return { kind: 'nudge' };
     }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
@@ -1260,9 +1282,90 @@ console.log('\nagent tool classifications');
 
 test('ref-id action tools are state changes in both browser agents', () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
-    for (const name of ['click_ax', 'type_ax', 'set_field']) {
+    for (const name of ['click_ax', 'set_checked', 'type_ax', 'set_field']) {
       assert.equal(AgentClass.STATE_CHANGE_TOOLS.has(name), true, `${label} missing ${name} from STATE_CHANGE_TOOLS`);
     }
+  }
+});
+
+test('set_checked is exposed and permission-gated as a click in both browser agents', () => {
+  for (const [label, getTools, capabilityFn, Capabilities] of [
+    ['chrome', getToolsForModeCh, capabilityForCh, CapabilityCh],
+    ['firefox', getToolsForModeFx, capabilityFor, Capability],
+  ]) {
+    const tool = getTools('act').find(item => item.function.name === 'set_checked');
+    assert.ok(tool, `${label}: set_checked tool is missing`);
+    assert.deepEqual(tool.function.parameters.required, ['ref_id', 'checked']);
+    assert.equal(capabilityFn('set_checked', { ref_id: 'ref_1', checked: true }), Capabilities.CLICK);
+  }
+});
+
+test('Chrome set_checked completes one selector-backed trusted click and verifies state', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  const messages = [];
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage(_tabId, message) {
+          messages.push(message);
+          return {
+            success: true,
+            method: 'set_checked',
+            ref_id: 'ref_7',
+            checkedBefore: true,
+            checkedAfter: true,
+            desiredChecked: true,
+            checkboxIdentity: 'form:/submit|name:apps|value:firefox',
+            selector: '#firefox',
+            rect: { x: 1, y: 2, w: 20, h: 20 },
+          };
+        },
+      },
+    };
+    let clickedSelector = '';
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async (_tabId, selector) => {
+      clickedSelector = selector;
+      return { success: true, rect: { x: 1, y: 2, w: 20, h: 20 } };
+    };
+
+    const agent = new AgentCh({});
+    const response = await agent._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_7', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-7',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-7"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'form:/submit|name:apps|value:firefox',
+      },
+      { ref_id: 'ref_7', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(clickedSelector, '[data-webbrain-set-checked-target="marker-7"]');
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].params.cleanupMarker, 'marker-7');
+    assert.equal(response.success, true);
+    assert.equal(response.trusted, true);
+    assert.equal(response.verified, true);
+    assert.equal(response.checkedBefore, false);
+    assert.equal(response.checkedAfter, true);
+    assert.equal(response.changed, true);
+    assert.equal(response.checkboxState.actualChecked, true);
+    assert.equal(response.marker, undefined);
+    assert.equal(response.trustedSelector, undefined);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
   }
 });
 
@@ -2762,6 +2865,30 @@ test('no loop for distinct calls', () => {
   assert.equal(d._checkLoop(tab, 'read_page', {}, { ok: true }).kind, 'none');
   assert.equal(d._checkLoop(tab, 'click', { selector: '#a' }, { success: true }).kind, 'none');
   assert.equal(d._checkLoop(tab, 'type_text', { text: 'hello' }, { success: true }).kind, 'none');
+});
+
+test('checkbox loop detection follows unchanged semantic state across tools and arguments', () => {
+  const d = new LoopDetectorShim();
+  const tab = 101;
+  const unchanged = {
+    success: false,
+    noProgress: true,
+    checkboxState: {
+      identity: 'form:/submit|name:compatible_apps|value:firefox',
+      desiredChecked: true,
+      actualChecked: false,
+    },
+  };
+  assert.equal(d._checkLoop(tab, 'click_ax', { ref_id: 'ref_8' }, unchanged).kind, 'none');
+  assert.equal(d._checkLoop(tab, 'set_checked', { ref_id: 'ref_8', checked: true }, unchanged).kind, 'nudge');
+  assert.equal(d._checkLoop(tab, 'click', { selector: '#firefox' }, unchanged).kind, 'stop');
+
+  const other = new LoopDetectorShim();
+  assert.equal(other._checkLoop(tab, 'click_ax', { ref_id: 'ref_8' }, unchanged).kind, 'none');
+  assert.equal(other._checkLoop(tab, 'set_checked', { ref_id: 'ref_9', checked: true }, {
+    ...unchanged,
+    checkboxState: { ...unchanged.checkboxState, identity: 'form:/submit|name:compatible_apps|value:android' },
+  }).kind, 'none');
 });
 
 test('three identical calls trigger nudge', () => {
@@ -7027,7 +7154,7 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     assert.equal(mid.includes('clarify'), true, `[${label}] mid act should expose clarify`);
     assert.equal(full.includes('clarify'), true, `[${label}] full act should expose clarify`);
 
-    for (const name of ['click_ax', 'type_ax', 'set_field', 'click', 'type_text', 'press_keys', 'navigate', 'wait_for_element', 'new_tab', 'scratchpad_write', 'progress_update', 'progress_read']) {
+    for (const name of ['click_ax', 'set_checked', 'type_ax', 'set_field', 'click', 'type_text', 'press_keys', 'navigate', 'wait_for_element', 'new_tab', 'scratchpad_write', 'progress_update', 'progress_read']) {
       assert.equal(ask.includes(name), false, `[${label}] ask should not expose action tool ${name}`);
       assert.equal(compact.includes(name), true, `[${label}] compact act should expose ${name}`);
       assert.equal(mid.includes(name), true, `[${label}] mid act should expose ${name}`);
@@ -23534,6 +23661,68 @@ test('form validation classifier surfaces native and custom submission errors', 
     });
     assert.notEqual(failedExecuteJsKey, correctedExecuteJsKey, `${AgentClass.name}: corrected execute_js kept the failed retry key`);
     assert.doesNotMatch(failedExecuteJsKey, /requestSubmit/, `${AgentClass.name}: execute_js retry key retained raw code`);
+  }
+});
+
+test('unchanged failed-submit state permits one verify_form then directs checkbox recovery', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5120;
+    const states = [{
+      frameId: 0,
+      url: 'https://addons.mozilla.org/en-US/developers/addon/webbrain/versions/submit/',
+      activeInvalid: true,
+      invalidFields: [{
+        label: 'Firefox',
+        type: 'checkbox',
+        message: 'Your extension has to be compatible with at least one application.',
+      }],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'firefox:false',
+    }];
+    agent._formValidationBlocks.set(tabId, {
+      stateKey: agent._formValidationStateKey(states),
+      actionKey: 'click|continue',
+      invalidFields: states[0].invalidFields,
+      validationMessages: [states[0].invalidFields[0].message],
+      verifyFormCount: 0,
+    });
+    const makeResult = () => ({
+      success: true,
+      found: true,
+      fields: [{
+        name: 'compatible_apps',
+        id: 'firefox',
+        selector: '#firefox',
+        type: 'checkbox',
+        value: '(unchecked)',
+        checked: false,
+      }],
+    });
+
+    const first = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
+    assert.equal(first.success, true, `${AgentClass.name}: first verify_form should remain usable`);
+    assert.equal(first.formValidationRecovery.stateUnchanged, true);
+    assert.equal(first.formValidationRecovery.verifyFormCount, 1);
+    assert.equal(first.formValidationRecovery.nextTool, 'set_checked');
+    assert.deepEqual(first.formValidationRecovery.uncheckedCheckboxes, [{
+      name: 'compatible_apps',
+      id: 'firefox',
+      selector: '#firefox',
+      checked: false,
+    }]);
+
+    const repeated = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
+    assert.equal(repeated.success, false, `${AgentClass.name}: unchanged second verify_form should be blocked`);
+    assert.equal(repeated.noProgress, true);
+    assert.equal(repeated.blockedValidationVerifyRepeat, true);
+    assert.match(repeated.error, /set_checked/);
+
+    const correctedStates = [{ ...states[0], controlFingerprint: 'firefox:true' }];
+    const corrected = agent._applyVerifyFormRecovery(tabId, makeResult(), correctedStates);
+    assert.equal(corrected.formValidationRecovery, undefined);
+    assert.equal(agent._formValidationBlocks.has(tabId), false, `${AgentClass.name}: changed form state should clear recovery block`);
   }
 });
 

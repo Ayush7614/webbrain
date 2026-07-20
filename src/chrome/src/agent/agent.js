@@ -790,6 +790,23 @@ export class Agent {
       // the stop condition.
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
     }
+    const checkboxState = result?.checkboxState;
+    if (
+      checkboxState
+      && typeof checkboxState.desiredChecked === 'boolean'
+      && typeof checkboxState.actualChecked === 'boolean'
+      && checkboxState.desiredChecked !== checkboxState.actualChecked
+    ) {
+      const identity = String(
+        checkboxState.identity
+        || result.checkboxIdentity
+        || result.ref_id
+        || '',
+      ).trim().slice(0, 240);
+      if (identity) {
+        return `checkbox|${identity}|desired:${checkboxState.desiredChecked}|actual:${checkboxState.actualChecked}`;
+      }
+    }
     // URL-family tools (fetch_url, research_url, …) bucket by resource
     // identity so the agent can't escape loop detection by fetching the
     // same logical file via 8 different API endpoints. See loop-bucket.js.
@@ -1793,6 +1810,22 @@ export class Agent {
         };
       }
     }
+    if (key.startsWith('checkbox|')) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 3) {
+        this._clearLoopState(tabId);
+        return {
+          kind: 'stop',
+          message: 'Stopped: the same checkbox is still in the wrong checked state after three attempts. Changing tools or arguments does not change that semantic state. Re-read the form or ask the user instead of toggling it again.',
+        };
+      }
+      if (repeats >= 2) {
+        return {
+          kind: 'nudge',
+          warning: '[CHECKBOX STATE UNCHANGED: The same checkbox is still in the wrong checked state. Do not toggle it again and do not evade this by switching tools. Call set_checked(ref_id, desiredState) once; if its trusted selector-backed attempt also fails, re-read the form or ask the user.]',
+        };
+      }
+    }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
       // Healthy, non-looping call. We don't reset the nudge counter
@@ -1853,7 +1886,7 @@ export class Agent {
   // Tools whose successful completion should trigger an auto-screenshot when
   // the corresponding mode is active.
   static NAV_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward']);
-  static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'inject_css', 'remove_injected_css', 'patch_element', 'revert_patch', 'execute_js', 'inspect_event_listeners', 'highlight_element']);
+  static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'set_checked', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'inject_css', 'remove_injected_css', 'patch_element', 'revert_patch', 'execute_js', 'inspect_event_listeners', 'highlight_element']);
   static EXECUTION_META_TOOLS = new Set(['clarify', 'scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_TOOLS = new Set(['scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_WRITE_TOOLS = new Set(['scratchpad_write', 'progress_update']);
@@ -5757,8 +5790,43 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       actionKey: failure.actionKey,
       invalidFields: failure.invalidFields,
       validationMessages: failure.validationMessages,
+      verifyFormCount: 0,
     });
     return toolResult;
+  }
+
+  _applyVerifyFormRecovery(tabId, result, currentStates) {
+    const block = this._formValidationBlocks.get(tabId);
+    if (!block || !result || typeof result !== 'object') return result;
+    const stateKey = this._formValidationStateKey(currentStates);
+    if (stateKey !== block.stateKey) {
+      this._formValidationBlocks.delete(tabId);
+      return result;
+    }
+
+    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
+    const uncheckedCheckboxes = (Array.isArray(result.fields) ? result.fields : [])
+      .filter(field => field?.type === 'checkbox' && field.checked === false)
+      .map(field => ({
+        name: field.name || '',
+        id: field.id || '',
+        selector: field.selector || '',
+        checked: false,
+      }));
+    result.formValidationRecovery = {
+      stateUnchanged: true,
+      verifyFormCount: block.verifyFormCount,
+      nextTool: 'set_checked',
+      uncheckedCheckboxes,
+      instruction: 'The form state is unchanged. Do not call verify_form again and do not toggle the checkbox. Use set_checked(ref_id, true); Chrome will use one trusted selector-backed click when a state change is needed.',
+    };
+    if (block.verifyFormCount > 1) {
+      result.success = false;
+      result.noProgress = true;
+      result.blockedValidationVerifyRepeat = true;
+      result.error = 'Blocked repeated verify_form because the form state has not changed. Correct the reported checkbox with set_checked before verifying or submitting again.';
+    }
+    return result;
   }
 
   _formValidationRetryBlockResult(block) {
@@ -10434,6 +10502,80 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return originalResponse;
   }
 
+  async _completeSetCheckedWithCdp(tabId, args, response, contentArgs) {
+    if (!response || response.success !== true || response.needsTrustedClick !== true) {
+      return response;
+    }
+    const trustedSelector = String(response.trustedSelector || '');
+    const marker = String(response.marker || '');
+    let clickResult = null;
+    let clickError = null;
+    try {
+      if (!trustedSelector) throw new Error('Checkbox preflight did not return a trusted selector');
+      await cdpClient.attach(tabId);
+      clickResult = await cdpClient.clickElement(tabId, trustedSelector);
+      if (clickResult?.success === false) {
+        throw new Error(clickResult.error || 'Trusted selector click failed');
+      }
+    } catch (error) {
+      clickError = error;
+    }
+
+    let verified = null;
+    try {
+      verified = await chrome.tabs.sendMessage(tabId, {
+        target: 'content',
+        action: 'set_checked',
+        params: {
+          ...contentArgs,
+          probeOnly: true,
+          markForTrustedClick: false,
+          cleanupMarker: marker || undefined,
+        },
+      });
+    } catch (error) {
+      if (!clickError) clickError = error;
+    }
+
+    const checkedAfter = typeof verified?.checkedAfter === 'boolean'
+      ? verified.checkedAfter
+      : response.checkedAfter;
+    const success = checkedAfter === args.checked;
+    const checkboxIdentity = verified?.checkboxIdentity || response.checkboxIdentity;
+    return {
+      ...response,
+      ...(verified || {}),
+      success,
+      dispatched: !!clickResult && clickResult.success !== false,
+      noDispatch: !clickResult || clickResult.success === false,
+      trusted: !!clickResult && clickResult.success !== false,
+      verified: success,
+      needsTrustedClick: false,
+      checkedBefore: response.checkedBefore,
+      checkedAfter,
+      desiredChecked: args.checked,
+      changed: response.checkedBefore !== checkedAfter,
+      idempotent: false,
+      checkboxIdentity,
+      checkboxState: {
+        identity: checkboxIdentity,
+        desiredChecked: args.checked,
+        actualChecked: checkedAfter,
+      },
+      selector: response.selector || verified?.selector || trustedSelector,
+      rect: verified?.rect || clickResult?.rect || response.rect,
+      marker: undefined,
+      trustedSelector: undefined,
+      ...(success ? {
+        noProgress: undefined,
+        error: undefined,
+      } : {
+        noProgress: true,
+        error: `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after one trusted selector click${clickError ? `: ${clickError.message || clickError}` : '.'}`,
+      }),
+    };
+  }
+
   async executeTool(tabId, name, args, onUpdate = null, executionContext = null) {
     if (name === 'load_skill') {
       return this._loadSkillForRun(tabId, args || {});
@@ -11536,6 +11678,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const fields = [];
             for (const el of form.querySelectorAll('input, select, textarea')) {
               const n = el.name || el.id || el.getAttribute('aria-label') || '';
+              const id = el.id || '';
+              const selector = id ? '#' + CSS.escape(id) : '';
               const t = el.type || el.tagName.toLowerCase();
               if (t === 'hidden' || t === 'submit') continue;
               let v;
@@ -11547,7 +11691,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               } else {
                 v = el.value;
               }
-              fields.push({ name: n, type: t, value: v, placeholder: el.placeholder || '' });
+              fields.push({
+                name: n,
+                id,
+                selector,
+                type: t,
+                value: v,
+                placeholder: el.placeholder || '',
+                ...((t === 'checkbox' || t === 'radio') ? { checked: !!el.checked } : {}),
+              });
             }
             return { found: true, action: form.action || '', method: form.method || 'get', fieldCount: fields.length, fields };
           })()
@@ -11581,6 +11733,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         result.success = !!result.found;
+        if (this._formValidationBlocks.has(tabId)) {
+          const currentStates = await this._captureFormValidationState(tabId);
+          this._applyVerifyFormRecovery(tabId, result, currentStates);
+        }
         return result;
       } catch (e) {
         return { success: false, error: `verify_form failed: ${e.message}` };
@@ -13824,6 +13980,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // flat indented text output with persistent WeakRef-backed ref_ids.
       'get_accessibility_tree': 'get_accessibility_tree',
       'click_ax': 'click_ax',
+      'set_checked': 'set_checked',
       'type_ax': 'type_ax',
       'set_field': 'set_field',
       'click': 'click',
@@ -13870,7 +14027,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           };
         }
         if (
-          name === 'click' || name === 'click_ax' ||
+          name === 'click' || name === 'click_ax' || name === 'set_checked' ||
           name === 'type_text' || name === 'type_ax' || name === 'set_field' ||
           name === 'press_keys' || name === 'scroll' ||
           name === 'get_accessibility_tree' || name === 'get_interactive_elements' ||
@@ -13889,7 +14046,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     } catch { /* tab lookup failures are non-fatal — fall through */ }
 
     const interactionUrl = (
-      name === 'click' || name === 'click_ax' ||
+      name === 'click' || name === 'click_ax' || name === 'set_checked' ||
       name === 'type_ax' || name === 'set_field'
     ) ? await this._currentUrl(tabId) : '';
 
@@ -13917,13 +14074,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
 
     const axScope = this._lastAxScopes.get(tabId);
-    const contentArgs = name === 'click_ax' && axScope?.documentToken
+    const contentArgs = (name === 'click_ax' || name === 'set_checked') && axScope?.documentToken
       ? {
           ...args,
           expectedDocumentToken: axScope.documentToken,
           ...(axScope.pageUrl ? { expectedPageUrl: axScope.pageUrl } : {}),
+          ...(name === 'set_checked' ? { probeOnly: true, markForTrustedClick: true } : {}),
         }
-      : args;
+      : (name === 'set_checked'
+          ? { ...args, probeOnly: true, markForTrustedClick: true }
+          : args);
 
     try {
       let response;
@@ -13966,6 +14126,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       if (name === 'click_ax') {
         response = await this._maybeFallbackClickAxWithCdp(tabId, args, response, clickAxBaseline);
+      }
+      if (name === 'set_checked') {
+        response = await this._completeSetCheckedWithCdp(tabId, args, response, contentArgs);
       }
       const observedAfterSnapshot = response?._clickAxAfterSnapshot || '';
       if (response) delete response._clickAxAfterSnapshot;
@@ -14855,7 +15018,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _recordInteractionRect(tabId, toolName, response, url = '') {
     if (!response || !response.success) return;
-    if (toolName !== 'click' && toolName !== 'click_ax' && toolName !== 'type_ax' && toolName !== 'set_field') return;
+    if (toolName !== 'click' && toolName !== 'click_ax' && toolName !== 'set_checked' && toolName !== 'type_ax' && toolName !== 'set_field') return;
     const r = response.rect;
     if (r && r.w && r.h) {
       this._lastInteractionRect.set(tabId, { x: r.x, y: r.y, w: r.w, h: r.h, ts: Date.now(), url });

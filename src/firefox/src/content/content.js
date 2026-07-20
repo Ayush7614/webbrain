@@ -925,6 +925,30 @@
       || String(el?.innerText || '').trim().slice(0, 160);
   }
 
+  function _axCheckboxIdentity(el, refId = '') {
+    try {
+      const id = String(el?.id || '').trim();
+      if (id) return `id:${id}`;
+      const name = String(el?.getAttribute?.('name') || '').trim();
+      const value = String(el?.getAttribute?.('value') || '').trim();
+      if (name) return `name:${name}|value:${value}`;
+    } catch {}
+    return `ref:${String(refId || '')}`;
+  }
+
+  function _axStableControlSelector(el) {
+    try {
+      const id = String(el?.id || '').trim();
+      if (id) {
+        const escaped = globalThis.CSS?.escape
+          ? CSS.escape(id)
+          : id.replace(/["\\]/g, '\\$&');
+        return `#${escaped}`;
+      }
+    } catch {}
+    return '';
+  }
+
   function _axDocumentToken() {
     if (!window.__wbAxDocumentToken) {
       window.__wbAxDocumentToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -2774,6 +2798,9 @@
             return failure(`ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, { suggestions });
           }
           const tag = el.tagName ? el.tagName.toLowerCase() : '';
+          const inputType = tag === 'input' ? String(el.type || '').toLowerCase() : '';
+          const nativeCheckable = inputType === 'checkbox' || inputType === 'radio';
+          const checkedBefore = nativeCheckable ? !!el.checked : null;
           const targetRole = String(el.getAttribute?.('role') || '').toLowerCase();
           const canonicalTargetName = _axCanonicalName(el);
           const targetName = canonicalTargetName || _axAccessibleName(el);
@@ -2882,6 +2909,7 @@
           rememberInteractionPoint(el, 'click_ax');
           dispatched = true;
           const filePickerGuard = clickWithoutNativeFilePicker(() => el.click());
+          const checkedAfter = nativeCheckable ? !!el.checked : null;
           if (filePickerGuard.blocked) {
             return failure(
               filePickerBlockedResponse(filePickerGuard.blocked, targetName || '').error,
@@ -2909,6 +2937,29 @@
               ...(targetContext ? { targetContext } : {}),
               ...(filePickerGuard.guardId ? { _filePickerGuardId: filePickerGuard.guardId } : {}),
             };
+            if (nativeCheckable) {
+              const desiredChecked = !checkedBefore;
+              const checkboxIdentity = _axCheckboxIdentity(el, ref_id);
+              resp.checkedBefore = checkedBefore;
+              resp.checkedAfter = checkedAfter;
+              resp.checkedChanged = checkedBefore !== checkedAfter;
+              resp.desiredChecked = desiredChecked;
+              resp.checkboxIdentity = checkboxIdentity;
+              resp.checkboxState = {
+                identity: checkboxIdentity,
+                desiredChecked,
+                actualChecked: checkedAfter,
+              };
+              if (resp.checkedChanged) {
+                resp.verified = true;
+                resp.observedEffects = ['checked_state'];
+              } else if (inputType === 'checkbox') {
+                resp.success = false;
+                resp.noProgress = true;
+                resp.verified = false;
+                resp.error = `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after click_ax. Do not toggle it again; use set_checked({ref_id: "${ref_id}", checked: ${desiredChecked}}) so the requested state is applied idempotently and verified.`;
+              }
+            }
             try {
               if (targetName) resp.name = targetName;
             } catch {}
@@ -2975,6 +3026,101 @@
             });
           }
           return buildResponse();
+        } catch (e) {
+          return failure(e && e.message || String(e));
+        }
+      },
+      'set_checked': () => {
+        let dispatched = false;
+        const failure = (error, extra = {}) => ({
+          success: false,
+          error,
+          ...extra,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+        });
+        try {
+          const { ref_id, checked, expectedDocumentToken, expectedPageUrl } = msg.params || {};
+          if (typeof ref_id !== 'string') return failure('ref_id (string, e.g. "ref_42") is required');
+          if (typeof checked !== 'boolean') return failure('checked (boolean) is required');
+          if (typeof window.__wb_ax_lookup !== 'function') return failure('accessibility-tree.js not injected');
+          const documentToken = _axDocumentToken();
+          const documentChanged = !!expectedDocumentToken && expectedDocumentToken !== documentToken;
+          const routeChanged = !!expectedPageUrl && expectedPageUrl !== location.href;
+          if (documentChanged || routeChanged) {
+            return failure(
+              `ref_id ${ref_id} belongs to a previous page or route. Re-read the accessibility tree and choose a fresh ref_id before changing the checkbox.`,
+              { staleRef: true, documentChanged, routeChanged, documentToken, refScopeUrl: location.href },
+            );
+          }
+          const el = window.__wb_ax_lookup(ref_id);
+          if (!el) return failure(`ref_id ${ref_id} not found. Re-read the accessibility tree to get a current checkbox ref_id.`);
+          const tag = el.tagName ? el.tagName.toLowerCase() : '';
+          const inputType = tag === 'input' ? String(el.type || '').toLowerCase() : '';
+          if (inputType !== 'checkbox') {
+            return failure(`set_checked only supports native input[type="checkbox"] controls; ${ref_id} resolved to ${tag || 'unknown'}${inputType ? `[type="${inputType}"]` : ''}.`);
+          }
+          try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
+          try { el.focus({ preventScroll: true }); } catch {}
+          const rect = el.getBoundingClientRect();
+          if (!el.isConnected || rect.width < 1 || rect.height < 1) {
+            return failure(`ref_id ${ref_id} is stale or not visibly rendered. Re-read the accessibility tree and retry.`);
+          }
+          const checkedBefore = !!el.checked;
+          const checkboxIdentity = _axCheckboxIdentity(el, ref_id);
+          const base = {
+            method: 'set_checked',
+            ref_id,
+            tag,
+            type: inputType,
+            name: _axAccessibleName(el),
+            checkboxIdentity,
+            desiredChecked: checked,
+            checkedBefore,
+            checkedAfter: checkedBefore,
+            changed: false,
+            verified: checkedBefore === checked,
+            rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+            selector: _axStableControlSelector(el),
+            checkboxState: {
+              identity: checkboxIdentity,
+              desiredChecked: checked,
+              actualChecked: checkedBefore,
+            },
+          };
+          if (checkedBefore === checked) {
+            return {
+              success: true,
+              dispatched: false,
+              noDispatch: true,
+              idempotent: true,
+              trusted: false,
+              ...base,
+            };
+          }
+          dispatched = true;
+          el.click();
+          const checkedAfter = !!el.checked;
+          const success = checkedAfter === checked;
+          return {
+            ...base,
+            success,
+            dispatched: true,
+            trusted: false,
+            verified: success,
+            checkedAfter,
+            changed: checkedBefore !== checkedAfter,
+            checkboxState: {
+              identity: checkboxIdentity,
+              desiredChecked: checked,
+              actualChecked: checkedAfter,
+            },
+            ...(success ? {} : {
+              noProgress: true,
+              error: `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after one synthetic click. Firefox cannot synthesize trusted pointer input for page content.`,
+            }),
+          };
         } catch (e) {
           return failure(e && e.message || String(e));
         }

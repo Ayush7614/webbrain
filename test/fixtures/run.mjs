@@ -1366,6 +1366,47 @@ for (const browserKind of ['chrome', 'firefox']) {
       }
     }
   });
+
+  test(`checkbox tools (${browserKind}): AX state and set_checked are explicit and idempotent`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });
+    const content = String(tree?.pageContent || '');
+    const match = content.match(/checkbox "Firefox compatibility" \[(ref_\d+)\][^\n]*type="checkbox"[^\n]*checked=false/);
+    if (!match) throw new Error(`expected native unchecked state in AX tree: ${content}`);
+
+    const checked = await call(page, 'click_ax', { ref_id: match[1] });
+    if (
+      checked?.success !== true
+      || checked.checkedBefore !== false
+      || checked.checkedAfter !== true
+      || checked.checkedChanged !== true
+      || checked.verified !== true
+    ) {
+      throw new Error(`click_ax did not report native checkbox transition: ${JSON.stringify(checked)}`);
+    }
+
+    const unchecked = await call(page, 'set_checked', { ref_id: match[1], checked: false });
+    if (
+      unchecked?.success !== true
+      || unchecked.checkedBefore !== true
+      || unchecked.checkedAfter !== false
+      || unchecked.changed !== true
+      || unchecked.verified !== true
+    ) {
+      throw new Error(`set_checked did not reach desired false state: ${JSON.stringify(unchecked)}`);
+    }
+
+    const idempotent = await call(page, 'set_checked', { ref_id: match[1], checked: false });
+    if (
+      idempotent?.success !== true
+      || idempotent.idempotent !== true
+      || idempotent.dispatched !== false
+      || idempotent.checkedBefore !== false
+      || idempotent.checkedAfter !== false
+    ) {
+      throw new Error(`set_checked repeated action was not idempotent: ${JSON.stringify(idempotent)}`);
+    }
+  });
 }
 
 for (const browserKind of ['chrome', 'firefox']) {
@@ -1549,6 +1590,86 @@ test('click_ax: Agent.executeTool keeps synthetic-first behavior and uses truste
     if (originalChrome === undefined) delete globalThis.chrome;
     else globalThis.chrome = originalChrome;
     await session.detach();
+  }
+});
+
+test('set_checked: Agent.executeTool uses one trusted selector click and then becomes idempotent', async (page) => {
+  await setup(page, 'trusted-click-fallback.html');
+  const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });
+  const match = String(tree?.pageContent || '').match(/checkbox "Trusted Firefox compatibility" \[(ref_\d+)\][^\n]*checked=false/);
+  if (!match) throw new Error(`expected trusted checkbox ref in AX tree: ${tree?.pageContent}`);
+
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClient.attach;
+  const originalClickElement = cdpClient.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async get(tabId) {
+          return { id: tabId, url: page.url(), title: 'Trusted checkbox fixture' };
+        },
+        async query() {
+          return [{ id: 42, url: page.url() }];
+        },
+        async sendMessage(_tabId, message) {
+          return call(page, message.action, message.params || {});
+        },
+      },
+    };
+    let trustedClicks = 0;
+    cdpClient.attach = async () => ({ attached: true });
+    cdpClient.clickElement = async (_tabId, selector) => {
+      trustedClicks += 1;
+      const locator = page.locator(selector);
+      const box = await locator.boundingBox();
+      await locator.click();
+      return {
+        success: true,
+        rect: box ? {
+          x: Math.round(box.x),
+          y: Math.round(box.y),
+          w: Math.round(box.width),
+          h: Math.round(box.height),
+        } : undefined,
+      };
+    };
+
+    const agent = new Agent({});
+    agent._isPdfTab = async () => false;
+    agent._currentUrl = async () => page.url();
+    const first = await agent.executeTool(42, 'set_checked', { ref_id: match[1], checked: true });
+    const eventsAfterFirst = await page.evaluate(() => window.__trustedCheckboxEvents);
+    if (
+      first?.success !== true
+      || first.trusted !== true
+      || first.verified !== true
+      || first.checkedBefore !== false
+      || first.checkedAfter !== true
+      || first.changed !== true
+      || first.idempotent !== false
+      || trustedClicks !== 1
+      || eventsAfterFirst.length !== 1
+      || eventsAfterFirst[0].trusted !== true
+    ) {
+      throw new Error(`trusted set_checked transition failed: ${JSON.stringify({ first, trustedClicks, eventsAfterFirst })}`);
+    }
+
+    const second = await agent.executeTool(42, 'set_checked', { ref_id: match[1], checked: true });
+    if (
+      second?.success !== true
+      || second.idempotent !== true
+      || second.dispatched !== false
+      || second.checkedAfter !== true
+      || trustedClicks !== 1
+    ) {
+      throw new Error(`idempotent set_checked repeated a click: ${JSON.stringify({ second, trustedClicks })}`);
+    }
+  } finally {
+    cdpClient.attach = originalAttach;
+    cdpClient.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
   }
 });
 

@@ -752,6 +752,23 @@ export class Agent {
       // the stop condition.
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
     }
+    const checkboxState = result?.checkboxState;
+    if (
+      checkboxState
+      && typeof checkboxState.desiredChecked === 'boolean'
+      && typeof checkboxState.actualChecked === 'boolean'
+      && checkboxState.desiredChecked !== checkboxState.actualChecked
+    ) {
+      const identity = String(
+        checkboxState.identity
+        || result.checkboxIdentity
+        || result.ref_id
+        || '',
+      ).trim().slice(0, 240);
+      if (identity) {
+        return `checkbox|${identity}|desired:${checkboxState.desiredChecked}|actual:${checkboxState.actualChecked}`;
+      }
+    }
     // URL-family tools (fetch_url, research_url, …) bucket by resource
     // identity so the agent can't escape loop detection by fetching the
     // same logical file via 8 different API endpoints. See loop-bucket.js.
@@ -1576,6 +1593,22 @@ export class Agent {
         };
       }
     }
+    if (key.startsWith('checkbox|')) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 3) {
+        this._clearLoopState(tabId);
+        return {
+          kind: 'stop',
+          message: 'Stopped: the same checkbox is still in the wrong checked state after three attempts. Changing tools or arguments does not change that semantic state. Re-read the form or ask the user instead of toggling it again.',
+        };
+      }
+      if (repeats >= 2) {
+        return {
+          kind: 'nudge',
+          warning: '[CHECKBOX STATE UNCHANGED: The same checkbox is still in the wrong checked state. Do not toggle it again and do not evade this by switching tools. Call set_checked(ref_id, desiredState) once; if that verified attempt also fails, re-read the form or ask the user.]',
+        };
+      }
+    }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
       // Healthy run — reset nudges only after a sustained streak.
@@ -1626,7 +1659,7 @@ export class Agent {
   }
 
   static NAV_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward']);
-  static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'execute_js']);
+  static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'set_checked', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'execute_js']);
   static EXECUTION_META_TOOLS = new Set(['clarify', 'scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_TOOLS = new Set(['scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_WRITE_TOOLS = new Set(['scratchpad_write', 'progress_update']);
@@ -5007,8 +5040,43 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       actionKey: failure.actionKey,
       invalidFields: failure.invalidFields,
       validationMessages: failure.validationMessages,
+      verifyFormCount: 0,
     });
     return toolResult;
+  }
+
+  _applyVerifyFormRecovery(tabId, result, currentStates) {
+    const block = this._formValidationBlocks.get(tabId);
+    if (!block || !result || typeof result !== 'object') return result;
+    const stateKey = this._formValidationStateKey(currentStates);
+    if (stateKey !== block.stateKey) {
+      this._formValidationBlocks.delete(tabId);
+      return result;
+    }
+
+    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
+    const uncheckedCheckboxes = (Array.isArray(result.fields) ? result.fields : [])
+      .filter(field => field?.type === 'checkbox' && field.checked === false)
+      .map(field => ({
+        name: field.name || '',
+        id: field.id || '',
+        selector: field.selector || '',
+        checked: false,
+      }));
+    result.formValidationRecovery = {
+      stateUnchanged: true,
+      verifyFormCount: block.verifyFormCount,
+      nextTool: 'set_checked',
+      uncheckedCheckboxes,
+      instruction: 'The form state is unchanged. Do not call verify_form again and do not toggle the checkbox. Use set_checked(ref_id, true) once, then submit only after checkedAfter is true.',
+    };
+    if (block.verifyFormCount > 1) {
+      result.success = false;
+      result.noProgress = true;
+      result.blockedValidationVerifyRepeat = true;
+      result.error = 'Blocked repeated verify_form because the form state has not changed. Correct the reported checkbox with set_checked before verifying or submitting again.';
+    }
+    return result;
   }
 
   _formValidationRetryBlockResult(block) {
@@ -10494,6 +10562,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const fields = [];
             for (const el of form.querySelectorAll('input, select, textarea')) {
               const n = el.name || el.id || el.getAttribute('aria-label') || '';
+              const id = el.id || '';
+              const selector = id ? '#' + CSS.escape(id) : '';
               const t = el.type || el.tagName.toLowerCase();
               if (t === 'hidden' || t === 'submit') continue;
               let v;
@@ -10505,7 +10575,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               } else {
                 v = el.value;
               }
-              fields.push({ name: n, type: t, value: v, placeholder: el.placeholder || '' });
+              fields.push({
+                name: n,
+                id,
+                selector,
+                type: t,
+                value: v,
+                placeholder: el.placeholder || '',
+                ...((t === 'checkbox' || t === 'radio') ? { checked: !!el.checked } : {}),
+              });
             }
             return { found: true, action: form.action || '', method: form.method || 'get', fieldCount: fields.length, fields };
           })()
@@ -10538,6 +10616,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         result.success = !!result.found;
+        if (this._formValidationBlocks.has(tabId)) {
+          const currentStates = await this._captureFormValidationState(tabId);
+          this._applyVerifyFormRecovery(tabId, result, currentStates);
+        }
         return result;
       } catch (e) {
         return { success: false, error: `verify_form failed: ${e.message}` };
@@ -10739,6 +10821,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       'execute_js': 'execute_js',
       'get_accessibility_tree': 'get_accessibility_tree',
       'click_ax': 'click_ax',
+      'set_checked': 'set_checked',
       'type_ax': 'type_ax',
       'set_field': 'set_field',
       // hover + drag_drop are content-script-only on Firefox (no CDP).
@@ -10803,7 +10886,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           };
         }
         if (
-          name === 'click' || name === 'click_ax' ||
+          name === 'click' || name === 'click_ax' || name === 'set_checked' ||
           name === 'type_text' || name === 'type_ax' || name === 'set_field' ||
           name === 'press_keys' || name === 'scroll' ||
           name === 'hover' || name === 'drag_drop' ||
@@ -10823,7 +10906,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     } catch { /* tab lookup failures are non-fatal — fall through */ }
 
     const axScope = this._lastAxScopes.get(tabId);
-    const contentArgs = name === 'click_ax' && axScope?.documentToken
+    const contentArgs = (name === 'click_ax' || name === 'set_checked') && axScope?.documentToken
       ? {
           ...args,
           expectedDocumentToken: axScope.documentToken,
