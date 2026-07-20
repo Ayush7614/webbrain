@@ -64,6 +64,7 @@ const DEFAULT_INPUT_COST_PER_MILLION_USD = 3;
 const DEFAULT_OUTPUT_COST_PER_MILLION_USD = 15;
 const DONE_OUTCOMES = new Set(['success', 'partial', 'failed']);
 const BROWSER_NEW_TAB_URL_PREFIXES = ['chrome://newtab', 'edge://newtab'];
+const SET_CHECKED_VERIFY_DELAY_MS = 80;
 
 function normalizeDoneOutcome(value) {
   const outcome = String(value || '').trim().toLowerCase();
@@ -800,6 +801,23 @@ export class Agent {
       // tools and URL variants, so changing fetch strategies cannot evade
       // the stop condition.
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
+    }
+    const checkboxState = result?.checkboxState;
+    if (
+      checkboxState
+      && typeof checkboxState.desiredChecked === 'boolean'
+      && typeof checkboxState.actualChecked === 'boolean'
+      && checkboxState.desiredChecked !== checkboxState.actualChecked
+    ) {
+      const identity = String(
+        checkboxState.identity
+        || result.checkboxIdentity
+        || result.ref_id
+        || '',
+      ).trim().slice(0, 240);
+      if (identity) {
+        return `checkbox|${identity}|desired:${checkboxState.desiredChecked}|actual:${checkboxState.actualChecked}`;
+      }
     }
     // URL-family tools (fetch_url, research_url, …) bucket by resource
     // identity so the agent can't escape loop detection by fetching the
@@ -1804,6 +1822,22 @@ export class Agent {
         };
       }
     }
+    if (key.startsWith('checkbox|')) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 3) {
+        this._clearLoopState(tabId);
+        return {
+          kind: 'stop',
+          message: 'Stopped: the same checkbox is still in the wrong checked state after three attempts. Changing tools or arguments does not change that semantic state. Re-read the form or ask the user instead of toggling it again.',
+        };
+      }
+      if (repeats >= 2) {
+        return {
+          kind: 'nudge',
+          warning: '[CHECKBOX STATE UNCHANGED: The same checkbox is still in the wrong checked state. Do not toggle it again and do not evade this by switching tools. Call set_checked(ref_id, desiredState) once; if its trusted selector-backed attempt also fails, re-read the form or ask the user.]',
+        };
+      }
+    }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
       // Healthy, non-looping call. We don't reset the nudge counter
@@ -1872,12 +1906,12 @@ export class Agent {
   // Tools whose successful completion should trigger an auto-screenshot when
   // the corresponding mode is active.
   static NAV_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward']);
-  static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'inject_css', 'remove_injected_css', 'patch_element', 'revert_patch', 'execute_js', 'inspect_event_listeners', 'highlight_element']);
+  static STATE_CHANGE_TOOLS = new Set(['navigate', 'new_tab', 'go_back', 'go_forward', 'click', 'click_ax', 'set_checked', 'type_text', 'type_ax', 'set_field', 'press_keys', 'scroll', 'hover', 'drag_drop', 'inject_css', 'remove_injected_css', 'patch_element', 'revert_patch', 'execute_js', 'inspect_event_listeners', 'highlight_element']);
   static EXECUTION_META_TOOLS = new Set(['clarify', 'scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_TOOLS = new Set(['scratchpad_write', 'scratchpad_read', 'progress_update', 'progress_read']);
   static EXECUTION_APP_STATE_WRITE_TOOLS = new Set(['scratchpad_write', 'progress_update']);
   static DELIVERY_OBSERVATION_TOOLS = new Set(['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'get_selection', 'scroll', 'wait_for_stable', 'wait_for_element', 'read_pdf', 'fetch_url', 'research_url', 'read_downloaded_file', 'iframe_read', 'get_window_info', 'list_downloads', 'progress_read', 'screenshot', 'get_frames', 'get_shadow_dom', 'shadow_dom_query', 'read_youtube_transcript']);
-  static NAV_PRONE_TOOLS = new Set(['click', 'click_ax', 'navigate', 'go_back', 'go_forward', 'execute_js', 'iframe_click']);
+  static NAV_PRONE_TOOLS = new Set(['click', 'click_ax', 'set_checked', 'navigate', 'go_back', 'go_forward', 'execute_js', 'iframe_click']);
   static RECOMMENDED_ACTION_FAST_PATH_IDS = new Set(['download-media', 'tweet-webbrain']);
   static RECOMMENDED_ACTION_FIRST_TOOLS = Object.freeze({
     'download-media': new Set(['screenshot']),
@@ -5670,15 +5704,41 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       });
   }
 
+  _normalizeFormValidationField(field = {}) {
+    const type = String(field?.type || '').slice(0, 40);
+    return {
+      label: String(field?.label || 'field').slice(0, 120),
+      id: String(field?.id || '').slice(0, 120),
+      name: String(field?.name || '').slice(0, 120),
+      value: /^(?:checkbox|radio)$/i.test(type)
+        ? String(field?.value || '').slice(0, 120)
+        : '',
+      type,
+      message: String(field?.message || 'Invalid value.').slice(0, 300),
+    };
+  }
+
+  _formValidationFieldKey(field = {}) {
+    const normalized = this._normalizeFormValidationField(field);
+    return JSON.stringify([
+      normalized.id,
+      normalized.name,
+      normalized.value,
+      normalized.label,
+      normalized.type,
+      normalized.message,
+    ]);
+  }
+
   _formValidationStateKey(states = []) {
     return JSON.stringify((Array.isArray(states) ? states : [])
       .map((state) => ({
         frameId: state?.frameId ?? null,
         url: String(state?.url || ''),
         invalid: (Array.isArray(state?.invalidFields) ? state.invalidFields : [])
-          .map(field => [field?.label || '', field?.type || '', field?.message || '']),
+          .map(field => this._formValidationFieldKey(field)),
         ariaInvalid: (Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : [])
-          .map(field => [field?.label || '', field?.type || '', field?.message || '']),
+          .map(field => this._formValidationFieldKey(field)),
         alerts: this._formValidationAlertTexts(state),
         controls: String(state?.controlFingerprint || ''),
       }))
@@ -5724,7 +5784,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     ));
     const beforeAriaInvalid = new Set(before.flatMap(state =>
       (Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : [])
-        .map(field => `${validationStateScope(state)}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`)
+        .map(field => `${validationStateScope(state)}|${this._formValidationFieldKey(field)}`)
     ));
     const beforeActiveInvalid = new Set(before
       .filter(state => state?.activeInvalid === true)
@@ -5747,7 +5807,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
       }
       for (const field of Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : []) {
-        const key = `${validationStateScope(state)}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`;
+        const key = `${validationStateScope(state)}|${this._formValidationFieldKey(field)}`;
         if (includePersistentForState || !beforeAriaInvalid.has(key)) newAriaInvalid.push(field);
       }
     }
@@ -5767,12 +5827,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const invalidFields = [];
     const fieldKeys = new Set();
     for (const field of [...nativeInvalidFields, ...newAriaInvalid]) {
-      const normalized = {
-        label: String(field?.label || 'field').slice(0, 120),
-        type: String(field?.type || '').slice(0, 40),
-        message: String(field?.message || 'Invalid value.').slice(0, 300),
-      };
-      const key = `${normalized.label}|${normalized.type}|${normalized.message}`;
+      const normalized = this._normalizeFormValidationField(field);
+      const key = this._formValidationFieldKey(normalized);
       if (!fieldKeys.has(key)) {
         fieldKeys.add(key);
         invalidFields.push(normalized);
@@ -5846,8 +5902,84 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       actionKey: failure.actionKey,
       invalidFields: failure.invalidFields,
       validationMessages: failure.validationMessages,
+      verifyFormCount: 0,
     });
     return toolResult;
+  }
+
+  _applyVerifyFormRecovery(tabId, result, currentStates) {
+    const block = this._formValidationBlocks.get(tabId);
+    if (!block || !result || typeof result !== 'object') return result;
+    const stateKey = this._formValidationStateKey(currentStates);
+    if (stateKey !== block.stateKey) {
+      this._formValidationBlocks.delete(tabId);
+      return result;
+    }
+
+    const invalidCheckboxes = (Array.isArray(block.invalidFields) ? block.invalidFields : [])
+      .filter(field => String(field?.type || '').toLowerCase() === 'checkbox');
+    if (invalidCheckboxes.length === 0) return result;
+
+    const candidates = (Array.isArray(result.fields) ? result.fields : [])
+      .filter(field => field?.type === 'checkbox' && field.checked === false && /^ref_\d+$/.test(String(field.ref_id || '')));
+    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const matchesInvalidCheckbox = (invalid, candidate) => {
+      const invalidId = normalize(invalid?.id);
+      const candidateId = normalize(candidate?.id);
+      if (invalidId) return !!candidateId && candidateId === invalidId;
+
+      const invalidName = normalize(invalid?.name);
+      const invalidValue = normalize(invalid?.value);
+      const candidateName = normalize(candidate?.name);
+      const candidateValue = normalize(candidate?.controlValue);
+      if (invalidName && invalidValue) {
+        return candidateName === invalidName && candidateValue === invalidValue;
+      }
+
+      const invalidLabel = normalize(invalid?.label);
+      const candidateLabels = [candidate?.label, candidate?.id, candidate?.name]
+        .map(normalize)
+        .filter(Boolean);
+      if (invalidLabel) return candidateLabels.includes(invalidLabel);
+      return !!invalidName && candidateName === invalidName;
+    };
+    const matchedCandidates = [];
+    for (const invalid of invalidCheckboxes) {
+      const matches = candidates.filter(candidate => matchesInvalidCheckbox(invalid, candidate));
+      // A recovery ref is safe only when this invalid control maps to one
+      // actionable checkbox. Ambiguous metadata must not target an opt-in.
+      if (matches.length !== 1) return result;
+      matchedCandidates.push(matches[0]);
+    }
+    if (new Set(matchedCandidates.map(field => field.ref_id)).size !== matchedCandidates.length) return result;
+
+    const uncheckedCheckboxes = matchedCandidates
+      .map(field => ({
+        ref_id: field.ref_id,
+        name: field.name || '',
+        id: field.id || '',
+        selector: field.selector || '',
+        checked: false,
+      }));
+    const recoveryCalls = uncheckedCheckboxes
+      .map(field => `set_checked({ref_id: "${field.ref_id}", checked: true})`)
+      .join(', then ');
+
+    block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
+    result.formValidationRecovery = {
+      stateUnchanged: true,
+      verifyFormCount: block.verifyFormCount,
+      nextTool: 'set_checked',
+      uncheckedCheckboxes,
+      instruction: `The form state is unchanged. Do not call verify_form again and do not toggle any checkbox. Use ${recoveryCalls}; Chrome will use one trusted selector-backed click when a state change is needed.`,
+    };
+    if (block.verifyFormCount > 1) {
+      result.success = false;
+      result.noProgress = true;
+      result.blockedValidationVerifyRepeat = true;
+      result.error = 'Blocked repeated verify_form because the form state has not changed. Correct the reported checkbox with set_checked before verifying or submitting again.';
+    }
+    return result;
   }
 
   _formValidationRetryBlockResult(block) {
@@ -5965,12 +6097,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }).filter(Boolean).join(' ');
       return compact(text || el.validationMessage || '', 300);
     };
-    const detailFor = (el, fallback = 'Invalid value.') => ({
-      label: labelFor(el),
-      type: compact(el.getAttribute?.('type') || el.tagName || '', 40),
-      message: describedMessage(el) || fallback,
-      visible: visible(el),
-    });
+    const detailFor = (el, fallback = 'Invalid value.') => {
+      const type = compact(el.getAttribute?.('type') || el.tagName || '', 40);
+      return {
+        label: labelFor(el),
+        id: compact(el.getAttribute?.('id') || '', 120),
+        name: compact(el.getAttribute?.('name') || '', 120),
+        value: /^(?:checkbox|radio)$/i.test(type) ? compact(el.value || 'on', 120) : '',
+        type,
+        message: describedMessage(el) || fallback,
+        visible: visible(el),
+      };
+    };
     const invalidControls = queryAll('input:invalid, textarea:invalid, select:invalid');
     const ariaInvalidControls = queryAll('input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"], [contenteditable="true"][aria-invalid="true"]');
     let active = document.activeElement;
@@ -10576,6 +10714,143 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return originalResponse;
   }
 
+  async _completeSetCheckedWithCdp(tabId, args, response, contentArgs) {
+    if (!response || response.success !== true || response.needsTrustedClick !== true) {
+      return response;
+    }
+    const beforeDocument = await this._getDevDocumentIdentity(tabId);
+    const trustedSelector = String(response.trustedSelector || '');
+    const marker = String(response.marker || '');
+    let clickResult = null;
+    let clickError = null;
+    let verificationError = null;
+    let trustedClickSucceeded = false;
+    try {
+      if (!trustedSelector) throw new Error('Checkbox preflight did not return a trusted selector');
+      await cdpClient.attach(tabId);
+      clickResult = await cdpClient.clickElement(tabId, trustedSelector, { trustedOnly: true });
+      trustedClickSucceeded = clickResult?.success === true
+        && (clickResult.method === 'cdp-mouse' || clickResult.method === 'cdp-mouse-closed-shadow');
+      if (!trustedClickSucceeded) {
+        throw new Error(clickResult?.error || 'Trusted selector click did not use CDP mouse input');
+      }
+    } catch (error) {
+      clickError = error;
+    }
+
+    const clickDispatched = clickResult?.dispatched === true || clickResult?.success === true;
+    if (clickDispatched) {
+      await new Promise(resolve => setTimeout(resolve, SET_CHECKED_VERIFY_DELAY_MS));
+    }
+
+    let verified = null;
+    try {
+      const verificationArgs = { ...contentArgs };
+      // A trusted checkbox handler may update the hash/query in-place. The
+      // document token and one-shot marker still identify the exact control,
+      // while the pre-click URL would incorrectly reject the post-click probe.
+      delete verificationArgs.expectedPageUrl;
+      verified = await chrome.tabs.sendMessage(tabId, {
+        target: 'content',
+        action: 'set_checked',
+        params: {
+          ...verificationArgs,
+          probeOnly: true,
+          markForTrustedClick: false,
+          cleanupMarker: marker || undefined,
+        },
+      });
+    } catch (error) {
+      verificationError = error;
+      if (!clickError) clickError = error;
+    }
+
+    const verificationObservedState = typeof verified?.checkedAfter === 'boolean';
+    let afterDocument = null;
+    if (trustedClickSucceeded && !verificationObservedState) {
+      afterDocument = await this._getDevDocumentIdentity(tabId);
+    }
+    const documentChanged = !!(
+      beforeDocument?.documentId
+      && afterDocument?.documentId
+      && beforeDocument.documentId !== afterDocument.documentId
+    );
+    const pageUrlChanged = !!(
+      beforeDocument?.pageUrl
+      && afterDocument?.pageUrl
+      && this._normalizeUrl(beforeDocument.pageUrl) !== this._normalizeUrl(afterDocument.pageUrl)
+    );
+    const verificationTransportLost = !!(
+      verificationError
+      && /message (?:port|channel) closed|receiving end does not exist|(?:tab|frame).*(?:closed|removed)|no tab with id/i
+        .test(String(verificationError?.message || verificationError))
+    );
+    const verificationLostAfterTrustedClick = !!(
+      trustedClickSucceeded
+      && !verificationObservedState
+      && (verificationTransportLost || documentChanged || pageUrlChanged)
+    );
+    const checkedAfter = verificationObservedState ? verified.checkedAfter : undefined;
+    const stateMatches = checkedAfter === args.checked;
+    const success = trustedClickSucceeded && (stateMatches || verificationLostAfterTrustedClick);
+    const checkboxIdentity = verified?.checkboxIdentity || response.checkboxIdentity;
+    const completed = {
+      ...response,
+      ...(verified || {}),
+      success,
+      dispatched: clickDispatched,
+      noDispatch: clickDispatched ? undefined : true,
+      trusted: trustedClickSucceeded,
+      verified: success,
+      needsTrustedClick: false,
+      checkedBefore: response.checkedBefore,
+      checkedAfter,
+      desiredChecked: args.checked,
+      changed: verificationObservedState ? response.checkedBefore !== checkedAfter : undefined,
+      idempotent: false,
+      checkboxIdentity,
+      checkboxState: verificationObservedState
+        ? {
+            identity: checkboxIdentity,
+            desiredChecked: args.checked,
+            actualChecked: checkedAfter,
+          }
+        : undefined,
+      selector: response.selector || verified?.selector || trustedSelector,
+      rect: verified?.rect || clickResult?.rect || response.rect,
+      marker: undefined,
+      trustedSelector: undefined,
+    };
+    if (verificationLostAfterTrustedClick) {
+      return {
+        ...completed,
+        success: true,
+        verified: false,
+        inconclusive: true,
+        navigationMayHaveOccurred: true,
+        observedEffects: ['navigation_or_reload_unobservable'],
+        noProgress: undefined,
+        error: undefined,
+        warning: 'The trusted checkbox click was sent, but its document disappeared before the checked state could be re-read, likely because the click navigated or reloaded the page. Do not repeat set_checked; observe the current page.',
+      };
+    }
+    const failureError = clickError
+      ? `Trusted checkbox click did not complete: ${clickError.message || clickError}`
+      : verified?.error
+        ? `Checkbox verification failed: ${verified.error}`
+        : 'Checkbox state could not be verified after one trusted selector click.';
+    return {
+      ...completed,
+      ...(success ? {
+        noProgress: undefined,
+        error: undefined,
+      } : {
+        noProgress: true,
+        error: failureError,
+      }),
+    };
+  }
+
   async executeTool(tabId, name, args, onUpdate = null, executionContext = null) {
     if (name === 'load_skill') {
       return this._loadSkillForRun(tabId, args || {});
@@ -11678,8 +11953,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const fields = [];
             for (const el of form.querySelectorAll('input, select, textarea')) {
               const n = el.name || el.id || el.getAttribute('aria-label') || '';
+              const id = el.id || '';
+              const selector = id ? '#' + CSS.escape(id) : '';
               const t = el.type || el.tagName.toLowerCase();
               if (t === 'hidden' || t === 'submit') continue;
+              const label = Array.from(el.labels || [])
+                .map(item => (item.innerText || item.textContent || '').replace(/\s+/g, ' ').trim())
+                .find(Boolean) || el.getAttribute('aria-label') || '';
+              const controlValue = (t === 'checkbox' || t === 'radio') ? (el.value || 'on') : '';
               let v;
               if (t === 'checkbox' || t === 'radio') {
                 v = el.checked ? (el.value || 'on') : '(unchecked)';
@@ -11689,13 +11970,48 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               } else {
                 v = el.value;
               }
-              fields.push({ name: n, type: t, value: v, placeholder: el.placeholder || '' });
+              fields.push({
+                name: n,
+                id,
+                selector,
+                type: t,
+                value: v,
+                label,
+                controlValue,
+                placeholder: el.placeholder || '',
+                ...((t === 'checkbox' || t === 'radio') ? { checked: !!el.checked } : {}),
+              });
             }
             return { found: true, action: form.action || '', method: form.method || 'get', fieldCount: fields.length, fields };
           })()
         `);
 
         const result = formData?.result?.value || { found: false, error: 'Evaluation returned no data' };
+
+        try {
+          const resolved = await chrome.tabs.sendMessage(tabId, {
+            target: 'content',
+            action: 'resolve_form_field_refs',
+            params: { selector: args.selector || '' },
+          });
+          if (
+            resolved?.success === true
+            && Array.isArray(resolved.refs)
+            && Array.isArray(result.fields)
+            && resolved.refs.length === result.fields.length
+          ) {
+            if (resolved.documentToken) {
+              this._lastAxScopes.set(tabId, {
+                documentToken: resolved.documentToken,
+                pageUrl: resolved.refScopeUrl || '',
+              });
+            }
+            result.fields = result.fields.map((field, index) => ({
+              ...field,
+              ...(typeof resolved.refs[index] === 'string' ? { ref_id: resolved.refs[index] } : {}),
+            }));
+          }
+        } catch {}
 
         // 2. Capture screenshot
         try {
@@ -11723,6 +12039,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         result.success = !!result.found;
+        if (this._formValidationBlocks.has(tabId)) {
+          const currentStates = await this._captureFormValidationState(tabId);
+          this._applyVerifyFormRecovery(tabId, result, currentStates);
+        }
         return result;
       } catch (e) {
         return { success: false, error: `verify_form failed: ${e.message}` };
@@ -13966,6 +14286,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // flat indented text output with persistent WeakRef-backed ref_ids.
       'get_accessibility_tree': 'get_accessibility_tree',
       'click_ax': 'click_ax',
+      'set_checked': 'set_checked',
       'type_ax': 'type_ax',
       'set_field': 'set_field',
       'click': 'click',
@@ -14012,7 +14333,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           };
         }
         if (
-          name === 'click' || name === 'click_ax' ||
+          name === 'click' || name === 'click_ax' || name === 'set_checked' ||
           name === 'type_text' || name === 'type_ax' || name === 'set_field' ||
           name === 'press_keys' || name === 'scroll' ||
           name === 'get_accessibility_tree' || name === 'get_interactive_elements' ||
@@ -14031,7 +14352,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     } catch { /* tab lookup failures are non-fatal — fall through */ }
 
     const interactionUrl = (
-      name === 'click' || name === 'click_ax' ||
+      name === 'click' || name === 'click_ax' || name === 'set_checked' ||
       name === 'type_ax' || name === 'set_field'
     ) ? await this._currentUrl(tabId) : '';
 
@@ -14059,13 +14380,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     };
 
     const axScope = this._lastAxScopes.get(tabId);
-    const contentArgs = name === 'click_ax' && axScope?.documentToken
+    const contentArgs = (name === 'click_ax' || name === 'set_checked') && axScope?.documentToken
       ? {
           ...args,
           expectedDocumentToken: axScope.documentToken,
           ...(axScope.pageUrl ? { expectedPageUrl: axScope.pageUrl } : {}),
+          ...(name === 'set_checked' ? { probeOnly: true, markForTrustedClick: true } : {}),
         }
-      : args;
+      : (name === 'set_checked'
+          ? { ...args, probeOnly: true, markForTrustedClick: true }
+          : args);
 
     try {
       let response;
@@ -14108,6 +14432,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       if (name === 'click_ax') {
         response = await this._maybeFallbackClickAxWithCdp(tabId, args, response, clickAxBaseline);
+      }
+      if (name === 'set_checked') {
+        response = await this._completeSetCheckedWithCdp(tabId, args, response, contentArgs);
       }
       const observedAfterSnapshot = response?._clickAxAfterSnapshot || '';
       if (response) delete response._clickAxAfterSnapshot;
@@ -14997,7 +15324,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _recordInteractionRect(tabId, toolName, response, url = '') {
     if (!response || !response.success) return;
-    if (toolName !== 'click' && toolName !== 'click_ax' && toolName !== 'type_ax' && toolName !== 'set_field') return;
+    if (toolName !== 'click' && toolName !== 'click_ax' && toolName !== 'set_checked' && toolName !== 'type_ax' && toolName !== 'set_field') return;
     const r = response.rect;
     if (r && r.w && r.h) {
       this._lastInteractionRect.set(tabId, { x: r.x, y: r.y, w: r.w, h: r.h, ts: Date.now(), url });

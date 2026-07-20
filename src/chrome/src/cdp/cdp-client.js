@@ -2075,9 +2075,10 @@ export class CDPClient {
    *     Components) expect — el.click() alone often isn't enough.
    *  4. If coordinate-based clicking isn't viable (occluded, off-screen after
    *     scroll, zero box), fall back to calling el.click() on the resolved
-   *     element so we still attempt the action.
+   *     element so we still attempt the action, unless trustedOnly is set.
    */
-  async clickElement(tabId, selector) {
+  async clickElement(tabId, selector, options = {}) {
+    const trustedOnly = options?.trustedOnly === true;
     const info = await this.resolveSelector(tabId, selector);
     if (!info) return { success: false, dispatched: false, error: 'Element not found' };
     if (info.error) return { success: false, dispatched: false, error: info.error };
@@ -2149,6 +2150,18 @@ export class CDPClient {
       } catch (e) {
         // fall through to fallback
       }
+    }
+
+    // Checkbox state changes may depend on event.isTrusted. In that mode a
+    // successful DOM/JS fallback must not masquerade as a trusted click.
+    if (trustedOnly) {
+      return {
+        success: false,
+        dispatched: dispatchAttempted,
+        ...(dispatchAttempted ? {} : { noDispatch: true }),
+        trusted: false,
+        error: 'Trusted CDP mouse click could not be completed for this target.',
+      };
     }
 
     // Step 2: fallback. For closed shadow roots we have a nodeId — use DOM.focus

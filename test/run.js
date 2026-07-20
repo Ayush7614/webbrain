@@ -801,6 +801,23 @@ class LoopDetectorShim {
     if (result?.nonRetryableScope) {
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
     }
+    const checkboxState = result?.checkboxState;
+    if (
+      checkboxState
+      && typeof checkboxState.desiredChecked === 'boolean'
+      && typeof checkboxState.actualChecked === 'boolean'
+      && checkboxState.desiredChecked !== checkboxState.actualChecked
+    ) {
+      const identity = String(
+        checkboxState.identity
+        || result.checkboxIdentity
+        || result.ref_id
+        || '',
+      ).trim().slice(0, 240);
+      if (identity) {
+        return `checkbox|${identity}|desired:${checkboxState.desiredChecked}|actual:${checkboxState.actualChecked}`;
+      }
+    }
     // Mirror agent.js: URL-family tools bucket by resource identity so
     // the agent can't escape loop detection by fetching the same file
     // via 8 different API endpoints. Falls back to exact JSON for other
@@ -841,6 +858,11 @@ class LoopDetectorShim {
     if (result?.nonRetryable) {
       const repeats = buf.filter(entry => entry.key === key).length;
       if (repeats >= 2) return { kind: 'stop' };
+    }
+    if (key.startsWith('checkbox|')) {
+      const repeats = buf.filter(entry => entry.key === key).length;
+      if (repeats >= 3) return { kind: 'stop' };
+      if (repeats >= 2) return { kind: 'nudge' };
     }
     const loop = this._detectLoop(buf, key);
     if (!loop) {
@@ -1304,9 +1326,429 @@ console.log('\nagent tool classifications');
 
 test('ref-id action tools are state changes in both browser agents', () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
-    for (const name of ['click_ax', 'type_ax', 'set_field']) {
+    for (const name of ['click_ax', 'set_checked', 'type_ax', 'set_field']) {
       assert.equal(AgentClass.STATE_CHANGE_TOOLS.has(name), true, `${label} missing ${name} from STATE_CHANGE_TOOLS`);
     }
+  }
+});
+
+test('set_checked is exposed and permission-gated as a click in both browser agents', () => {
+  for (const [label, getTools, capabilityFn, Capabilities] of [
+    ['chrome', getToolsForModeCh, capabilityForCh, CapabilityCh],
+    ['firefox', getToolsForModeFx, capabilityFor, Capability],
+  ]) {
+    const tool = getTools('act').find(item => item.function.name === 'set_checked');
+    assert.ok(tool, `${label}: set_checked tool is missing`);
+    assert.deepEqual(tool.function.parameters.required, ['ref_id', 'checked']);
+    assert.equal(capabilityFn('set_checked', { ref_id: 'ref_1', checked: true }), Capabilities.CLICK);
+  }
+});
+
+test('compact Act prompts require idempotent checkbox handling in both browsers', () => {
+  for (const [label, prompt] of [
+    ['chrome', SYSTEM_PROMPT_ACT_COMPACT_CH],
+    ['firefox', SYSTEM_PROMPT_ACT_COMPACT_FX],
+  ]) {
+    const toolsStart = prompt.indexOf('TOOLS');
+    const patternStart = prompt.indexOf('\n\nPATTERN:', toolsStart);
+    assert.ok(toolsStart >= 0 && patternStart > toolsStart, `${label}: compact tools block missing`);
+    const toolsBlock = prompt.slice(toolsStart, patternStart);
+    assert.match(
+      toolsBlock,
+      /set_checked\(\{ref_id,\s*checked\}\): Idempotently set and verify a native checkbox/i,
+      `${label}: compact tools block must advertise set_checked`,
+    );
+    assert.match(
+      prompt,
+      /For native checkboxes, use set_checked\(\{ref_id:"ref_N", checked:true\|false\}\) instead of toggling/i,
+      `${label}: compact rules must direct checkboxes to set_checked`,
+    );
+    assert.match(
+      prompt,
+      /click_ax,\s*set_checked,\s*or set_field with (?:the )?ref_id/i,
+      `${label}: compact execution pattern must include set_checked`,
+    );
+  }
+});
+
+test('Chrome set_checked completes one selector-backed trusted click and verifies state', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  const messages = [];
+  let trustedClickCompletedAt = 0;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage(_tabId, message) {
+          messages.push(message);
+          assert.equal(message.params.expectedDocumentToken, 'doc-7');
+          assert.equal(
+            Object.prototype.hasOwnProperty.call(message.params, 'expectedPageUrl'),
+            false,
+            'post-click verification must not reuse the pre-click route URL',
+          );
+          assert.ok(
+            Date.now() - trustedClickCompletedAt >= 70,
+            'trusted checkbox verification must wait for controlled state reconciliation',
+          );
+          return {
+            success: true,
+            method: 'set_checked',
+            ref_id: 'ref_7',
+            checkedBefore: true,
+            checkedAfter: true,
+            desiredChecked: true,
+            checkboxIdentity: 'form:/submit|name:apps|value:firefox',
+            selector: '#firefox',
+            rect: { x: 1, y: 2, w: 20, h: 20 },
+          };
+        },
+      },
+    };
+    let clickedSelector = '';
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async (_tabId, selector, options) => {
+      clickedSelector = selector;
+      assert.deepEqual(options, { trustedOnly: true });
+      trustedClickCompletedAt = Date.now();
+      return { success: true, method: 'cdp-mouse', rect: { x: 1, y: 2, w: 20, h: 20 } };
+    };
+
+    const agent = new AgentCh({});
+    const response = await agent._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_7', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-7',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-7"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'form:/submit|name:apps|value:firefox',
+      },
+      {
+        ref_id: 'ref_7',
+        checked: true,
+        expectedDocumentToken: 'doc-7',
+        expectedPageUrl: 'https://example.test/before',
+        probeOnly: true,
+        markForTrustedClick: true,
+      },
+    );
+
+    assert.equal(clickedSelector, '[data-webbrain-set-checked-target="marker-7"]');
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].params.cleanupMarker, 'marker-7');
+    assert.equal(response.success, true);
+    assert.equal(response.trusted, true);
+    assert.equal(response.verified, true);
+    assert.equal(response.checkedBefore, false);
+    assert.equal(response.checkedAfter, true);
+    assert.equal(response.changed, true);
+    assert.equal(response.checkboxState.actualChecked, true);
+    assert.equal(response.marker, undefined);
+    assert.equal(response.trustedSelector, undefined);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
+test('Chrome set_checked rejects successful untrusted click fallbacks', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage() {
+          return {
+            success: true,
+            method: 'set_checked',
+            ref_id: 'ref_9',
+            checkedBefore: false,
+            checkedAfter: true,
+            desiredChecked: true,
+            checkboxIdentity: 'id:firefox',
+            selector: '#firefox',
+          };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: true,
+      method: 'js-click',
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_9', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-9',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-9"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_9', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, false);
+    assert.equal(response.trusted, false);
+    assert.equal(response.dispatched, true);
+    assert.notEqual(response.noDispatch, true);
+    assert.equal(response.verified, false);
+    assert.match(response.error, /did not use CDP mouse input/);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
+test('Chrome set_checked preserves partial trusted click dispatch on failure', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage() {
+          return {
+            success: true,
+            method: 'set_checked',
+            ref_id: 'ref_8',
+            checkedBefore: false,
+            checkedAfter: false,
+            desiredChecked: true,
+            checkboxIdentity: 'id:firefox',
+            selector: '#firefox',
+          };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: false,
+      dispatched: true,
+      error: 'mouse release failed after press',
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_8', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-8',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-8"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_8', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, false);
+    assert.equal(response.dispatched, true);
+    assert.notEqual(response.noDispatch, true);
+    assert.equal(response.trusted, false);
+    assert.equal(response.noProgress, true);
+    assert.match(response.error, /mouse release failed after press/);
+    assert.equal(
+      CompletionInvariantCh.didCompletionActionExecute('set_checked', { checked: true }, response),
+      true,
+      'partial trusted input must retain completion debt',
+    );
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
+test('Chrome set_checked preserves navigation when post-click verification loses the document', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage() {
+          throw new Error('The message port closed before a response was received.');
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: true,
+      method: 'cdp-mouse',
+      rect: { x: 1, y: 2, w: 20, h: 20 },
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_10', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-10',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-10"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_10', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, true);
+    assert.equal(response.dispatched, true);
+    assert.equal(response.trusted, true);
+    assert.equal(response.verified, false);
+    assert.equal(response.inconclusive, true);
+    assert.equal(response.navigationMayHaveOccurred, true);
+    assert.deepEqual(response.observedEffects, ['navigation_or_reload_unobservable']);
+    assert.equal(response.checkedAfter, undefined);
+    assert.equal(response.checkboxState, undefined);
+    assert.equal(response.noProgress, undefined);
+    assert.equal(response.error, undefined);
+    assert.match(response.warning, /navigated or reloaded/i);
+    assert.equal(
+      CompletionInvariantCh.didCompletionActionExecute('set_checked', { checked: true }, response),
+      true,
+      'a trusted click whose navigation hides verification must retain completion debt',
+    );
+
+    const batchAgent = new AgentCh({ getVisionProvider: async () => null });
+    const tabId = 5130;
+    const messages = [];
+    let urlReads = 0;
+    batchAgent._ensureGateSetting = async () => {};
+    batchAgent._skipPermissionGate = true;
+    batchAgent._currentUrl = async () => {
+      urlReads += 1;
+      return urlReads === 1
+        ? 'https://example.com/preferences'
+        : 'https://example.com/complete';
+    };
+    batchAgent._rememberMastodonObservation = async () => null;
+    batchAgent._recordProgressObservation = async () => null;
+    batchAgent._autoRecordProgressAction = () => null;
+    batchAgent._persist = () => {};
+    batchAgent.executeTool = async () => ({ ...response });
+
+    const result = await batchAgent._executeToolBatch(
+      tabId,
+      [{
+        id: 'set_checked_navigation',
+        function: { name: 'set_checked', arguments: '{"ref_id":"ref_10","checked":true}' },
+      }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['set_checked']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue');
+    const toolMessage = messages.find(message => message.tool_call_id === 'set_checked_navigation');
+    const toolResult = JSON.parse(batchAgent._unwrapUntrusted(toolMessage.content));
+    assert.equal(toolResult.pageUrlChanged, true);
+    assert.equal(toolResult.previousUrl, 'https://example.com/preferences');
+    assert.equal(toolResult.currentUrl, 'https://example.com/complete');
+    assert.equal(toolResult.error, undefined);
+    assert.equal(
+      messages.some(message => message.role === 'user' && /NAVIGATION OCCURRED/.test(String(message.content || ''))),
+      true,
+      'the lost verification must not suppress the navigation notice',
+    );
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
+test('Chrome set_checked keeps same-document probe failures as failures', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      webNavigation: {
+        async getFrame() {
+          return {
+            documentId: 'same-document',
+            url: 'https://example.com/preferences',
+          };
+        },
+      },
+      tabs: {
+        async sendMessage() {
+          return {
+            success: false,
+            error: 'ref_id ref_11 was not found',
+          };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: true,
+      method: 'cdp-mouse',
+      rect: { x: 1, y: 2, w: 20, h: 20 },
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_11', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-11',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-11"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_11', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, false);
+    assert.equal(response.dispatched, true);
+    assert.equal(response.trusted, true);
+    assert.equal(response.verified, false);
+    assert.equal(response.inconclusive, undefined);
+    assert.equal(response.navigationMayHaveOccurred, undefined);
+    assert.equal(response.checkedAfter, undefined);
+    assert.equal(response.noProgress, true);
+    assert.match(response.error, /ref_id ref_11 was not found/);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
   }
 });
 
@@ -1314,6 +1756,8 @@ test('navigation-prone detection includes only submit-capable key and field call
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({});
     assert.equal(AgentClass.NAV_PRONE_TOOLS.has('click_ax'), true, `${label} missing click_ax from NAV_PRONE_TOOLS`);
+    assert.equal(AgentClass.NAV_PRONE_TOOLS.has('set_checked'), true, `${label} missing set_checked from NAV_PRONE_TOOLS`);
+    assert.equal(agent._isNavigationProneToolCall('set_checked', { ref_id: 'ref_7', checked: true }), true, `${label}: checkbox handlers can navigate`);
     assert.equal(AgentClass.NAV_PRONE_TOOLS.has('set_field'), false, `${label} should not treat set_field as nav-prone`);
     assert.equal(agent._isNavigationProneToolCall('press_keys', { key: 'Enter' }), true, `${label}: Enter can submit and navigate`);
     assert.equal(agent._isNavigationProneToolCall('press_keys', { key: 'ArrowDown' }), false, `${label}: arrows should avoid URL probes`);
@@ -2888,6 +3332,30 @@ test('no loop for distinct calls', () => {
   assert.equal(d._checkLoop(tab, 'read_page', {}, { ok: true }).kind, 'none');
   assert.equal(d._checkLoop(tab, 'click', { selector: '#a' }, { success: true }).kind, 'none');
   assert.equal(d._checkLoop(tab, 'type_text', { text: 'hello' }, { success: true }).kind, 'none');
+});
+
+test('checkbox loop detection follows unchanged semantic state across tools and arguments', () => {
+  const d = new LoopDetectorShim();
+  const tab = 101;
+  const unchanged = {
+    success: false,
+    noProgress: true,
+    checkboxState: {
+      identity: 'form:/submit|name:compatible_apps|value:firefox',
+      desiredChecked: true,
+      actualChecked: false,
+    },
+  };
+  assert.equal(d._checkLoop(tab, 'click_ax', { ref_id: 'ref_8' }, unchanged).kind, 'none');
+  assert.equal(d._checkLoop(tab, 'set_checked', { ref_id: 'ref_8', checked: true }, unchanged).kind, 'nudge');
+  assert.equal(d._checkLoop(tab, 'click', { selector: '#firefox' }, unchanged).kind, 'stop');
+
+  const other = new LoopDetectorShim();
+  assert.equal(other._checkLoop(tab, 'click_ax', { ref_id: 'ref_8' }, unchanged).kind, 'none');
+  assert.equal(other._checkLoop(tab, 'set_checked', { ref_id: 'ref_9', checked: true }, {
+    ...unchanged,
+    checkboxState: { ...unchanged.checkboxState, identity: 'form:/submit|name:compatible_apps|value:android' },
+  }).kind, 'none');
 });
 
 test('three identical calls trigger nudge', () => {
@@ -6763,6 +7231,23 @@ test('completion invariant state machine enforces post-action observation with C
     assert.equal(observationWithoutAction.verificationDebt, false, `${label}: observation-only run opened debt`);
     assert.equal(observationWithoutAction.lastObservation?.name, 'read_page', `${label}: successful observation without an action was not recorded`);
 
+    const idempotentCheckbox = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-idempotent-checkbox`),
+      'set_checked',
+      { ref_id: 'ref_checkbox', checked: true },
+      {
+        success: true,
+        idempotent: true,
+        verified: true,
+        dispatched: false,
+        noDispatch: true,
+        checkedBefore: true,
+        checkedAfter: true,
+      },
+    );
+    assert.equal(idempotentCheckbox.hadAction, false, `${label}: idempotent set_checked was recorded as an action`);
+    assert.equal(idempotentCheckbox.verificationDebt, false, `${label}: idempotent set_checked opened verification debt`);
+
     for (const name of ['schedule_task', 'schedule_resume']) {
       const scheduled = invariant.recordCompletionToolResult(
         invariant.createCompletionInvariantState(`${label}-${name}-success`),
@@ -7372,7 +7857,7 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     assert.equal(mid.includes('clarify'), true, `[${label}] mid act should expose clarify`);
     assert.equal(full.includes('clarify'), true, `[${label}] full act should expose clarify`);
 
-    for (const name of ['click_ax', 'type_ax', 'set_field', 'click', 'type_text', 'press_keys', 'navigate', 'wait_for_element', 'new_tab', 'scratchpad_write', 'progress_update', 'progress_read']) {
+    for (const name of ['click_ax', 'set_checked', 'type_ax', 'set_field', 'click', 'type_text', 'press_keys', 'navigate', 'wait_for_element', 'new_tab', 'scratchpad_write', 'progress_update', 'progress_read']) {
       assert.equal(ask.includes(name), false, `[${label}] ask should not expose action tool ${name}`);
       assert.equal(compact.includes(name), true, `[${label}] compact act should expose ${name}`);
       assert.equal(mid.includes(name), true, `[${label}] mid act should expose ${name}`);
@@ -16808,6 +17293,29 @@ test('Chrome selector click distinguishes pre-dispatch failure from uncertain di
   assert.equal(uncertain.success, false);
   assert.equal(uncertain.dispatched, true, 'a mousePressed attempt must fail closed when later fallback also fails');
 
+  client.resolveSelector = async () => ({
+    inViewport: false,
+    hitOk: false,
+    nodeId: 99,
+    x: 10,
+    y: 20,
+    width: 30,
+    height: 40,
+    tag: 'INPUT',
+    type: 'checkbox',
+  });
+  let trustedOnlyFallbackCalls = 0;
+  client.evaluate = async () => {
+    trustedOnlyFallbackCalls++;
+    return { result: { value: { success: true, method: 'js-click' } } };
+  };
+  const trustedOnly = await client.clickElement(42, '#trusted-checkbox', { trustedOnly: true });
+  assert.equal(trustedOnly.success, false);
+  assert.equal(trustedOnly.dispatched, false);
+  assert.equal(trustedOnly.noDispatch, true);
+  assert.equal(trustedOnly.trusted, false);
+  assert.equal(trustedOnlyFallbackCalls, 0, 'trusted-only clicks must not invoke DOM/JS fallbacks');
+
   const source = fs.readFileSync(path.join(ROOT, 'src/chrome/src/cdp/cdp-client.js'), 'utf8');
   assert.match(
     source,
@@ -23675,6 +24183,9 @@ test('form validation classifier surfaces native and custom submission errors', 
   const url = 'https://addons.mozilla.org/en-US/developers/addon/webbrain/versions/submit/';
   const invalidField = {
     label: 'Firefox',
+    id: 'firefox-compatibility',
+    name: 'compatible_apps',
+    value: 'firefox',
     type: 'checkbox',
     message: 'Your extension has to be compatible with at least one application.',
   };
@@ -23702,6 +24213,31 @@ test('form validation classifier surfaces native and custom submission errors', 
     assert.ok(nativeFailure, `${AgentClass.name}: native validation failure was missed`);
     assert.match(nativeFailure.error, /compatible with at least one application/i);
     assert.deepEqual(nativeFailure.invalidFields[0], invalidField);
+
+    const duplicateLabelAfter = [{
+      ...nativeAfter[0],
+      invalidFields: [
+        invalidField,
+        {
+          ...invalidField,
+          id: 'firefox-android-compatibility',
+          value: 'firefox_android',
+        },
+      ],
+    }];
+    const duplicateLabelFailure = agent._detectFormValidationFailure(before, duplicateLabelAfter, {
+      toolName: 'click',
+      args: { text: 'Continue' },
+      result: { success: true, tag: 'BUTTON' },
+    });
+    assert.deepEqual(
+      duplicateLabelFailure.invalidFields.map(field => [field.id, field.name, field.value]),
+      [
+        ['firefox-compatibility', 'compatible_apps', 'firefox'],
+        ['firefox-android-compatibility', 'compatible_apps', 'firefox_android'],
+      ],
+      `${AgentClass.name}: same-label invalid checkboxes lost their native identities`,
+    );
 
     const alreadyActive = [{
       ...nativeAfter[0],
@@ -23975,6 +24511,192 @@ test('form validation classifier surfaces native and custom submission errors', 
     });
     assert.notEqual(failedExecuteJsKey, correctedExecuteJsKey, `${AgentClass.name}: corrected execute_js kept the failed retry key`);
     assert.doesNotMatch(failedExecuteJsKey, /requestSubmit/, `${AgentClass.name}: execute_js retry key retained raw code`);
+  }
+});
+
+test('unchanged failed-submit state permits one verify_form then directs checkbox recovery', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5120;
+    const states = [{
+      frameId: 0,
+      url: 'https://addons.mozilla.org/en-US/developers/addon/webbrain/versions/submit/',
+      activeInvalid: true,
+      invalidFields: [{
+        label: 'Compatible application',
+        id: '',
+        name: 'compatible_apps',
+        value: 'firefox',
+        type: 'checkbox',
+        message: 'Your extension has to be compatible with at least one application.',
+      }],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'firefox:false',
+    }];
+    agent._formValidationBlocks.set(tabId, {
+      stateKey: agent._formValidationStateKey(states),
+      actionKey: 'click|continue',
+      invalidFields: states[0].invalidFields,
+      validationMessages: [states[0].invalidFields[0].message],
+      verifyFormCount: 0,
+    });
+    const makeResult = () => ({
+      success: true,
+      found: true,
+      fields: [
+        {
+          ref_id: 'ref_512000',
+          name: 'newsletter',
+          id: 'newsletter',
+          selector: '#newsletter',
+          type: 'checkbox',
+          value: '(unchecked)',
+          label: 'Compatible application',
+          controlValue: 'firefox_android',
+          checked: false,
+        },
+        {
+          ref_id: 'ref_512001',
+          name: 'compatible_apps',
+          id: 'firefox',
+          selector: '#firefox',
+          type: 'checkbox',
+          value: '(unchecked)',
+          label: 'Compatible application',
+          controlValue: 'firefox',
+          checked: false,
+        },
+      ],
+    });
+
+    const first = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
+    assert.equal(first.success, true, `${AgentClass.name}: first verify_form should remain usable`);
+    assert.equal(first.formValidationRecovery.stateUnchanged, true);
+    assert.equal(first.formValidationRecovery.verifyFormCount, 1);
+    assert.equal(first.formValidationRecovery.nextTool, 'set_checked');
+    assert.deepEqual(first.formValidationRecovery.uncheckedCheckboxes, [{
+      ref_id: 'ref_512001',
+      name: 'compatible_apps',
+      id: 'firefox',
+      selector: '#firefox',
+      checked: false,
+    }]);
+    assert.match(first.formValidationRecovery.instruction, /ref_512001/);
+    assert.doesNotMatch(first.formValidationRecovery.instruction, /ref_512000/);
+
+    const repeated = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
+    assert.equal(repeated.success, false, `${AgentClass.name}: unchanged second verify_form should be blocked`);
+    assert.equal(repeated.noProgress, true);
+    assert.equal(repeated.blockedValidationVerifyRepeat, true);
+    assert.match(repeated.error, /set_checked/);
+
+    const correctedStates = [{ ...states[0], controlFingerprint: 'firefox:true' }];
+    const corrected = agent._applyVerifyFormRecovery(tabId, makeResult(), correctedStates);
+    assert.equal(corrected.formValidationRecovery, undefined);
+    assert.equal(agent._formValidationBlocks.has(tabId), false, `${AgentClass.name}: changed form state should clear recovery block`);
+  }
+});
+
+test('ambiguous checkbox validation recovery does not choose an unrelated ref', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5122;
+    const states = [{
+      frameId: 0,
+      url: 'https://example.com/preferences',
+      activeInvalid: true,
+      invalidFields: [{
+        label: 'Accept',
+        type: 'checkbox',
+        message: 'Please select the required option.',
+      }],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'accept:false|accept:false',
+    }];
+    const block = {
+      stateKey: agent._formValidationStateKey(states),
+      actionKey: 'click|continue',
+      invalidFields: states[0].invalidFields,
+      validationMessages: [states[0].invalidFields[0].message],
+      verifyFormCount: 0,
+    };
+    agent._formValidationBlocks.set(tabId, block);
+    const result = agent._applyVerifyFormRecovery(tabId, {
+      success: true,
+      found: true,
+      fields: [
+        {
+          ref_id: 'ref_512201',
+          name: 'marketing',
+          id: 'marketing',
+          selector: '#marketing',
+          type: 'checkbox',
+          label: 'Accept',
+          checked: false,
+        },
+        {
+          ref_id: 'ref_512202',
+          name: 'terms',
+          id: 'terms',
+          selector: '#terms',
+          type: 'checkbox',
+          label: 'Accept',
+          checked: false,
+        },
+      ],
+    }, states);
+
+    assert.equal(result.formValidationRecovery, undefined, `${AgentClass.name}: ambiguous checkbox refs should not produce recovery`);
+    assert.equal(block.verifyFormCount, 0, `${AgentClass.name}: ambiguous recovery should not consume verify_form`);
+  }
+});
+
+test('unchanged non-checkbox validation failures do not invent checkbox recovery', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5121;
+    const states = [{
+      frameId: 0,
+      url: 'https://example.com/profile',
+      activeInvalid: true,
+      invalidFields: [{
+        label: 'Display name',
+        type: 'text',
+        message: 'Please fill out this field.',
+      }],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'display-name:',
+    }];
+    const block = {
+      stateKey: agent._formValidationStateKey(states),
+      actionKey: 'click|save',
+      invalidFields: states[0].invalidFields,
+      validationMessages: [states[0].invalidFields[0].message],
+      verifyFormCount: 0,
+    };
+    agent._formValidationBlocks.set(tabId, block);
+    const makeResult = () => ({
+      success: true,
+      found: true,
+      fields: [{
+        name: 'display_name',
+        id: 'display-name',
+        selector: '#display-name',
+        type: 'text',
+        value: '',
+      }],
+    });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
+      assert.equal(result.success, true, `${AgentClass.name}: ordinary verify_form result should remain unchanged`);
+      assert.equal(result.formValidationRecovery, undefined);
+      assert.equal(result.blockedValidationVerifyRepeat, undefined);
+    }
+    assert.equal(block.verifyFormCount, 0, `${AgentClass.name}: non-checkbox validation must not consume checkbox recovery`);
   }
 });
 
@@ -34776,6 +35498,11 @@ test('agent forwards private AX scope and records only the final done verdict', 
     assert.match(source, /this\._lastAxScopes = new Map\(\)/, `${label}: per-tab AX ref scope cache missing`);
     assert.match(source, /expectedDocumentToken: axScope\.documentToken/, `${label}: click_ax does not receive the private document scope`);
     assert.match(source, /expectedPageUrl: axScope\.pageUrl/, `${label}: click_ax does not receive the private route scope`);
+    assert.match(
+      source,
+      /resolved\.documentToken[\s\S]{0,240}this\._lastAxScopes\.set\(tabId,[\s\S]{0,240}pageUrl: resolved\.refScopeUrl/,
+      `${label}: verify_form refs do not refresh their private AX scope`,
+    );
     assert.match(source, /delete response\.documentToken/, `${label}: private AX document token leaks into model context`);
     assert.match(source, /if \(!toolResult\?\.done\) (?:await )?recordFinalToolTrace\(toolResult\)/, `${label}: raw done is still recorded before terminal guards`);
     assert.match(source, /recordFinalToolTrace\(blockedResult\)/, `${label}: blocked done verdict is not recorded`);
