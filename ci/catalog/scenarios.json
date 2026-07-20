@@ -51,9 +51,12 @@
     },
     "verify": {
       "result": [
-        { "path": "mountains.0.name", "contains": "Everest", "weight": 20 },
-        { "path": "mountains.1.name", "equals": "K2", "weight": 20 },
-        { "path": "mountains.2.name", "contains": "Kangchenjunga", "weight": 20 }
+        { "path": "mountains.0.name", "contains": "Everest", "weight": 10 },
+        { "path": "mountains.0.height_m", "equals": 8849, "weight": 10 },
+        { "path": "mountains.1.name", "equals": "K2", "weight": 10 },
+        { "path": "mountains.1.height_m", "equals": 8611, "weight": 10 },
+        { "path": "mountains.2.name", "contains": "Kangchenjunga", "weight": 10 },
+        { "path": "mountains.2.height_m", "equals": 8586, "weight": 10 }
       ],
       "finalUrlHost": "en.wikipedia.org"
     },

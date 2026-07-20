@@ -11,6 +11,29 @@ assert.equal(new Set(scenarios.map((scenario) => scenario.id)).size, scenarios.l
 assert.ok(scenarios.every((scenario) => scenario.output_schema?.type === 'object'));
 assert.ok(scenarios.every((scenario) => scenario.verify));
 
+const mountainScenario = scenarios.find((scenario) => scenario.id === 'wikipedia-table-extraction');
+const invalidMountainHeights = gradeScenario({
+  scenario: mountainScenario,
+  run: {
+    status: 'completed',
+    final_url: 'https://en.wikipedia.org/wiki/List_of_highest_mountains_on_Earth',
+    result: {
+      mountains: [
+        { name: 'Mount Everest', height_m: 0 },
+        { name: 'K2', height_m: 0 },
+        { name: 'Kangchenjunga', height_m: 0 },
+      ],
+    },
+  },
+});
+assert.equal(invalidMountainHeights.passed, false);
+assert.deepEqual(
+  invalidMountainHeights.checks
+    .filter((check) => check.id.endsWith('.height_m'))
+    .map((check) => check.passed),
+  [false, false, false],
+);
+
 const scenario = {
   id: 'fixture',
   title: 'Fixture',
