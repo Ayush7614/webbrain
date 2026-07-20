@@ -5054,12 +5054,44 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return result;
     }
 
-    const hasCheckboxFailure = (Array.isArray(block.invalidFields) ? block.invalidFields : [])
-      .some(field => String(field?.type || '').toLowerCase() === 'checkbox');
-    if (!hasCheckboxFailure) return result;
+    const invalidCheckboxes = (Array.isArray(block.invalidFields) ? block.invalidFields : [])
+      .filter(field => String(field?.type || '').toLowerCase() === 'checkbox');
+    if (invalidCheckboxes.length === 0) return result;
 
-    const uncheckedCheckboxes = (Array.isArray(result.fields) ? result.fields : [])
-      .filter(field => field?.type === 'checkbox' && field.checked === false && /^ref_\d+$/.test(String(field.ref_id || '')))
+    const candidates = (Array.isArray(result.fields) ? result.fields : [])
+      .filter(field => field?.type === 'checkbox' && field.checked === false && /^ref_\d+$/.test(String(field.ref_id || '')));
+    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const matchesInvalidCheckbox = (invalid, candidate) => {
+      const invalidId = normalize(invalid?.id);
+      const candidateId = normalize(candidate?.id);
+      if (invalidId) return !!candidateId && candidateId === invalidId;
+
+      const invalidName = normalize(invalid?.name);
+      const invalidValue = normalize(invalid?.value);
+      const candidateName = normalize(candidate?.name);
+      const candidateValue = normalize(candidate?.controlValue);
+      if (invalidName && invalidValue) {
+        return candidateName === invalidName && candidateValue === invalidValue;
+      }
+
+      const invalidLabel = normalize(invalid?.label);
+      const candidateLabels = [candidate?.label, candidate?.id, candidate?.name]
+        .map(normalize)
+        .filter(Boolean);
+      if (invalidLabel) return candidateLabels.includes(invalidLabel);
+      return !!invalidName && candidateName === invalidName;
+    };
+    const matchedCandidates = [];
+    for (const invalid of invalidCheckboxes) {
+      const matches = candidates.filter(candidate => matchesInvalidCheckbox(invalid, candidate));
+      // A recovery ref is safe only when this invalid control maps to one
+      // actionable checkbox. Ambiguous metadata must not target an opt-in.
+      if (matches.length !== 1) return result;
+      matchedCandidates.push(matches[0]);
+    }
+    if (new Set(matchedCandidates.map(field => field.ref_id)).size !== matchedCandidates.length) return result;
+
+    const uncheckedCheckboxes = matchedCandidates
       .map(field => ({
         ref_id: field.ref_id,
         name: field.name || '',
@@ -5067,7 +5099,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         selector: field.selector || '',
         checked: false,
       }));
-    if (uncheckedCheckboxes.length === 0) return result;
+    const recoveryCalls = uncheckedCheckboxes
+      .map(field => `set_checked({ref_id: "${field.ref_id}", checked: true})`)
+      .join(', then ');
 
     block.verifyFormCount = Number(block.verifyFormCount || 0) + 1;
     result.formValidationRecovery = {
@@ -5075,7 +5109,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       verifyFormCount: block.verifyFormCount,
       nextTool: 'set_checked',
       uncheckedCheckboxes,
-      instruction: `The form state is unchanged. Do not call verify_form again and do not toggle the checkbox. Use set_checked({ref_id: "${uncheckedCheckboxes[0].ref_id}", checked: true}) once, then submit only after checkedAfter is true.`,
+      instruction: `The form state is unchanged. Do not call verify_form again and do not toggle any checkbox. Use ${recoveryCalls}, then submit only after every checkedAfter is true.`,
     };
     if (block.verifyFormCount > 1) {
       result.success = false;
@@ -5201,12 +5235,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }).filter(Boolean).join(' ');
       return compact(text || el.validationMessage || '', 300);
     };
-    const detailFor = (el, fallback = 'Invalid value.') => ({
-      label: labelFor(el),
-      type: compact(el.getAttribute?.('type') || el.tagName || '', 40),
-      message: describedMessage(el) || fallback,
-      visible: visible(el),
-    });
+    const detailFor = (el, fallback = 'Invalid value.') => {
+      const type = compact(el.getAttribute?.('type') || el.tagName || '', 40);
+      return {
+        label: labelFor(el),
+        id: compact(el.getAttribute?.('id') || '', 120),
+        name: compact(el.getAttribute?.('name') || '', 120),
+        value: /^(?:checkbox|radio)$/i.test(type) ? compact(el.value || 'on', 120) : '',
+        type,
+        message: describedMessage(el) || fallback,
+        visible: visible(el),
+      };
+    };
     const invalidControls = queryAll('input:invalid, textarea:invalid, select:invalid');
     const ariaInvalidControls = queryAll('input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"], [contenteditable="true"][aria-invalid="true"]');
     let active = document.activeElement;
@@ -10573,6 +10613,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               const selector = id ? '#' + CSS.escape(id) : '';
               const t = el.type || el.tagName.toLowerCase();
               if (t === 'hidden' || t === 'submit') continue;
+              const label = Array.from(el.labels || [])
+                .map(item => (item.innerText || item.textContent || '').replace(/\s+/g, ' ').trim())
+                .find(Boolean) || el.getAttribute('aria-label') || '';
+              const controlValue = (t === 'checkbox' || t === 'radio') ? (el.value || 'on') : '';
               let v;
               if (t === 'checkbox' || t === 'radio') {
                 v = el.checked ? (el.value || 'on') : '(unchecked)';
@@ -10588,6 +10632,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 selector,
                 type: t,
                 value: v,
+                label,
+                controlValue,
                 placeholder: el.placeholder || '',
                 ...((t === 'checkbox' || t === 'radio') ? { checked: !!el.checked } : {}),
               });

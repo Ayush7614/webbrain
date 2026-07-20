@@ -23862,15 +23862,30 @@ test('unchanged failed-submit state permits one verify_form then directs checkbo
     const makeResult = () => ({
       success: true,
       found: true,
-      fields: [{
-        ref_id: 'ref_512001',
-        name: 'compatible_apps',
-        id: 'firefox',
-        selector: '#firefox',
-        type: 'checkbox',
-        value: '(unchecked)',
-        checked: false,
-      }],
+      fields: [
+        {
+          ref_id: 'ref_512000',
+          name: 'newsletter',
+          id: 'newsletter',
+          selector: '#newsletter',
+          type: 'checkbox',
+          value: '(unchecked)',
+          label: 'Product newsletter',
+          controlValue: 'yes',
+          checked: false,
+        },
+        {
+          ref_id: 'ref_512001',
+          name: 'compatible_apps',
+          id: 'firefox',
+          selector: '#firefox',
+          type: 'checkbox',
+          value: '(unchecked)',
+          label: 'Firefox',
+          controlValue: 'firefox',
+          checked: false,
+        },
+      ],
     });
 
     const first = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
@@ -23886,6 +23901,7 @@ test('unchanged failed-submit state permits one verify_form then directs checkbo
       checked: false,
     }]);
     assert.match(first.formValidationRecovery.instruction, /ref_512001/);
+    assert.doesNotMatch(first.formValidationRecovery.instruction, /ref_512000/);
 
     const repeated = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
     assert.equal(repeated.success, false, `${AgentClass.name}: unchanged second verify_form should be blocked`);
@@ -23897,6 +23913,61 @@ test('unchanged failed-submit state permits one verify_form then directs checkbo
     const corrected = agent._applyVerifyFormRecovery(tabId, makeResult(), correctedStates);
     assert.equal(corrected.formValidationRecovery, undefined);
     assert.equal(agent._formValidationBlocks.has(tabId), false, `${AgentClass.name}: changed form state should clear recovery block`);
+  }
+});
+
+test('ambiguous checkbox validation recovery does not choose an unrelated ref', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = 5122;
+    const states = [{
+      frameId: 0,
+      url: 'https://example.com/preferences',
+      activeInvalid: true,
+      invalidFields: [{
+        label: 'Accept',
+        type: 'checkbox',
+        message: 'Please select the required option.',
+      }],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'accept:false|accept:false',
+    }];
+    const block = {
+      stateKey: agent._formValidationStateKey(states),
+      actionKey: 'click|continue',
+      invalidFields: states[0].invalidFields,
+      validationMessages: [states[0].invalidFields[0].message],
+      verifyFormCount: 0,
+    };
+    agent._formValidationBlocks.set(tabId, block);
+    const result = agent._applyVerifyFormRecovery(tabId, {
+      success: true,
+      found: true,
+      fields: [
+        {
+          ref_id: 'ref_512201',
+          name: 'marketing',
+          id: 'marketing',
+          selector: '#marketing',
+          type: 'checkbox',
+          label: 'Accept',
+          checked: false,
+        },
+        {
+          ref_id: 'ref_512202',
+          name: 'terms',
+          id: 'terms',
+          selector: '#terms',
+          type: 'checkbox',
+          label: 'Accept',
+          checked: false,
+        },
+      ],
+    }, states);
+
+    assert.equal(result.formValidationRecovery, undefined, `${AgentClass.name}: ambiguous checkbox refs should not produce recovery`);
+    assert.equal(block.verifyFormCount, 0, `${AgentClass.name}: ambiguous recovery should not consume verify_form`);
   }
 });
 
