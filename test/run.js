@@ -36584,6 +36584,49 @@ test('detached runs reconnect to a live request without starting it twice', asyn
   }
 });
 
+test('detached runs never retry an uncertain start after observing the live request', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-confirmed-uncertain-start`;
+    const starts = [];
+    const states = [
+      {
+        running: true,
+        starting: false,
+        runUi: { requestId, status: 'running', events: [] },
+      },
+      { running: false, starting: false, runUi: null },
+      { running: false, starting: false, runUi: null },
+    ];
+
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 46, requestId, mode: 'act', text: 'click the target once' },
+        start: async (action) => {
+          starts.push(action);
+          throw new Error('WebBrain extension connection was lost while sending "chat_start".');
+        },
+        probe: async () => states.shift() || { running: false, starting: false, runUi: null },
+        isConnectionError: error => /connection was lost/i.test(error.message),
+        wait: async () => {},
+        maxMissingStateProbes: 2,
+        maxUncertainStartRetries: 1,
+      }),
+      /acknowledged the run but did not publish recoverable run state/i,
+      `${label}: confirmed delivery should fail closed when all recoverable state disappears`,
+    );
+
+    assert.deepEqual(
+      starts,
+      ['chat_start'],
+      `${label}: observing the live request must permanently disable uncertain-start retries`,
+    );
+  }
+});
+
 test('detached runs resume a persisted non-terminal request after background restart', async () => {
   for (const [label, runDetachedWithReconnect] of [
     ['chrome', runDetachedWithReconnectCh],

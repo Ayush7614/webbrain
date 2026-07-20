@@ -145,6 +145,12 @@ export async function runDetachedWithReconnect({
 
       if (sameStartingRun || sameLiveRun) {
         missingStateProbes = 0;
+        // Observing our request proves the uncertain start was delivered.
+        // Never retry the original start after this point: if state later
+        // disappears, fail or resume from a matching journal snapshot rather
+        // than risking duplicate page actions.
+        startAcknowledged = true;
+        startWasUncertain = false;
         if (wasDisconnected) {
           everReconnected = true;
           wasDisconnected = false;
