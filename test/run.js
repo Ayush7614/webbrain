@@ -22935,6 +22935,30 @@ test('form validation classifier surfaces native and custom submission errors', 
     assert.ok(customFailure, `${AgentClass.name}: custom validation alert was missed`);
     assert.match(customFailure.error, /correct the highlighted fields/i);
 
+    const sharedAlertBefore = [{
+      ...before[0],
+      alerts: ['Required'],
+    }];
+    const sharedAlertAfter = [
+      sharedAlertBefore[0],
+      {
+        ...before[0],
+        frameId: 7,
+        alerts: ['Required'],
+        controlFingerprint: 'iframe-required',
+      },
+    ];
+    const sharedAlertFailure = agent._detectFormValidationFailure(sharedAlertBefore, sharedAlertAfter, {
+      toolName: 'iframe_click',
+      args: { selector: '#submit', urlFilter: 'addons.mozilla.org' },
+      result: {
+        success: true,
+        frame: { tag: 'BUTTON', type: 'submit', isSubmitControl: true },
+      },
+      detectedSubmit: { isSubmit: true, validationSubmitEvidence: 'strong' },
+    });
+    assert.ok(sharedAlertFailure, `${AgentClass.name}: duplicate alert text in a newly invalid iframe was deduplicated against another frame`);
+
     const correctivePersistentAlert = agent._detectFormValidationFailure(customAfter, customAfter, {
       toolName: 'click',
       args: { text: 'Continue' },
@@ -23082,7 +23106,7 @@ test('form validation classifier surfaces native and custom submission errors', 
       { code: 'return document.title' },
       { success: true, result: 'Example' },
       { isSubmit: true },
-    ), false, `${AgentClass.name}: non-submit execute_js inherited conservative submit detection`);
+    ), true, `${AgentClass.name}: detected dynamic execute_js submit was ignored by validation inspection`);
     assert.equal(agent._formValidationActionLooksSubmit(
       'execute_js',
       { code: 'document.querySelector("form").requestSubmit()' },
@@ -23758,7 +23782,7 @@ test('execute_js submissions receive form validation feedback', async () => {
         id: 'execute_js_submit',
         function: {
           name: 'execute_js',
-          arguments: '{"code":"document.querySelector(\\\"form\\\").requestSubmit()"}',
+          arguments: '{"code":"submitCheckout()"}',
         },
       }],
       messages,
@@ -23832,7 +23856,11 @@ test('agent returns form validation messages and blocks unchanged repeat submits
       if (args?.text === 'Continue' && currentState[0].invalidFields.length) {
         currentState = [{ ...currentState[0], activeInvalid: true }];
       } else if (args?.text === 'Continue') {
-        currentState = [{ ...currentState[0], url: `${url}success` }];
+        currentState = [{
+          ...currentState[0],
+          url: `${url}success`,
+          alerts: [],
+        }];
       }
       const isSubmit = args?.text === 'Continue';
       return {

@@ -2043,7 +2043,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const formValidationCandidate = this._isFormValidationCandidate(fnName, fnArgs);
       const formValidationAllFrames = fnName === 'iframe_click' || fnName === 'press_keys';
       const preflightSubmitDetection = formValidationCandidate
-        && ['click', 'click_ax', 'iframe_click', 'press_keys'].includes(fnName);
+        && ['click', 'click_ax', 'iframe_click', 'press_keys', 'execute_js'].includes(fnName);
       let detectedSubmitAction = preflightSubmitDetection
         ? await this._detectLikelySubmitAction(tabId, fnName, fnArgs)
         : null;
@@ -4788,6 +4788,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _formValidationActionLooksSubmit(toolName, args = {}, result = null, detectedSubmit = null) {
     const name = String(toolName || '');
+    if (name === 'execute_js') {
+      return this._executeJsLooksLikeFormSubmit(args?.code) || detectedSubmit?.isSubmit === true;
+    }
     if (['click', 'click_ax', 'iframe_click'].includes(name)) {
       const target = result?.frame && typeof result.frame === 'object' ? result.frame : result;
       const type = String(target?.type || '').toLowerCase();
@@ -4874,12 +4877,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         context.priorValidationFailure === true
         || context.includeCorrectedPersistentValidation === true
       );
+    const validationStateScope = state =>
+      `${state?.frameId ?? ''}|${this._normalizeUrlPath(String(state?.url || ''))}`;
     const beforeAlerts = new Set(before.flatMap(state =>
       this._formValidationAlertTexts(state)
+        .map(text => `${validationStateScope(state)}|${text}`)
     ));
     const beforeAriaInvalid = new Set(before.flatMap(state =>
       (Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : [])
-        .map(field => `${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`)
+        .map(field => `${validationStateScope(state)}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`)
     ));
     const beforeActiveInvalid = new Set(before
       .filter(state => state?.activeInvalid === true)
@@ -4896,12 +4902,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const includePersistentForState = includePersistentValidation
         && (beforeRoutes.size === 0 || !route || beforeRoutes.has(route));
       for (const text of this._formValidationAlertTexts(state)) {
-        if (text && (includePersistentForState || !beforeAlerts.has(text))) {
+        const key = `${validationStateScope(state)}|${text}`;
+        if (text && (includePersistentForState || !beforeAlerts.has(key))) {
           newAlerts.push(text);
         }
       }
       for (const field of Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : []) {
-        const key = `${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`;
+        const key = `${validationStateScope(state)}|${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`;
         if (includePersistentForState || !beforeAriaInvalid.has(key)) newAriaInvalid.push(field);
       }
     }
