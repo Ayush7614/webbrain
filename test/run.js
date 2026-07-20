@@ -36612,6 +36612,25 @@ test('submitted chat durability marker is persisted atomically with the user tur
         false,
         `${label}: durability proof must stay request-scoped`,
       );
+
+      globalThis[apiName].storage.session.set = async () => {
+        throw new Error('QUOTA_BYTES exceeded');
+      };
+      const quotaLimited = new AgentClass({});
+      quotaLimited.conversations.set(tabId, [
+        { role: 'system', content: 'System prompt' },
+        { role: 'user', content: 'A large but otherwise valid submitted prompt' },
+      ]);
+      assert.equal(
+        await quotaLimited._persistSubmittedTurn(tabId, `${requestId}-quota`),
+        false,
+        `${label}: a session-storage quota failure should only disable recovery durability`,
+      );
+      assert.equal(
+        await quotaLimited.hasDurableSubmittedTurn(tabId, `${requestId}-quota`),
+        false,
+        `${label}: a failed storage write must not be advertised as durable`,
+      );
     } finally {
       if (previousApi === undefined) delete globalThis[apiName];
       else globalThis[apiName] = previousApi;
@@ -36976,6 +36995,11 @@ test('reconnect protocol is wired through both sidepanels and backgrounds', () =
     assert.match(panel, /showActivity\('Reconnecting…'\)/, `${label}: reconnect attempts should be visible`);
     assert.match(panel, /onState: state => applyActiveRunState\(tabId, state\)/, `${label}: reconnect probes should replay missed UI journal events`);
     assert.match(panel, /cancelledRunRecoveryRequestIds/, `${label}: user cancellation should block automatic resume`);
+    const stopSection = panel.slice(
+      panel.indexOf('// --- Stop / Abort ---'),
+      panel.indexOf('// --- Voice input', panel.indexOf('// --- Stop / Abort ---')),
+    );
+    assert.match(stopSection, /localRunRequestIds\.get\(Number\(tabId\)\)[\s\S]*?cancelledRunRecoveryRequestIds\.add\(requestId\)[\s\S]*?setTabAbortRequested\(tabId, true\)/, `${label}: Stop should persist request-scoped cancellation before its UI timeout clears`);
     assert.match(background, /case 'chat_start':[\s\S]*?launchDetachedRun\('chat'/, `${label}: background should acknowledge detached chat starts`);
     assert.match(background, /case 'continue_start':[\s\S]*?launchDetachedRun\('continue'/, `${label}: background should acknowledge detached continuation starts`);
     assert.match(background, /case 'chat':[\s\S]*?await beginContinuationRunUiSnapshot\(tabId, msg\.requestId\)/, `${label}: replayed fresh chats should preserve journal sequence numbers`);

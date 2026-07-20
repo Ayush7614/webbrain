@@ -7409,6 +7409,12 @@ modeDevBtn?.addEventListener('click', async () => {
 async function abortRun() {
   const tabId = currentTabId;
   if (!isTabProcessing(tabId)) return;
+  const requestId = String(
+    localRunRequestIds.get(Number(tabId))
+      || currentAssistantEl?.dataset?.runRequestId
+      || '',
+  );
+  if (requestId) cancelledRunRecoveryRequestIds.add(requestId);
   setTabAbortRequested(tabId, true);
   showActivity(t('sp.activity.stopping'));
 

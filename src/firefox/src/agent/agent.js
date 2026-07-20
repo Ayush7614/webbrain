@@ -428,9 +428,16 @@ export class Agent {
       this._persist(tabId);
       return false;
     }
+    const previousRequestId = this.submittedRunRequestIds.get(tabId);
     this.submittedRunRequestIds.set(tabId, cleanRequestId);
-    await this._persistNow(tabId);
-    return true;
+    try {
+      await this._persistNow(tabId);
+      return true;
+    } catch {
+      if (previousRequestId) this.submittedRunRequestIds.set(tabId, previousRequestId);
+      else this.submittedRunRequestIds.delete(tabId);
+      return false;
+    }
   }
 
   async hasDurableSubmittedTurn(tabId, requestId = '') {
