@@ -16264,6 +16264,41 @@ test('CDP input dispatchers never call the nonexistent Input.enable command', as
   assert.doesNotMatch(source, /Input\.enable/, 'Chrome CDP client must not reintroduce the unsupported Input.enable command');
 });
 
+test('CDP querySelectorPierce resolves open-shadow matches to DOM nodeIds', async () => {
+  const client = new CDPClient();
+  const commands = [];
+  client.sendCommand = async (_tabId, method, params = {}) => {
+    commands.push({ method, params });
+    if (method === 'Runtime.evaluate') {
+      assert.match(params.expression, /element\.shadowRoot/);
+      assert.match(params.expression, /#shadow-upload/);
+      return { result: { objectId: 'matches-array' } };
+    }
+    if (method === 'Runtime.getProperties') {
+      return {
+        result: [
+          { name: '0', value: { objectId: 'input-a' } },
+          { name: '1', value: { objectId: 'input-b' } },
+          { name: 'length', value: { value: 2 } },
+        ],
+      };
+    }
+    if (method === 'DOM.requestNode') {
+      return { nodeId: params.objectId === 'input-a' ? 501 : 502 };
+    }
+    return {};
+  };
+
+  const nodeIds = await client.querySelectorPierce(42, '#shadow-upload');
+  assert.deepEqual(nodeIds, [501, 502]);
+  assert.equal(
+    commands.some(command => command.method === 'DOM.querySelectorAll'),
+    false,
+    'document-root DOM.querySelectorAll cannot pierce open shadow roots',
+  );
+  assert.equal(commands.at(-1).method, 'Runtime.releaseObjectGroup');
+});
+
 test('Chrome selector click distinguishes pre-dispatch failure from uncertain dispatch', async () => {
   const client = new CDPClient();
   client.resolveSelector = async () => null;
@@ -16352,6 +16387,17 @@ test('Chrome focused type_text marks missing focus as a pre-dispatch failure', a
   }
 });
 
+function stubChromeCdpFileInputClickGuard(blocked = null) {
+  const arm = cdpClientCh.armFileInputClickGuard;
+  const consume = cdpClientCh.consumeFileInputClickGuard;
+  cdpClientCh.armFileInputClickGuard = async () => {};
+  cdpClientCh.consumeFileInputClickGuard = async () => blocked;
+  return () => {
+    cdpClientCh.armFileInputClickGuard = arm;
+    cdpClientCh.consumeFileInputClickGuard = consume;
+  };
+}
+
 test('Chrome click_ax keeps successful synthetic clicks and skips trusted fallback', async () => {
   const agent = new AgentCh({});
   let resolved = false;
@@ -16392,6 +16438,7 @@ test('Chrome click_ax treats broad page churn as weak evidence and still uses on
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   const weakObservation = {
     changed: true, proved: false, weakEvidence: true, safetyVeto: false, observable: true,
     reasons: ['page_text'], proofReasons: [], weakReasons: ['page_text'], safetyReasons: [],
@@ -16506,7 +16553,100 @@ test('Chrome click_ax treats broad page churn as weak evidence and still uses on
     assert.ok(result.observedHints?.includes('target_state_weak'));
     assert.ok(result.observedHints?.includes('page_controls'));
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
+    cdpClientCh.dispatchMouseEvent = originals.dispatch;
+  }
+});
+
+test('Chrome click_ax guards the trusted CDP fallback against native file choosers', async () => {
+  const originals = {
+    attach: cdpClientCh.attach,
+    arm: cdpClientCh.armFileInputClickGuard,
+    consume: cdpClientCh.consumeFileInputClickGuard,
+    dispatch: cdpClientCh.dispatchMouseEvent,
+  };
+  const agent = new AgentCh({});
+  const dispatched = [];
+  let armed = 0;
+  let consumed = 0;
+  agent._clickAxFinalSettleMs = () => 0;
+  agent._observeClickAxSideEffect = async () => ({
+    changed: false,
+    proved: false,
+    weakEvidence: false,
+    safetyVeto: false,
+    observable: true,
+    reasons: [],
+    proofReasons: [],
+    weakReasons: [],
+    safetyReasons: [],
+    snapshot: '{"text":"same","active":""}',
+  });
+  agent._captureClickAxObservation = async (_tabId, snapshot, sideEffectWatch, startedAt) => ({
+    startedAt,
+    snapshot,
+    tabIds: '1,42',
+    sideEffectWatch,
+  });
+  agent._resolveClickAxFallbackTarget = async () => ({
+    success: true,
+    fallbackEligible: true,
+    documentToken: 'doc-upload',
+    fallbackState: '{"aria-current":"<absent>"}',
+    fallbackStrongState: '{"aria-current":"<absent>"}',
+    fallbackWeakState: '{"className":""}',
+    x: 120,
+    y: 80,
+    rect: { x: 70, y: 60, w: 100, h: 40 },
+  });
+
+  try {
+    cdpClientCh.attach = async () => ({ tabId: 42, attached: true });
+    cdpClientCh.armFileInputClickGuard = async () => { armed++; };
+    cdpClientCh.consumeFileInputClickGuard = async () => {
+      consumed++;
+      return { blocked: true, selector: '#trusted-upload' };
+    };
+    cdpClientCh.dispatchMouseEvent = async (_tabId, type) => {
+      dispatched.push(type);
+    };
+
+    const result = await agent._maybeFallbackClickAxWithCdp(
+      42,
+      { ref_id: 'ref_upload' },
+      {
+        success: true,
+        method: 'click_ax',
+        ref_id: 'ref_upload',
+        tag: 'div',
+        _fallbackStateBefore: '{"full":"same"}',
+        _fallbackStateAfterImmediate: '{"full":"same"}',
+        _fallbackStrongStateBefore: '{"aria-current":"<absent>"}',
+        _fallbackStrongStateAfterImmediate: '{"aria-current":"<absent>"}',
+        _fallbackWeakStateBefore: '{"className":""}',
+        _fallbackWeakStateAfterImmediate: '{"className":""}',
+      },
+      { snapshot: '{"text":"same"}', sideEffectWatch: { created: [], requests: [] } },
+    );
+
+    assert.equal(armed, 1);
+    assert.equal(consumed, 1);
+    assert.deepEqual(dispatched, ['mouseMoved', 'mousePressed', 'mouseReleased']);
+    assert.equal(result.success, false);
+    assert.equal(result.dispatched, true);
+    assert.equal(result.filePickerBlocked, true);
+    assert.equal(result.selector, '#trusted-upload');
+    assert.equal(result.ref_id, 'ref_upload');
+    assert.equal(result.fallback, 'cdp_after_synthetic_no_progress');
+    assert.equal(result.fallbackAttempted, true);
+    assert.equal(result.trusted, true);
+    assert.equal(result.verified, true);
+    assert.match(result.error, /upload_file/);
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.armFileInputClickGuard = originals.arm;
+    cdpClientCh.consumeFileInputClickGuard = originals.consume;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
 });
@@ -16517,6 +16657,7 @@ test('Chrome click_ax never trusts ineligible targets and never retries one trus
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   agent._clickAxFinalSettleMs = () => 0;
   agent._observeClickAxSideEffect = async () => ({
@@ -16598,6 +16739,7 @@ test('Chrome click_ax never trusts ineligible targets and never retries one trus
     assert.match(second.fallbackSkipped, /already attempted/);
     assert.equal(dispatched, 3, 'the same document/ref target must receive at most one trusted fallback');
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -16609,6 +16751,7 @@ test('Chrome click_ax only consumes the one-shot slot after a CDP press is deliv
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   const dispatched = [];
   let attachAttempts = 0;
   agent._clickAxFinalSettleMs = () => 0;
@@ -16703,6 +16846,7 @@ test('Chrome click_ax only consumes the one-shot slot after a CDP press is deliv
     assert.match(repeated.fallbackSkipped, /already attempted/);
     assert.deepEqual(dispatched, ['mouseMoved', 'mousePressed', 'mouseReleased']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -16873,6 +17017,7 @@ test('Chrome click_ax trusted phase carries preparedActive so blur-only is not p
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let capturedPrepared = null;
   agent._clickAxFinalSettleMs = () => 0;
   agent._observeClickAxSideEffect = async (_tabId, baseline) => {
@@ -16969,6 +17114,7 @@ test('Chrome click_ax trusted phase carries preparedActive so blur-only is not p
     assert.equal(result.fallbackAttempted, true);
     assert.equal(result.verified, false);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17198,7 +17344,7 @@ test('Chrome executeTool re-stamps the click_ax safety window after content-scri
 
   try {
     const result = await agent.executeTool(42, 'click_ax', { ref_id: 'ref_inject' });
-    assert.equal(injectCalls, 1);
+    assert.equal(injectCalls, 2, 'recovery should inject the MAIN-world guard before isolated content');
     assert.equal(sendAttempts, 2);
     assert.equal(captureTimes.length, 2, 'baseline must be re-captured after inject');
     assert.ok(
@@ -17388,6 +17534,7 @@ test('Chrome click_ax accepts a delayed semantic target-state change without sen
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   agent._observeClickAxSideEffect = async () => ({
     changed: false,
@@ -17434,6 +17581,7 @@ test('Chrome click_ax accepts a delayed semantic target-state change without sen
     assert.deepEqual(result.observedEffects, ['target_state']);
     assert.equal(dispatched, 0);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17445,6 +17593,7 @@ test('Chrome click_ax accepts a target-state-only change after the trusted fallb
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   let resolves = 0;
   agent._clickAxFinalSettleMs = () => 0;
@@ -17517,6 +17666,7 @@ test('Chrome click_ax accepts a target-state-only change after the trusted fallb
     assert.equal(result.verified, true);
     assert.deepEqual(result.observedEffects, ['target_state']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17528,6 +17678,7 @@ test('Chrome click_ax accepts weak-only target state (class/data-status) after t
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   let resolves = 0;
   agent._clickAxFinalSettleMs = () => 0;
@@ -17605,6 +17756,7 @@ test('Chrome click_ax accepts weak-only target state (class/data-status) after t
     assert.equal(result.verified, true);
     assert.deepEqual(result.observedEffects, ['target_state_weak']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17616,6 +17768,7 @@ test('Chrome click_ax keeps an unobservable post-CDP navigation successful but u
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
   const agent = new AgentCh({});
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   let dispatched = 0;
   let observeCalls = 0;
   let resolves = 0;
@@ -17715,6 +17868,7 @@ test('Chrome click_ax keeps an unobservable post-CDP navigation successful but u
     assert.equal(result.error, undefined);
     assert.match(result.warning, /navigation or reload/);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
   }
@@ -17726,6 +17880,7 @@ test('Chrome executeTool runs automatic click_ax fallback and reuses its observe
     attach: cdpClientCh.attach,
     dispatch: cdpClientCh.dispatchMouseEvent,
   };
+  const restoreFileInputGuard = stubChromeCdpFileInputClickGuard();
   const actions = [];
   const dispatched = [];
   let snapshotCalls = 0;
@@ -17870,6 +18025,7 @@ test('Chrome executeTool runs automatic click_ax fallback and reuses its observe
     assert.equal(requestRemoves, 1);
     assert.deepEqual(requestFilter?.types, ['xmlhttprequest', 'ping']);
   } finally {
+    restoreFileInputGuard();
     cdpClientCh.attach = originals.attach;
     cdpClientCh.dispatchMouseEvent = originals.dispatch;
     if (originalChrome === undefined) delete globalThis.chrome;
@@ -24491,7 +24647,7 @@ test('click_ax rejects stale zero-sized targets before activation', () => {
     ['firefox', 'src/firefox/src/content/content.js'],
   ]) {
     const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    const branchStart = source.indexOf("'click_ax': () => {");
+    const branchStart = source.search(/'click_ax': (?:async )?\(\) => \{/);
     const branchEnd = source.indexOf("'type_ax':", branchStart);
     assert.ok(branchStart >= 0 && branchEnd > branchStart, `${label}: click_ax handler should be bounded for regression checks`);
     const branch = source.slice(branchStart, branchEnd);
@@ -31428,6 +31584,298 @@ test('upload_file schema accepts downloadId and no longer hard-requires filePath
   assert.ok(up, 'upload_file not present in act tools');
   assert.ok(up.function.parameters.properties.downloadId, 'downloadId param missing from schema');
   assert.deepEqual(up.function.parameters.required, ['selector'], 'filePath should no longer be required');
+  assert.match(up.function.description, /without opening the page or OS file-picker dialog/i);
+  assert.match(up.function.description, /Do NOT click "Choose file", "Select a file"/);
+});
+
+test('Chrome click paths suppress native file choosers and redirect to upload_file', async () => {
+  const cdp = new CDPClient();
+  const expressions = [];
+  cdp.evaluate = async (_tabId, expression) => {
+    expressions.push(expression);
+    if (expression.includes('__wb_file_input_click_guard_last || null')) {
+      return { result: { value: { blocked: true, selector: '#upload-addon', ts: Date.now() } } };
+    }
+    return { result: { value: true } };
+  };
+
+  await cdp.armFileInputClickGuard(42);
+  assert.match(expressions[0], /document\.addEventListener\('click'[\s\S]*true\)/);
+  assert.match(expressions[0], /webbrain:file-picker-guard-reset/);
+  assert.match(expressions[0], /event\.preventDefault\(\)/);
+  assert.match(expressions[0], /event\.stopImmediatePropagation\(\)/);
+  assert.match(expressions[0], /tagName === 'INPUT'[\s\S]*=== 'file'/);
+  assert.match(expressions[0], /matches\.length === 1 && matches\[0\] === input/);
+  assert.match(expressions[0], /Object\.getOwnPropertyDescriptor\(showPickerProto,\s*'showPicker'\)/);
+  assert.match(expressions[0], /Object\.getOwnPropertyDescriptor\(showPickerProto,\s*'click'\)/);
+  assert.match(expressions[0], /value:\s*guardedShowPicker/);
+  assert.match(expressions[0], /value:\s*guardedClick/);
+  assert.match(expressions[0], /blockInput\(this\)/);
+  const consumed = await cdp.consumeFileInputClickGuard(42, 0);
+  assert.equal(consumed.blocked, true);
+  assert.equal(consumed.selector, '#upload-addon');
+  assert.equal(typeof consumed.ts, 'number');
+
+  const protocolGuard = new CDPClient();
+  const protocolCommands = [];
+  protocolGuard.sendCommand = async (_tabId, method, params) => {
+    protocolCommands.push({ method, params });
+    return {};
+  };
+  protocolGuard.evaluate = async (_tabId, expression) => ({
+    result: { value: expression.includes('__wb_file_input_click_guard_last || null') ? null : true },
+  });
+  await protocolGuard.armFileInputClickGuard(43);
+  const chooserHandler = protocolGuard.eventHandlers.get(43)?.['Page.fileChooserOpened']?.[0];
+  assert.equal(typeof chooserHandler, 'function');
+  chooserHandler({ backendNodeId: 9001 });
+  const protocolBlocked = await protocolGuard.consumeFileInputClickGuard(43, 0);
+  assert.equal(protocolBlocked.blocked, true);
+  assert.equal(protocolBlocked.selector, null);
+  assert.equal(protocolBlocked.backendNodeId, 9001);
+  assert.ok(protocolCommands.some(command =>
+    command.method === 'Page.setInterceptFileChooserDialog'
+    && command.params.enabled === true
+    && command.params.cancel === true
+  ));
+  assert.ok(protocolCommands.some(command =>
+    command.method === 'Page.setInterceptFileChooserDialog'
+    && command.params.enabled === false
+  ));
+
+  const quietProtocolGuard = new CDPClient();
+  const quietProtocolCommands = [];
+  quietProtocolGuard.sendCommand = async (_tabId, method, params) => {
+    quietProtocolCommands.push({ method, params });
+    return {};
+  };
+  quietProtocolGuard.evaluate = async (_tabId, expression) => ({
+    result: { value: expression.includes('__wb_file_input_click_guard_last || null') ? null : true },
+  });
+  await quietProtocolGuard.armFileInputClickGuard(44);
+  const quietBlocked = await quietProtocolGuard.consumeFileInputClickGuard(44, 0);
+  assert.equal(quietBlocked, null);
+  assert.equal(quietProtocolGuard.fileChooserGuards.has(44), false);
+  assert.ok(quietProtocolCommands.some(command =>
+    command.method === 'Page.setInterceptFileChooserDialog'
+    && command.params.enabled === false
+  ), 'empty consume must release tab-wide protocol interception');
+
+  cdp.resolveSelector = async () => ({
+    found: true,
+    inViewport: true,
+    hitOk: true,
+    x: 120,
+    y: 80,
+    width: 100,
+    height: 30,
+    tag: 'A',
+    text: 'Select a file...',
+  });
+  cdp.armFileInputClickGuard = async () => {};
+  cdp.consumeFileInputClickGuard = async () => ({ blocked: true, selector: '#upload-addon' });
+  cdp.sendCommand = async () => ({});
+
+  const result = await cdp.clickElement(42, 'a.fileupload-button');
+  assert.equal(result.success, false);
+  assert.equal(result.dispatched, true);
+  assert.equal(result.filePickerBlocked, true);
+  assert.equal(result.selector, '#upload-addon');
+  assert.match(result.error, /upload_file/);
+  assert.match(result.error, /downloadId or absolute filePath/);
+
+  const ambiguousResult = cdp.fileInputClickBlockedResult({ blocked: true, selector: null });
+  assert.equal(ambiguousResult.success, false);
+  assert.equal(ambiguousResult.filePickerBlocked, true);
+  assert.equal(Object.hasOwn(ambiguousResult, 'selector'), false);
+  assert.match(ambiguousResult.error, /exact, unique/);
+  assert.match(ambiguousResult.error, /Do not use a generic input\[type="file"\]/);
+
+  const navigationRace = new CDPClient();
+  let mouseDispatches = 0;
+  let fallbackClicks = 0;
+  navigationRace.resolveSelector = async () => ({
+    found: true,
+    inViewport: true,
+    hitOk: true,
+    x: 120,
+    y: 80,
+    width: 100,
+    height: 30,
+    tag: 'A',
+    text: 'Continue',
+    nodeId: 777,
+  });
+  navigationRace.armFileInputClickGuard = async () => {};
+  navigationRace.evaluate = async () => {
+    throw new Error('Execution context was destroyed during navigation');
+  };
+  navigationRace.sendCommand = async (_tabId, method) => {
+    if (method === 'Input.dispatchMouseEvent') mouseDispatches++;
+    if (method === 'Runtime.callFunctionOn') fallbackClicks++;
+    if (method === 'DOM.resolveNode') return { object: { objectId: 'should-not-be-used' } };
+    return {};
+  };
+
+  const navigationResult = await navigationRace.clickElement(42, '#continue');
+  assert.equal(navigationResult.success, true);
+  assert.equal(navigationResult.method, 'cdp-mouse');
+  assert.equal(mouseDispatches, 3);
+  assert.equal(fallbackClicks, 0, 'post-click observation failure must not dispatch a fallback click');
+
+  for (const relPath of [
+    'src/chrome/src/content/content.js',
+    'src/firefox/src/content/content.js',
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.match(source, /function uniqueFileInputSelector\(input\)/, `${relPath}: missing unique selector builder`);
+    assert.match(source, /matches\.length === 1 && matches\[0\] === input/, `${relPath}: selector should be proven unique`);
+    assert.match(source, /const FILE_PICKER_GUARD_SETTLE_MS = 500/, `${relPath}: missing deferred picker settle window`);
+    assert.match(source, /function clickWithoutNativeFilePicker\(runClick,\s*settleMs\s*=\s*FILE_PICKER_GUARD_SETTLE_MS\)/, `${relPath}: missing one-click file chooser guard`);
+    assert.match(source, /setTimeout\(\(\) => \{\s*state\.settled = true/, `${relPath}: guard should survive the settle window`);
+    assert.match(source, /state\.cleanupTimer = setTimeout\(\(\) => \{[\s\S]*cleanupGuard\(\)/, `${relPath}: abandoned guards should still expire`);
+    assert.match(source, /const installPageShowPickerGuard = \(\) =>/, `${relPath}: missing page-world showPicker bridge handshake`);
+    assert.match(source, /webbrain:file-picker-guard-arm/, `${relPath}: missing page-world showPicker arm event`);
+    assert.match(source, /webbrain:file-picker-guard-blocked/, `${relPath}: missing page-world blocked result event`);
+    assert.match(source, /cleanupPageShowPickerGuard\?\.\(!!state\.blocked\)/, `${relPath}: delayed programmatic guard should survive an empty consume`);
+    assert.match(source, /clickWithoutNativeFilePicker\(\(\) => el\.click\(\)\)/, `${relPath}: synthetic clicks should use the chooser guard`);
+    assert.match(source, /_filePickerGuardId:\s*filePickerGuard\.guardId/, `${relPath}: click response should return without waiting on the unloading document`);
+    assert.match(source, /'consume_file_picker_guard':\s*\(\) => consumeFilePickerGuard/, `${relPath}: missing deferred guard result handshake`);
+    assert.match(source, /filePickerBlocked:\s*true/, `${relPath}: blocked chooser should be explicit to the model`);
+  }
+
+  const chromeManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/chrome/manifest.json'), 'utf8'));
+  const chromeMainGuard = chromeManifest.content_scripts.find(entry =>
+    entry.world === 'MAIN'
+    && entry.js?.includes('src/content/file-picker-guard-page.js')
+  );
+  assert.ok(chromeMainGuard, 'chrome: showPicker guard must run in the page MAIN world');
+  assert.equal(chromeMainGuard.run_at, 'document_start');
+
+  const firefoxManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/firefox/manifest.json'), 'utf8'));
+  const firefoxGuardLoader = firefoxManifest.content_scripts.find(entry =>
+    entry.js?.includes('src/content/file-picker-guard-loader.js')
+  );
+  assert.ok(firefoxGuardLoader, 'firefox: showPicker page-world loader is missing');
+  assert.equal(firefoxGuardLoader.run_at, 'document_start');
+  assert.ok(
+    firefoxManifest.web_accessible_resources.includes('src/content/file-picker-guard-page.js'),
+    'firefox: page-world showPicker guard must be web-accessible',
+  );
+
+  const pageGuardPaths = [
+    'src/chrome/src/content/file-picker-guard-page.js',
+    'src/firefox/src/content/file-picker-guard-page.js',
+  ];
+  for (const relPath of pageGuardPaths) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.doesNotMatch(source, /window\.__webbrainFilePickerGuardBridge/, `${relPath}: must not expose a stable page global`);
+    assert.match(source, /webbrain:file-picker-guard-probe/, `${relPath}: recovery reinjection should use an ephemeral idempotence probe`);
+    assert.match(source, /webbrain:file-picker-guard-reset/, `${relPath}: CDP should be able to reset a residual page guard`);
+    assert.match(source, /Object\.getOwnPropertyDescriptor\(proto,\s*'showPicker'\)/, `${relPath}: missing main-world showPicker interception`);
+    assert.match(source, /Object\.getOwnPropertyDescriptor\(proto,\s*'click'\)/, `${relPath}: missing closed-shadow click interception`);
+    assert.match(source, /reportBlocked\(this\)/, `${relPath}: main-world showPicker should record the input`);
+    assert.match(source, /Object\.defineProperty\(proto,\s*'showPicker',\s*showPickerDescriptor\)/, `${relPath}: showPicker interception should be restored`);
+    assert.match(source, /delete proto\.click/, `${relPath}: inherited click interception should be restored`);
+  }
+
+  const previousChrome = globalThis.chrome;
+  const chromeInjections = [];
+  globalThis.chrome = {
+    scripting: {
+      async executeScript(details) { chromeInjections.push(details); },
+    },
+  };
+  try {
+    const agent = Object.create(AgentCh.prototype);
+    await agent._injectCoreContentScripts(42);
+    assert.deepEqual(chromeInjections[0], {
+      target: { tabId: 42 },
+      world: 'MAIN',
+      files: ['src/content/file-picker-guard-page.js'],
+    });
+    assert.ok(
+      chromeInjections[1].files.includes('src/content/content.js'),
+      'chrome: recovery should inject isolated content after the MAIN-world guard',
+    );
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+  }
+
+  const previousBrowser = globalThis.browser;
+  const firefoxInjections = [];
+  globalThis.browser = {
+    tabs: {
+      async executeScript(tabId, details) { firefoxInjections.push({ tabId, ...details }); },
+    },
+  };
+  try {
+    const agent = Object.create(AgentFx.prototype);
+    await agent._injectCoreContentScripts(43);
+    assert.deepEqual(firefoxInjections.map(injection => injection.file), [
+      'src/content/file-picker-guard-loader.js',
+      'src/content/accessibility-tree.js',
+      'src/content/content.js',
+      'src/content/agent-visual-indicator.js',
+    ]);
+  } finally {
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
+  }
+
+  for (const relPath of [
+    'src/chrome/src/background.js',
+    'src/firefox/src/background.js',
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.match(source, /agent\._injectCoreContentScripts\(tabId\)/, `${relPath}: background recovery should include the page guard`);
+  }
+
+  for (const relPath of [
+    'src/chrome/src/agent/agent.js',
+    'src/firefox/src/agent/agent.js',
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.match(source, /async _settleContentFilePickerGuard\(tabId, response\)/, `${relPath}: missing background-side settle window`);
+    assert.match(source, /action:\s*'consume_file_picker_guard'/, `${relPath}: missing deferred guard result request`);
+    assert.match(source, /never re-inject\/replay the action/, `${relPath}: guard probe failure must not replay a delivered click`);
+  }
+
+  for (const [label, AgentClass, apiName] of [
+    ['chrome', AgentCh, 'chrome'],
+    ['firefox', AgentFx, 'browser'],
+  ]) {
+    const previousApi = globalThis[apiName];
+    let probeCalls = 0;
+    globalThis[apiName] = {
+      tabs: {
+        async sendMessage() {
+          probeCalls++;
+          throw new Error('The message port closed during navigation');
+        },
+      },
+    };
+    try {
+      const agent = Object.create(AgentClass.prototype);
+      const delivered = {
+        success: true,
+        dispatched: true,
+        rect: { x: 1, y: 2, w: 3, h: 4 },
+        _filePickerGuardId: 'guard-from-old-document',
+      };
+      const result = await agent._settleContentFilePickerGuard(42, delivered);
+      assert.deepEqual(result, {
+        success: true,
+        dispatched: true,
+        rect: { x: 1, y: 2, w: 3, h: 4 },
+      }, `${label}: navigation must preserve the delivered click result`);
+      assert.equal(probeCalls, 1, `${label}: a lost old document must not trigger a replay`);
+    } finally {
+      if (previousApi === undefined) delete globalThis[apiName];
+      else globalThis[apiName] = previousApi;
+    }
+  }
 });
 
 test('upload_file prefers downloadId over a supplied stale filePath (chrome)', async () => {
@@ -31442,6 +31890,7 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
   const realPath = '/Users/x/Downloads/real.zip';
   const stalePath = '/Users/Shared/made-up.zip';
   const uploaded = [];
+  let selectorMatches = [501];
 
   try {
     globalThis.chrome = {
@@ -31454,7 +31903,7 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
       },
     };
     cdpClientCh.attach = async (tabId) => ({ tabId, attached: true });
-    cdpClientCh.querySelectorPierce = async () => [501];
+    cdpClientCh.querySelectorPierce = async () => selectorMatches;
     cdpClientCh.probeLocalFile = async (_tabId, filePath) => {
       assert.equal(filePath, realPath, 'downloadId-resolved path should override stale filePath before probing');
       return { exists: true, readable: true, size: 123 };
@@ -31472,6 +31921,16 @@ test('upload_file prefers downloadId over a supplied stale filePath (chrome)', a
     assert.equal(result.file, realPath);
     assert.equal(args.filePath, realPath);
     assert.deepEqual(uploaded, [[realPath]]);
+
+    selectorMatches = [501, 502];
+    const ambiguous = await agent.executeTool(42, 'upload_file', {
+      selector: 'input[type=file]',
+      downloadId: 9123,
+    });
+    assert.equal(ambiguous.success, false);
+    assert.match(ambiguous.error, /matched 2 elements/);
+    assert.match(ambiguous.error, /exact, unique selector/);
+    assert.deepEqual(uploaded, [[realPath]], 'ambiguous selectors must fail before attaching the file');
   } finally {
     if (originalChrome === undefined) delete globalThis.chrome;
     else globalThis.chrome = originalChrome;
@@ -31485,6 +31944,8 @@ test('upload_file schema accepts downloadId and no longer hard-requires filePath
   assert.ok(up, 'upload_file not present in act tools');
   assert.ok(up.function.parameters.properties.downloadId, 'downloadId param missing from schema');
   assert.deepEqual(up.function.parameters.required, ['selector'], 'filePath should no longer be required');
+  assert.match(up.function.description, /without clicking the page upload control/i);
+  assert.match(up.function.description, /Do NOT click "Choose file", "Select a file"/);
 });
 
 test('upload_file (firefox) rejects non-complete downloads and missing picker base64', async () => {
@@ -31611,6 +32072,9 @@ test('upload_file (firefox) re-fetches downloadId with manual redirect handling 
     assert.ok(executedScripts[0].includes('dt.items.add(file)'), 'Script should add file to DataTransfer');
     assert.ok(executedScripts[0].includes('el.files = dt.files'), 'Script should assign DataTransfer files to input');
     assert.ok(executedScripts[0].includes('el.type !== \'file\''), 'Script should require input[type=file]');
+    assert.ok(executedScripts[0].includes('collectDeepMatches(element.shadowRoot)'), 'Script should search open shadow roots');
+    assert.ok(executedScripts[0].includes('matches.length > 1'), 'Script should reject ambiguous selectors');
+    assert.ok(executedScripts[0].includes('exact, unique selector'), 'Script should return actionable ambiguity guidance');
   } finally {
     if (originalBrowser === undefined) delete globalThis.browser;
     else globalThis.browser = originalBrowser;
