@@ -44,10 +44,12 @@ export class RunUiJournal {
     return snapshot;
   }
 
-  begin(tabId, requestId = '') {
+  begin(tabId, requestId = '', metadata = {}) {
     const snapshot = {
       tabId,
       requestId: createRunRequestId(tabId, requestId),
+      mode: String(metadata?.mode || ''),
+      kind: metadata?.kind === 'continue' ? 'continue' : 'chat',
       runId: null,
       status: 'running',
       seq: 0,
@@ -60,6 +62,7 @@ export class RunUiJournal {
       successfulDone: false,
       hadError: false,
       lastError: '',
+      pendingToolCall: null,
       startedAt: Date.now(),
       endedAt: null,
     };
@@ -67,9 +70,13 @@ export class RunUiJournal {
     return this._changed(tabId, snapshot);
   }
 
-  resume(tabId, requestId = '') {
+  resume(tabId, requestId = '', metadata = {}) {
     const snapshot = this.snapshots.get(tabId);
     if (!snapshot || String(snapshot.requestId) !== String(requestId)) return null;
+    if (metadata?.mode) snapshot.mode = String(metadata.mode);
+    if (!snapshot.kind && metadata?.kind) {
+      snapshot.kind = metadata.kind === 'continue' ? 'continue' : 'chat';
+    }
     snapshot.status = 'running';
     snapshot.pendingPlanId = null;
     snapshot.finalContent = '';
@@ -106,6 +113,12 @@ export class RunUiJournal {
         decision: String(data?.decision || ''),
       };
     }
+    if (type === 'tool_call' && data?.outcomeUnknown === true) {
+      snapshot.pendingToolCall = {
+        name: String(data?.name || ''),
+        seq: event.seq,
+      };
+    }
     if (type === 'tool_result'
         && data?.name === 'done'
         && data?.result?.done === true
@@ -117,10 +130,22 @@ export class RunUiJournal {
     }
     if (type === 'error' || type === 'attachment_rejected' || type === 'max_steps_reached') {
       snapshot.hadError = true;
-      snapshot.lastError = String(data?.message || data?.error || '').slice(0, 2000);
+      snapshot.lastError = String(
+        data?.message
+        || data?.error
+        || (type === 'max_steps_reached' ? 'The run reached its maximum step limit.' : ''),
+      ).slice(0, 2000);
     }
     this._changed(tabId, snapshot);
     return { ...event, requestId: snapshot.requestId, runId: snapshot.runId };
+  }
+
+  settleToolCall(tabId, requestId, name = '') {
+    const snapshot = this.snapshots.get(tabId);
+    if (!snapshot || snapshot.requestId !== requestId || !snapshot.pendingToolCall) return null;
+    if (name && snapshot.pendingToolCall.name && snapshot.pendingToolCall.name !== String(name)) return null;
+    snapshot.pendingToolCall = null;
+    return this._changed(tabId, snapshot);
   }
 
   finish(tabId, requestId, status, finalContent = '', runId = null) {
@@ -129,6 +154,7 @@ export class RunUiJournal {
     snapshot.runId = runId || snapshot.runId || null;
     snapshot.status = status;
     snapshot.pendingPlanId = null;
+    snapshot.pendingToolCall = null;
     snapshot.finalContent = String(finalContent || '').slice(0, 30000);
     snapshot.endedAt = Date.now();
     const event = {
@@ -150,6 +176,11 @@ export class RunUiJournal {
     if (snapshot.successfulDone !== true) snapshot.successfulDone = false;
     if (snapshot.hadError !== true) snapshot.hadError = false;
     if (typeof snapshot.lastError !== 'string') snapshot.lastError = '';
+    if (!snapshot.pendingToolCall || typeof snapshot.pendingToolCall !== 'object') {
+      snapshot.pendingToolCall = null;
+    }
+    if (typeof snapshot.mode !== 'string') snapshot.mode = '';
+    if (snapshot.kind !== 'continue' && snapshot.kind !== 'chat') snapshot.kind = 'chat';
     if (!snapshot.lastPlanResolution || typeof snapshot.lastPlanResolution !== 'object') {
       snapshot.lastPlanResolution = null;
     }

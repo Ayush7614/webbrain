@@ -36575,6 +36575,41 @@ test('run UI journal: resumed requests preserve sequence and replay boundaries',
   }
 });
 
+test('run UI journal: consequential tool checkpoints stay pending until conversation durability is confirmed', () => {
+  for (const [label, Journal] of [['chrome', RunUiJournalCh], ['firefox', RunUiJournalFx]]) {
+    const journal = new Journal();
+    const snapshot = journal.begin(8, `${label}-tool-checkpoint`, { mode: 'act', kind: 'chat' });
+    assert.equal(snapshot.mode, 'act', `${label}: recovery metadata should retain the originating mode`);
+    assert.equal(snapshot.kind, 'chat', `${label}: recovery metadata should identify fresh chat runs`);
+
+    const call = journal.record(8, snapshot.requestId, 'tool_call', {
+      name: 'click',
+      args: { text: 'Publish' },
+      outcomeUnknown: true,
+    });
+    assert.deepEqual(
+      journal.get(8).pendingToolCall,
+      { name: 'click', seq: call.seq },
+      `${label}: a consequential call must remain visibly pending before execution`,
+    );
+
+    journal.record(8, snapshot.requestId, 'tool_result', {
+      name: 'click',
+      result: { success: true },
+    });
+    assert.ok(
+      journal.get(8).pendingToolCall,
+      `${label}: receiving a tool result alone must not clear the restart guard before conversation persistence`,
+    );
+    journal.settleToolCall(8, snapshot.requestId, 'click');
+    assert.equal(
+      journal.get(8).pendingToolCall,
+      null,
+      `${label}: the guard should clear only after the durable conversation checkpoint`,
+    );
+  }
+});
+
 test('submitted chat durability marker is persisted atomically with the user turn', async () => {
   for (const [label, AgentClass, apiName] of [
     ['chrome', AgentCh, 'chrome'],
@@ -36972,6 +37007,159 @@ test('detached runs resume a persisted non-terminal request after background res
   }
 });
 
+test('detached runs fail closed on uncertain tool outcomes after background restart', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-uncertain-tool-outcome`;
+    const starts = [];
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 52, requestId, mode: 'act', text: 'publish once' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => ({
+          running: false,
+          starting: false,
+          submittedTurnDurable: true,
+          runUiDurable: true,
+          runUi: {
+            requestId,
+            status: 'running',
+            pendingToolCall: { name: 'click', seq: 4 },
+            events: [],
+          },
+        }),
+        isConnectionError: () => false,
+        wait: async () => {},
+      }),
+      /outcome of click is uncertain/i,
+      `${label}: an uncommitted page action must never be automatically replayed`,
+    );
+    assert.deepEqual(starts, ['chat_start'], `${label}: recovery must stop before continue_start`);
+  }
+});
+
+test('detached runs surface recorded terminal errors instead of resuming them', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-recorded-terminal-error`;
+    const starts = [];
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload: { tabId: 53, requestId, mode: 'act', text: 'stop on failure' },
+      start: async (action) => {
+        starts.push(action);
+        return { accepted: true, requestId };
+      },
+      probe: async () => ({
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUiDurable: true,
+        runUi: {
+          requestId,
+          status: 'running',
+          hadError: true,
+          lastError: 'Provider failed.',
+          events: [{ type: 'error', data: { message: 'Provider failed.' } }],
+        },
+      }),
+      isConnectionError: () => false,
+      wait: async () => {},
+    });
+
+    assert.equal(response.runStatus, 'failed', `${label}: the interrupted error snapshot should become terminal`);
+    assert.equal(response.hadError, true, `${label}: the terminal response should preserve the recorded error`);
+    assert.deepEqual(starts, ['chat_start'], `${label}: a recorded error must not launch continue_start`);
+  }
+});
+
+test('remounted recovery probes before adopting an orphaned run', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-remounted-orphan`;
+    const starts = [];
+    const states = [
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUiDurable: true,
+        runUi: { requestId, status: 'running', kind: 'chat', events: [] },
+      },
+      {
+        running: true,
+        starting: false,
+        runUi: { requestId, status: 'running', kind: 'chat', events: [] },
+      },
+      {
+        running: false,
+        starting: false,
+        runUi: { requestId, status: 'completed', finalContent: 'Adopted answer', events: [] },
+      },
+    ];
+    const response = await runDetachedWithReconnect({
+      initialAction: 'continue_start',
+      payload: { tabId: 54, requestId, mode: 'act' },
+      start: async (action) => {
+        starts.push(action);
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: () => false,
+      wait: async () => {},
+      probeFirst: true,
+      requireDurableSubmittedTurn: true,
+    });
+
+    assert.deepEqual(starts, ['continue_start'], `${label}: remount should probe first, then adopt the orphan exactly once`);
+    assert.equal(response.content, 'Adopted answer', `${label}: the remounted monitor should receive terminal output`);
+  }
+});
+
+test('remounted chat recovery fails closed when the submitted turn is not durable', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-remounted-nondurable`;
+    const starts = [];
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'continue_start',
+        payload: { tabId: 55, requestId, mode: 'act' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => ({
+          running: false,
+          starting: false,
+          submittedTurnDurable: false,
+          runUiDurable: true,
+          runUi: { requestId, status: 'running', kind: 'chat', events: [] },
+        }),
+        isConnectionError: () => false,
+        wait: async () => {},
+        probeFirst: true,
+        requireDurableSubmittedTurn: true,
+      }),
+      /submitted turn was not persisted before the sidebar reloaded/i,
+      `${label}: a remount without the original payload must not continue an older conversation`,
+    );
+    assert.deepEqual(starts, [], `${label}: probe-first recovery must fail before starting a continuation`);
+  }
+});
+
 test('fresh chat recovery resubmits the complete payload until its user turn is durable', async () => {
   for (const [label, runDetachedWithReconnect] of [
     ['chrome', runDetachedWithReconnectCh],
@@ -37221,6 +37409,8 @@ test('reconnect protocol is wired through both sidepanels and backgrounds', () =
     assert.match(panel, /sendPlanReviewDecisionWithReconnect\(/, `${label}: plan decisions should survive a lost response channel`);
     assert.match(panel, /showActivity\('Reconnecting…'\)/, `${label}: reconnect attempts should be visible`);
     assert.match(panel, /onState: state => applyActiveRunState\(tabId, state\)/, `${label}: reconnect probes should replay missed UI journal events`);
+    assert.match(panel, /void adoptRestoredRunState\(numericTabId, state\)/, `${label}: remounted sidepanels should adopt orphaned run monitors`);
+    assert.match(panel, /probeFirst: true,[\s\S]*?requireDurableSubmittedTurn:/, `${label}: remount adoption should probe before any safe continuation`);
     assert.match(panel, /if \(state\?\.running \|\| state\?\.starting\)/, `${label}: a reserved detached start should keep the composer and Stop UI in their active state`);
     assert.match(panel, /cancelledRunRecoveryRequestIds/, `${label}: user cancellation should block automatic resume`);
     const stopSection = panel.slice(
@@ -37230,10 +37420,13 @@ test('reconnect protocol is wired through both sidepanels and backgrounds', () =
     assert.match(stopSection, /localRunRequestIds\.get\(Number\(tabId\)\)[\s\S]*?cancelledRunRecoveryRequestIds\.add\(requestId\)[\s\S]*?setTabAbortRequested\(tabId, true\)/, `${label}: Stop should persist request-scoped cancellation before its UI timeout clears`);
     assert.match(background, /case 'chat_start':[\s\S]*?launchDetachedRun\('chat'/, `${label}: background should acknowledge detached chat starts`);
     assert.match(background, /case 'continue_start':[\s\S]*?launchDetachedRun\('continue'/, `${label}: background should acknowledge detached continuation starts`);
-    assert.match(background, /case 'chat':[\s\S]*?await beginContinuationRunUiSnapshot\(tabId, msg\.requestId\)/, `${label}: replayed fresh chats should preserve journal sequence numbers`);
-    assert.match(background, /await beginContinuationRunUiSnapshot\(tabId, msg\.requestId\)/, `${label}: resumed continuations should preserve their journal sequence`);
+    assert.match(background, /case 'chat':[\s\S]*?await beginContinuationRunUiSnapshot\(tabId, msg\.requestId,/, `${label}: replayed fresh chats should preserve journal sequence numbers`);
+    assert.match(background, /await beginContinuationRunUiSnapshot\(tabId, msg\.requestId,/, `${label}: resumed continuations should preserve their journal sequence`);
     assert.match(background, /submittedTurnDurable:?\s*,/, `${label}: run probes should expose whether the submitted chat turn is durable`);
     assert.match(background, /await agent\.hasDurableSubmittedTurn\(tabId, requestedRequestId\)/, `${label}: recovery should verify chat durability against persisted conversation state`);
+    assert.match(background, /beforeConsequentialTool: \(\) => flushRunUiSnapshot/, `${label}: consequential actions should await their pending journal checkpoint`);
+    assert.match(background, /afterConsequentialTool:[\s\S]*?settleToolCall/, `${label}: tool guards should clear only after durable conversation results`);
+    assert.match(background, /runUiDurable:/, `${label}: probes should expose journal persistence failures`);
     assert.match(background, /detachedRequestId: runUi\.requestId/, `${label}: detached chats should bind their persisted user turn to the run request`);
     assert.match(background, /startingRequestId: starting\?\.requestId \|\| null/, `${label}: run probes should expose in-flight start reservations`);
     assert.match(background, /runUi: runUiSnapshotForRequest\(runUiSnapshot, requestedRequestId\)/, `${label}: reconnect probes should not receive another request's journal`);

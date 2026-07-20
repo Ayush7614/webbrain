@@ -1963,7 +1963,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return false;
   }
 
-  async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null) {
+  async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null, runOptions = {}) {
     let didStateChange = false;
     const completionBatchStartState = this.completionInvariants.get(tabId) || null;
     const navNotices = [];
@@ -2295,7 +2295,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         beforeUrl = await this._currentUrl(tabId);
       }
 
-      onUpdate('tool_call', { name: fnName, args: fnArgs });
+      onUpdate('tool_call', {
+        name: fnName,
+        args: fnArgs,
+        outcomeUnknown: missingResponseOutcomeUnknown,
+      });
+      if (missingResponseOutcomeUnknown && typeof runOptions?.beforeConsequentialTool === 'function') {
+        try {
+          await runOptions.beforeConsequentialTool({ name: fnName });
+        } catch {}
+      }
       const _toolStart = Date.now();
       const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate, {
         completionBatchStartState,
@@ -2655,6 +2664,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         tool_call_id: tc.id,
         content: resultContent,
       });
+      if (missingResponseOutcomeUnknown && typeof runOptions?.afterConsequentialTool === 'function') {
+        const conversationDurable = await this._persistNow(tabId).catch(() => false);
+        if (conversationDurable) {
+          try {
+            await runOptions.afterConsequentialTool({ name: fnName });
+          } catch {}
+        }
+      }
       // A response can disappear while the page is navigating or reloading,
       // even for a read-only observation. Do not execute the rest of this
       // model-produced batch against unverified page state. Preserve provider
@@ -11592,7 +11609,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }, result.responseItems, result.reasoningContent, provider));
 
         const batchResult = await this._executeToolBatch(
-          tabId, result.toolCalls, messages, onUpdate, provider, result.content, allowedToolNames, steps
+          tabId, result.toolCalls, messages, onUpdate, provider, result.content, allowedToolNames, steps, runOptions
         );
         if (batchResult.action === 'return') {
           finalResponse = batchResult.value;
@@ -11983,7 +12000,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tool_calls: toolCalls,
           }, responseItems, reasoningContent, provider));
           const batchResult = await this._executeToolBatch(
-            tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps
+            tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps, runOptions
           );
           if (batchResult.action === 'return') {
             return finish(batchResult.value, batchResult.status);

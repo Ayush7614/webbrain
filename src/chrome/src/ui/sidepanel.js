@@ -917,6 +917,7 @@ const processingTabs = new Set();
 const abortRequestedTabs = new Set();
 const localRunRequestIds = new Map();
 const cancelledRunRecoveryRequestIds = new Set();
+const adoptedRunRecoveryRequestIds = new Set();
 let recommendationsRequestId = 0;
 let providerSelectionRequestId = 0;
 let providerTestRequestId = 0;
@@ -3222,6 +3223,71 @@ async function restoreActiveRunState(tabId = currentTabId) {
     return;
   }
   await applyActiveRunState(numericTabId, state);
+  void adoptRestoredRunState(numericTabId, state);
+}
+
+function isTerminalRunUiStatus(status) {
+  return ['completed', 'stopped', 'failed', 'cancelled'].includes(String(status || ''));
+}
+
+async function adoptRestoredRunState(tabId, state) {
+  const runUi = state?.runUi && typeof state.runUi === 'object' ? state.runUi : null;
+  const requestId = String(runUi?.requestId || '');
+  if (!requestId
+      || isTerminalRunUiStatus(runUi.status)
+      || runUi.status === 'awaiting_plan'
+      || localRunRequestIds.has(Number(tabId))
+      || adoptedRunRecoveryRequestIds.has(requestId)) return;
+
+  adoptedRunRecoveryRequestIds.add(requestId);
+  localRunRequestIds.set(Number(tabId), requestId);
+  setTabProcessing(tabId, true);
+  setTabAbortRequested(tabId, false);
+  syncSendButtonState();
+  if (sameTabId(currentTabId, tabId)) showActivity('Reconnecting…');
+  const assistantEl = messagesEl.querySelector(`.message.assistant[data-run-request-id="${CSS.escape(requestId)}"]`)
+    || currentAssistantEl;
+  const mode = ['ask', 'act', 'dev'].includes(runUi.mode)
+    ? runUi.mode
+    : (['ask', 'act', 'dev'].includes(assistantEl?.dataset?.runMode) ? assistantEl.dataset.runMode : agentMode);
+
+  try {
+    const res = await sendRunWithReconnect('continue_start', {
+      tabId,
+      requestId,
+      mode,
+    }, {
+      probeFirst: true,
+      requireDurableSubmittedTurn: runUi.kind !== 'continue',
+    });
+    const returnedErrorUpdate = Array.isArray(res?.updates)
+      ? res.updates.find(update => update?.type === 'error')
+      : null;
+    if (returnedErrorUpdate && sameTabId(currentTabId, tabId) && !isTabAbortRequested(tabId)) {
+      renderAgentErrorUpdate(returnedErrorUpdate.data, tabId, requestId);
+    }
+  } catch (error) {
+    if (sameTabId(currentTabId, tabId) && !isTabAbortRequested(tabId)) {
+      renderAgentErrorUpdate({ message: error.message }, tabId, requestId);
+    }
+  } finally {
+    adoptedRunRecoveryRequestIds.delete(requestId);
+    if (localRunRequestIds.get(Number(tabId)) === requestId) {
+      localRunRequestIds.delete(Number(tabId));
+      setTabProcessing(tabId, false);
+      setTabAbortRequested(tabId, false);
+    }
+    if (sameTabId(currentTabId, tabId)) {
+      if (assistantEl) finalizeSteps(assistantEl);
+      syncSendButtonState();
+      hideActivity();
+      if (currentAssistantEl === assistantEl) currentAssistantEl = null;
+      if (sameTabId(renderedTabId, tabId)) {
+        await flushRenderedTabChat();
+        await flushChatHistorySnapshot(tabId, { refreshTabInfo: true });
+      }
+    }
+  }
 }
 
 async function applyActiveRunState(numericTabId, state) {
@@ -6223,6 +6289,7 @@ function submitPlanReview(card, tabId, planId, action, editedText) {
       if (action !== 'approve') return;
       if (res?.matched) {
         card.remove();
+        void restoreActiveRunState(tabId);
       } else {
         note.textContent = expiredText();
         card.appendChild(note);
@@ -7223,7 +7290,7 @@ function sendPlanReviewDecisionWithReconnect(payload, requestId = '') {
   });
 }
 
-async function sendRunWithReconnect(initialAction, payload) {
+async function sendRunWithReconnect(initialAction, payload, recoveryOptions = {}) {
   const tabId = Number(payload?.tabId);
   const requestId = String(payload?.requestId || '');
   cancelledRunRecoveryRequestIds.delete(requestId);
@@ -7249,6 +7316,7 @@ async function sendRunWithReconnect(initialAction, payload) {
         showActivity('Reconnected — continuing…');
       }
     },
+    ...recoveryOptions,
   });
 }
 

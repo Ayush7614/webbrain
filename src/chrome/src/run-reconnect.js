@@ -41,6 +41,21 @@ function runResponseFromSnapshot(snapshot, { reconnected = false, resumed = fals
   };
 }
 
+function terminalResponseForRecordedError(snapshot) {
+  if (snapshot?.hadError !== true) return null;
+  const events = Array.isArray(snapshot.events) ? snapshot.events : [];
+  const reachedStepLimit = events.some(event => event?.type === 'max_steps_reached');
+  const fallback = snapshot.lastError
+    || (reachedStepLimit
+      ? 'The run reached its maximum step limit.'
+      : 'The run stopped after recording an error.');
+  return {
+    ...snapshot,
+    status: reachedStepLimit ? 'completed' : 'failed',
+    finalContent: String(snapshot.finalContent || (reachedStepLimit ? '' : `Error: ${fallback}`)),
+  };
+}
+
 /**
  * Starts a detached background run and follows its persisted UI journal.
  *
@@ -68,6 +83,8 @@ export async function runDetachedWithReconnect({
   maxAcknowledgedStartRetries = 2,
   maxMissingStateProbes = 6,
   maxConnectionFailures = 12,
+  probeFirst = false,
+  requireDurableSubmittedTurn = false,
 } = {}) {
   if (typeof start !== 'function' || typeof probe !== 'function') {
     throw new Error('Detached run recovery requires start and probe functions.');
@@ -82,23 +99,28 @@ export async function runDetachedWithReconnect({
   let acknowledgedStartRetries = 0;
   let everReconnected = false;
   let startWasUncertain = false;
-  let startObserved = false;
+  let startObserved = probeFirst;
+  let skipStart = probeFirst;
 
   while (true) {
-    let startAcknowledged = false;
-    try {
-      const ack = await start(action, actionPayload);
-      if (ack?.accepted === false) throw new Error(ack.error || 'The background rejected the run.');
-      if (ack?.requestId && !requestMatches(ack.requestId, requestId)) {
-        throw new Error('The background acknowledged a different run request.');
+    let startAcknowledged = skipStart;
+    if (skipStart) {
+      skipStart = false;
+    } else {
+      try {
+        const ack = await start(action, actionPayload);
+        if (ack?.accepted === false) throw new Error(ack.error || 'The background rejected the run.');
+        if (ack?.requestId && !requestMatches(ack.requestId, requestId)) {
+          throw new Error('The background acknowledged a different run request.');
+        }
+        startAcknowledged = true;
+        startWasUncertain = false;
+      } catch (error) {
+        if (!isConnectionError?.(error)) throw error;
+        startWasUncertain = true;
+        everReconnected = true;
+        onStatus({ phase: 'reconnecting', requestId, error });
       }
-      startAcknowledged = true;
-      startWasUncertain = false;
-    } catch (error) {
-      if (!isConnectionError?.(error)) throw error;
-      startWasUncertain = true;
-      everReconnected = true;
-      onStatus({ phase: 'reconnecting', requestId, error });
     }
 
     let missingStateProbes = 0;
@@ -179,6 +201,22 @@ export async function runDetachedWithReconnect({
 
       if (sameSnapshot && !TERMINAL_RUN_STATUSES.has(snapshot.status)) {
         if (!shouldResume()) throw new Error('Run recovery was cancelled.');
+        const recordedTerminal = terminalResponseForRecordedError(snapshot);
+        if (recordedTerminal) {
+          return runResponseFromSnapshot(recordedTerminal, {
+            reconnected: true,
+            resumed: resumeAttempts > 0,
+          });
+        }
+        if (snapshot.pendingToolCall) {
+          throw new Error(`Run recovery stopped because the outcome of ${snapshot.pendingToolCall.name || 'a page action'} is uncertain. Check the page before retrying to avoid repeating the action.`);
+        }
+        if (state?.runUiDurable === false) {
+          throw new Error('Run recovery stopped because its latest checkpoint was not persisted. Check the page before retrying to avoid duplicate actions.');
+        }
+        if (requireDurableSubmittedTurn && state?.submittedTurnDurable !== true) {
+          throw new Error('Run recovery stopped because the submitted turn was not persisted before the sidebar reloaded. Retry the request manually.');
+        }
         if (resumeAttempts >= maxResumeAttempts) {
           throw new Error('The extension background restarted repeatedly and the run could not be recovered.');
         }
@@ -340,4 +378,4 @@ export async function sendPlanResponseWithReconnect({
   throw lastConnectionError || new Error('Could not reconnect to submit the plan decision.');
 }
 
-export { TERMINAL_RUN_STATUSES, runResponseFromSnapshot };
+export { TERMINAL_RUN_STATUSES, runResponseFromSnapshot, terminalResponseForRecordedError };

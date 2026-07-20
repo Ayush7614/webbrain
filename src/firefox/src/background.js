@@ -1325,23 +1325,64 @@ browser.tabs.onRemoved.addListener((tabId) => {
 });
 
 const RUN_UI_PREFIX = 'runUi:';
+const runUiPersistenceQueues = new Map();
+const runUiPersistenceFailures = new Map();
+
+function cloneRunUiSnapshot(snapshot) {
+  try {
+    return structuredClone(snapshot);
+  } catch {
+    return JSON.parse(JSON.stringify(snapshot));
+  }
+}
+
+function persistRunUiSnapshot(tabId, snapshot) {
+  const requestId = String(snapshot?.requestId || '');
+  if (runUiPersistenceFailures.get(tabId) === requestId) return Promise.resolve(false);
+  const stableSnapshot = cloneRunUiSnapshot(snapshot);
+  const previous = runUiPersistenceQueues.get(tabId) || Promise.resolve(true);
+  const write = previous.catch(() => false).then(async () => {
+    if (runUiPersistenceFailures.get(tabId) === requestId) return false;
+    try {
+      await browser.storage.session?.set({ [RUN_UI_PREFIX + tabId]: stableSnapshot });
+      return true;
+    } catch {
+      runUiPersistenceFailures.set(tabId, requestId);
+      try { await browser.storage.session?.remove(RUN_UI_PREFIX + tabId); } catch {}
+      return false;
+    }
+  });
+  runUiPersistenceQueues.set(tabId, write);
+  write.finally(() => {
+    if (runUiPersistenceQueues.get(tabId) === write) runUiPersistenceQueues.delete(tabId);
+  }).catch(() => {});
+  return write;
+}
+
+function flushRunUiSnapshot(tabId, requestId) {
+  const pending = runUiPersistenceQueues.get(tabId);
+  if (pending) return pending;
+  return Promise.resolve(runUiPersistenceFailures.get(tabId) !== String(requestId || ''));
+}
+
 const runUiJournal = new RunUiJournal({
   onChange(tabId, snapshot) {
-    try { browser.storage.session?.set({ [RUN_UI_PREFIX + tabId]: snapshot }).catch(() => {}); } catch {}
+    void persistRunUiSnapshot(tabId, snapshot);
   },
 });
 
-function beginRunUiSnapshot(tabId, requestId) {
-  return runUiJournal.begin(tabId, requestId);
+function beginRunUiSnapshot(tabId, requestId, metadata = {}) {
+  runUiPersistenceFailures.delete(tabId);
+  return runUiJournal.begin(tabId, requestId, metadata);
 }
 
-async function beginContinuationRunUiSnapshot(tabId, requestId) {
+async function beginContinuationRunUiSnapshot(tabId, requestId, metadata = {}) {
   const existing = await getRunUiSnapshot(tabId);
   const sameNonTerminalRun = existing
     && String(existing.requestId || '') === String(requestId || '')
     && !['completed', 'stopped', 'failed', 'cancelled'].includes(existing.status);
-  if (sameNonTerminalRun) return runUiJournal.resume(tabId, requestId);
-  return beginRunUiSnapshot(tabId, requestId);
+  if (sameNonTerminalRun) return runUiJournal.resume(tabId, requestId, metadata);
+  return beginRunUiSnapshot(tabId, requestId, metadata);
 }
 
 function recordRunUiEvent(tabId, requestId, type, data) {
@@ -1377,7 +1418,13 @@ async function getRunUiSnapshot(tabId) {
 
 function clearRunUiSnapshot(tabId) {
   runUiJournal.clear(tabId);
-  try { browser.storage.session?.remove(RUN_UI_PREFIX + tabId).catch(() => {}); } catch {}
+  runUiPersistenceFailures.delete(tabId);
+  const previous = runUiPersistenceQueues.get(tabId) || Promise.resolve();
+  const removal = previous.catch(() => {}).then(() => browser.storage.session?.remove(RUN_UI_PREFIX + tabId));
+  runUiPersistenceQueues.set(tabId, removal);
+  removal.finally(() => {
+    if (runUiPersistenceQueues.get(tabId) === removal) runUiPersistenceQueues.delete(tabId);
+  }).catch(() => {});
 }
 
 function sendAgentUpdate(tabId, requestId, type, data) {
@@ -1662,7 +1709,7 @@ async function handleMessage(msg, sender) {
       if (!tabId) throw new Error('No tab ID');
       assertRunCanStart(tabId, msg);
       const mode = msg.mode || 'ask';
-      const runUi = await beginContinuationRunUiSnapshot(tabId, msg.requestId);
+      const runUi = await beginContinuationRunUiSnapshot(tabId, msg.requestId, { mode, kind: 'chat' });
       const releaseRunKeepalive = acquireRunKeepalive();
 
       if (msg.apiMutationsAllowed) agent.setApiMutationsAllowed(tabId, true);
@@ -1691,6 +1738,11 @@ async function handleMessage(msg, sender) {
           intentFailureMessage: msg.intentFailureMessage,
           detachedRequestId: runUi.requestId,
           isDetachedStartCancelled: () => isDetachedRunStartCancelled(tabId, msg),
+          beforeConsequentialTool: () => flushRunUiSnapshot(tabId, runUi.requestId),
+          afterConsequentialTool: async ({ name } = {}) => {
+            runUiJournal.settleToolCall(tabId, runUi.requestId, name);
+            return flushRunUiSnapshot(tabId, runUi.requestId);
+          },
         };
         result = await agent.processMessage(tabId, msg.text, (type, data) => {
           updates.push({ type, data });
@@ -1788,7 +1840,7 @@ async function handleMessage(msg, sender) {
       if (!tabId) throw new Error('No tab ID');
       assertRunCanStart(tabId, msg);
       const mode = msg.mode || 'ask';
-      const runUi = await beginContinuationRunUiSnapshot(tabId, msg.requestId);
+      const runUi = await beginContinuationRunUiSnapshot(tabId, msg.requestId, { mode, kind: 'continue' });
       const releaseRunKeepalive = acquireRunKeepalive();
 
       sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
@@ -1801,7 +1853,13 @@ async function handleMessage(msg, sender) {
           if (type === 'error') userMemoryTurnHadError = true;
           sendAgentUpdate(tabId, runUi.requestId, type, data);
         }, mode, {
+          detachedRequestId: runUi.requestId,
           isDetachedStartCancelled: () => isDetachedRunStartCancelled(tabId, msg),
+          beforeConsequentialTool: () => flushRunUiSnapshot(tabId, runUi.requestId),
+          afterConsequentialTool: async ({ name } = {}) => {
+            runUiJournal.settleToolCall(tabId, runUi.requestId, name);
+            return flushRunUiSnapshot(tabId, runUi.requestId);
+          },
         });
 
         const userMemoryPayload = takeUserMemoryTurnExtractionPayload(tabId, {
@@ -1871,6 +1929,8 @@ async function handleMessage(msg, sender) {
         starting: !!starting,
         startingRequestId: starting?.requestId || null,
         submittedTurnDurable,
+        runUiDurable: !runUiSnapshot
+          || runUiPersistenceFailures.get(tabId) !== String(runUiSnapshot.requestId || ''),
         detachedError,
         runUi: runUiSnapshotForRequest(runUiSnapshot, requestedRequestId),
       };
