@@ -25497,7 +25497,39 @@ test('chrome submit detector fail-closes CDP-only submit selector targets', () =
   assert.match(agent, /selector resolves to a submit control in shadow DOM/, 'chrome: CDP selector fallback should force submit confirmation for CDP-only submit controls');
   assert.match(agent, /_detectCdpSubmitSelector[\s\S]*type === 'image' \|\| type === 'button'[\s\S]*!type \|\| type === 'submit' \|\| type === 'button'/, 'chrome: CDP selector fallback should fail closed for JS-driven type=button form controls');
   assert.match(agent, /_detectCdpSubmitSelector[\s\S]*const role = String\(attrs\.role \|\| ''\)\.toLowerCase\(\);[\s\S]*Object\.prototype\.hasOwnProperty\.call\(attrs, 'onclick'\)[\s\S]*role === 'button'[\s\S]*hasActivationHandler/, 'chrome: CDP selector fallback should fail closed for non-native JS-driven controls');
-  assert.match(agent, /const nativeSubmit = \(tag === 'input'[\s\S]*validationSubmitEvidence: nativeSubmit \? 'strong' : 'heuristic'/, 'chrome: CDP selector fallback should preserve strong native-submit evidence');
+  assert.match(agent, /const nativeSubmit = \(tag === 'input'[\s\S]*tag === 'button' && \(!type \|\| type === 'submit'\)[\s\S]*validationSubmitEvidence: nativeSubmit \? 'strong' : 'heuristic'/, 'chrome: CDP selector fallback should preserve strong native-submit evidence, including default-type buttons');
+});
+
+test('chrome CDP submit selector treats default buttons as strong native submits', async () => {
+  const previousChrome = globalThis.chrome;
+  const originals = {
+    attach: cdpClientCh.attach,
+    resolveSelector: cdpClientCh.resolveSelector,
+    describeNode: cdpClientCh.describeNode,
+  };
+  try {
+    globalThis.chrome = { ...(previousChrome || {}), debugger: {} };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.resolveSelector = async () => ({ found: true, nodeId: 41 });
+    let attributes = [];
+    cdpClientCh.describeNode = async () => ({
+      node: { nodeName: 'BUTTON', attributes },
+    });
+    const agent = new AgentCh({ getVisionProvider: async () => null });
+
+    const defaultButton = await agent._detectCdpSubmitSelector(23, '#shadow-submit', 'example.com');
+    assert.equal(defaultButton?.validationSubmitEvidence, 'strong', 'default-type button should carry strong native-submit evidence');
+
+    attributes = ['type', 'button'];
+    const scriptButton = await agent._detectCdpSubmitSelector(23, '#shadow-continue', 'example.com');
+    assert.equal(scriptButton?.validationSubmitEvidence, 'heuristic', 'type=button should remain heuristic without stronger JS evidence');
+  } finally {
+    cdpClientCh.attach = originals.attach;
+    cdpClientCh.resolveSelector = originals.resolveSelector;
+    cdpClientCh.describeNode = originals.describeNode;
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+  }
 });
 
 test('firefox submit detector serializes static probe as a function expression', () => {

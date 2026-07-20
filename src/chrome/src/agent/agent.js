@@ -6152,7 +6152,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         || hasActivationHandler;
       if (!isSubmit) return null;
       const nativeSubmit = (tag === 'input' && (type === 'submit' || type === 'image'))
-        || (tag === 'button' && type === 'submit');
+        || (tag === 'button' && (!type || type === 'submit'));
       return {
         ...this._fallbackSubmitConfirmationInfo(
           host,
