@@ -3705,7 +3705,9 @@
             let marker = '';
             let trustedSelector = '';
             if (markForTrustedClick === true) {
-              marker = `wbsc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+              const markerEntropy = new Uint32Array(3);
+              globalThis.crypto.getRandomValues(markerEntropy);
+              marker = `wbsc_${Date.now().toString(36)}_${Array.from(markerEntropy, value => value.toString(36)).join('_')}`;
               el.setAttribute('data-webbrain-set-checked-target', marker);
               trustedSelector = `[data-webbrain-set-checked-target="${marker}"]`;
             }
