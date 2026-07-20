@@ -249,11 +249,31 @@ const { renderSkillMarkdown } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/ui/skill-markdown.js').replace(/\\/g, '/')
 );
 
-const { RunUiJournal: RunUiJournalCh } = await import(
+const {
+  RunUiJournal: RunUiJournalCh,
+  runUiSnapshotForRequest: runUiSnapshotForRequestCh,
+} = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/run-ui-journal.js').replace(/\\/g, '/')
 );
-const { RunUiJournal: RunUiJournalFx } = await import(
+const {
+  RunUiJournal: RunUiJournalFx,
+  runUiSnapshotForRequest: runUiSnapshotForRequestFx,
+} = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/run-ui-journal.js').replace(/\\/g, '/')
+);
+const {
+  isBackgroundConnectionError: isBackgroundConnectionErrorCh,
+  runDetachedWithReconnect: runDetachedWithReconnectCh,
+  sendPlanResponseWithReconnect: sendPlanResponseWithReconnectCh,
+} = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/run-reconnect.js').replace(/\\/g, '/')
+);
+const {
+  isBackgroundConnectionError: isBackgroundConnectionErrorFx,
+  runDetachedWithReconnect: runDetachedWithReconnectFx,
+  sendPlanResponseWithReconnect: sendPlanResponseWithReconnectFx,
+} = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/run-reconnect.js').replace(/\\/g, '/')
 );
 const { buildCloudPersistenceRows, createCloudRunController, normalizeCloudBridgeUrl } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/cloud-runs.js').replace(/\\/g, '/')
@@ -10856,7 +10876,7 @@ test('hidden trailing run-capture suffixes wrap normal prompts without entering 
     assert.ok(sendMatch, `${label}: sendMessage missing`);
     const sendBody = sendMatch[0];
     const parseIdx = sendBody.indexOf('parseTrailingRunCaptureDirective(text)');
-    const chatIdx = sendBody.indexOf("sendToBackground('chat'");
+    const chatIdx = sendBody.indexOf("sendRunWithReconnect('chat_start'");
     assert.ok(parseIdx >= 0 && chatIdx > parseIdx, `${label}: capture suffix should be parsed before chat dispatch`);
     assert.match(sendBody, /runCapture: \{[\s\S]*?kind: runCaptureDirective\.kind,[\s\S]*?saveAs: runCaptureDirective\.saveAs/, `${label}: chat dispatch should transfer capture ownership to background`);
     assert.doesNotMatch(sendBody, /startTrailingRunCapture|finishTrailingRunCapture/, `${label}: side panel lifecycle must not own capture start or finalization`);
@@ -12116,9 +12136,13 @@ test('sidepanel reports missing background responses without res.content crash',
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const reconnect = fs.readFileSync(
+      path.join(ROOT, panelRel.replace('/ui/sidepanel.js', '/run-reconnect.js')),
+      'utf8',
+    );
     assert.match(panel, /No response from WebBrain background/, `${label}: missing background response should become a clear error`);
     assert.match(panel, /formatBackgroundSendError\(action/, `${label}: runtime disconnects should be rewritten as WebBrain errors`);
-    assert.match(panel, /Receiving end does not exist/, `${label}: Chrome missing-receiver errors should be recognized`);
+    assert.match(reconnect, /Receiving end does not exist/, `${label}: Chrome missing-receiver errors should be recognized`);
     assert.match(panel, /response == null/, `${label}: sendToBackground should reject nullish responses`);
     assert.equal((panel.match(/res\?\.content && (?:currentAssistantEl|assistantEl)/g) || []).length >= 2, true, `${label}: chat and continue should not dereference missing responses`);
     assert.doesNotMatch(panel, /res\.content && (?:currentAssistantEl|assistantEl)/, `${label}: unsafe res.content render guard returned`);
@@ -12256,7 +12280,7 @@ test('sidepanel clears shared activity while restoring an idle destination tab',
     assert.notEqual(restoreStart, -1, `${label}: active-run restore helper missing`);
     assert.notEqual(restoreEnd, -1, `${label}: active-run restore helper boundary missing`);
     const restoreBody = panel.slice(restoreStart, restoreEnd);
-    const runningIdx = restoreBody.indexOf('if (state?.running) {');
+    const runningIdx = restoreBody.indexOf('if (state?.running || state?.starting) {');
     const idleIdx = restoreBody.indexOf('} else {', runningIdx);
     const runningBody = restoreBody.slice(runningIdx, idleIdx);
     const idleBody = restoreBody.slice(idleIdx);
@@ -13771,7 +13795,7 @@ test('sidepanel preserves stale residual slash-command prompts without hidden ru
       `${label}: aborted sends during history hydration should stop before chat dispatch`,
     );
     const staleReturnIdx = sendBody.indexOf('if (!renderToCurrentTab) {');
-    const sendIdx = sendBody.indexOf("sendToBackground('chat'");
+    const sendIdx = sendBody.indexOf("sendRunWithReconnect('chat_start'");
     assert.notEqual(staleReturnIdx, -1, `${label}: stale-tab residual guard missing`);
     assert.notEqual(sendIdx, -1, `${label}: chat send missing`);
     assert.equal(staleReturnIdx < sendIdx, true, `${label}: stale-tab residual guard must run before chat dispatch`);
@@ -13782,7 +13806,7 @@ test('sidepanel preserves stale residual slash-command prompts without hidden ru
     );
     assert.doesNotMatch(
       sendBody,
-      /sendToBackground\('chat', \{[\s\S]*?tabId: currentTabId/,
+      /sendRunWithReconnect\('chat_start', \{[\s\S]*?tabId: currentTabId/,
       `${label}: chat dispatch should not read currentTabId after slash parsing`,
     );
   }
@@ -14052,9 +14076,9 @@ test('sidepanel continue runs use the initiating tab state', () => {
     const match = panel.match(/async function continueAgent\(options = \{\}\) \{[\s\S]*?\n\}/);
     assert.ok(match, `${label}: continueAgent missing`);
     const body = match[0];
-    assert.match(body, /const tabId = currentTabId;[\s\S]*?const modeForSend = \['ask', 'act', 'dev'\]\.includes\(options\?\.mode\) \? options\.mode : agentMode;[\s\S]*?sendToBackground\('continue', \{[\s\S]*?tabId,[\s\S]*?mode: modeForSend,/, `${label}: Continue should send with the tab and requested-or-current mode captured before awaiting`);
-    assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?tabId: currentTabId/, `${label}: Continue should not read currentTabId inside the async send payload`);
-    assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?mode: agentMode/, `${label}: Continue should not read agentMode inside the async send payload`);
+    assert.match(body, /const tabId = currentTabId;[\s\S]*?const modeForSend = \['ask', 'act', 'dev'\]\.includes\(options\?\.mode\) \? options\.mode : agentMode;[\s\S]*?sendRunWithReconnect\('continue_start', \{[\s\S]*?tabId,[\s\S]*?mode: modeForSend,/, `${label}: Continue should send with the tab and requested-or-current mode captured before awaiting`);
+    assert.doesNotMatch(body, /sendRunWithReconnect\('continue_start', \{[\s\S]*?tabId: currentTabId/, `${label}: Continue should not read currentTabId inside the async send payload`);
+    assert.doesNotMatch(body, /sendRunWithReconnect\('continue_start', \{[\s\S]*?mode: agentMode/, `${label}: Continue should not read agentMode inside the async send payload`);
     assert.match(body, /await prepareChatHistoryForTurn\(tabId, modeForSend\);[\s\S]*?if \(isTabAbortRequested\(tabId\)\) return false;[\s\S]*?if \(!sameTabId\(currentTabId, tabId\) \|\| !sameTabId\(renderedTabId, tabId\)\) return false;[\s\S]*?assistantEl = addMessage\('assistant', ''\);/, `${label}: Continue should hydrate history, honor aborts, and re-check the initiating tab before rendering`);
     assert.match(body, /let assistantEl = null;[\s\S]*?assistantEl = addMessage\('assistant', ''\);[\s\S]*?currentAssistantEl = assistantEl;[\s\S]*?if \(currentTabId === tabId && res\?\.content && assistantEl\) \{[\s\S]*?addMessageCopyButton\(assistantEl\);/, `${label}: Continue should render only into its captured assistant bubble for the initiating tab`);
     assert.match(body, /if \(currentTabId === tabId && assistantEl\) finalizeSteps\(assistantEl\);[\s\S]*?if \(currentAssistantEl === assistantEl\) currentAssistantEl = null;/, `${label}: Continue should finalize and clear only its captured assistant bubble`);
@@ -35806,6 +35830,7 @@ test('page Stop WebBrain clears stale indicators without stopping recordings', (
     assert.notEqual(handlerStart, -1, `${label}: background Stop handler missing`);
     assert.notEqual(handlerEnd, -1, `${label}: background Stop handler boundary missing`);
     const handlerBody = background.slice(handlerStart, handlerEnd);
+    assert.match(handlerBody, /cancelDetachedRunStart\(tabId\)/, `${label}: page Stop should cancel a reserved detached start`);
     assert.match(handlerBody, /agent\.abort\(tabId\)/, `${label}: active agent runs should still be aborted`);
     assert.match(
       handlerBody,
@@ -36821,6 +36846,17 @@ test('run UI journal: mocked tab switching keeps plans and progress scoped to th
     deliver(gmailTab, gmailRequest, 'plan_resolved', { planId: 'gmail-plan', decision: 'approve' }, 'gmail-run');
     assert.equal(journal.get(gmailTab).status, 'running', `${label}: resolving the plan should make restored copies non-pending`);
     assert.equal(journal.get(gmailTab).events.at(-1).type, 'plan_resolved', `${label}: plan resolution should be journaled for every mounted copy`);
+    assert.deepEqual(
+      journal.get(gmailTab).lastPlanResolution,
+      { planId: 'gmail-plan', decision: 'approve' },
+      `${label}: plan resolution proof should survive event acknowledgement`,
+    );
+    journal.acknowledge(gmailTab, gmailRequest, journal.get(gmailTab).seq);
+    assert.deepEqual(
+      journal.get(gmailTab).lastPlanResolution,
+      { planId: 'gmail-plan', decision: 'approve' },
+      `${label}: reconnect should still prove an approval after replay events are released`,
+    );
   }
 });
 
@@ -36856,6 +36892,912 @@ test('run UI journal: concurrent tabs, bounded replay, terminal snapshots, and s
     remounted.restore(1, persisted.get(1));
     assert.equal(remounted.get(1).finalContent, 'A finished', `${label}: service-worker/panel remount should restore the terminal snapshot`);
   }
+});
+
+test('run UI journal: resumed requests preserve sequence and replay boundaries', () => {
+  for (const [label, Journal] of [['chrome', RunUiJournalCh], ['firefox', RunUiJournalFx]]) {
+    const journal = new Journal();
+    journal.begin(7, 'resume-request');
+    journal.record(7, 'resume-request', 'thinking', { content: 'Before restart' }, 'run-before');
+    journal.record(7, 'resume-request', 'plan_review', { planId: 'plan-before' }, 'run-before');
+    journal.acknowledge(7, 'resume-request', 1);
+
+    const before = journal.get(7);
+    assert.equal(before.seq, 2, `${label}: fixture should start above sequence zero`);
+    assert.equal(before.ackedSeq, 1, `${label}: fixture should retain an acknowledged replay boundary`);
+
+    const restarted = new Journal();
+    restarted.restore(7, structuredClone(before));
+    const resumed = restarted.resume(7, 'resume-request');
+    assert.ok(resumed, `${label}: matching request should resume its existing journal`);
+    assert.equal(resumed.seq, 2, `${label}: resume must preserve the prior sequence`);
+    assert.equal(resumed.ackedSeq, 1, `${label}: resume must preserve the acknowledged replay boundary`);
+    assert.equal(resumed.truncatedBeforeSeq, 1, `${label}: resume must preserve the compaction boundary`);
+    assert.equal(resumed.status, 'running', `${label}: resumed journal should return to running`);
+    assert.equal(resumed.pendingPlanId, null, `${label}: stale pre-restart plan ownership should be cleared`);
+    assert.deepEqual(
+      resumed.events.map(event => event.seq),
+      [2],
+      `${label}: unacknowledged pre-restart events should remain replayable`,
+    );
+
+    const next = restarted.record(7, 'resume-request', 'thinking', { content: 'After restart' }, 'run-after');
+    assert.equal(next.seq, 3, `${label}: first resumed event should advance beyond the old sequence`);
+    assert.deepEqual(
+      restarted.get(7).events.map(event => event.seq),
+      [2, 3],
+      `${label}: resumed events should not collide with prior replay sequence numbers`,
+    );
+    assert.equal(restarted.resume(7, 'different-request'), null, `${label}: a manual continuation must not reuse another request journal`);
+  }
+});
+
+test('run UI journal: consequential tool checkpoints stay pending until conversation durability is confirmed', () => {
+  for (const [label, Journal] of [['chrome', RunUiJournalCh], ['firefox', RunUiJournalFx]]) {
+    const journal = new Journal();
+    const snapshot = journal.begin(8, `${label}-tool-checkpoint`, { mode: 'act', kind: 'chat' });
+    assert.equal(snapshot.mode, 'act', `${label}: recovery metadata should retain the originating mode`);
+    assert.equal(snapshot.kind, 'chat', `${label}: recovery metadata should identify fresh chat runs`);
+
+    const call = journal.record(8, snapshot.requestId, 'tool_call', {
+      name: 'click',
+      args: { text: 'Publish' },
+      outcomeUnknown: true,
+    });
+    assert.deepEqual(
+      journal.get(8).pendingToolCall,
+      { name: 'click', seq: call.seq },
+      `${label}: a consequential call must remain visibly pending before execution`,
+    );
+
+    journal.record(8, snapshot.requestId, 'tool_result', {
+      name: 'click',
+      result: { success: true },
+    });
+    assert.ok(
+      journal.get(8).pendingToolCall,
+      `${label}: receiving a tool result alone must not clear the restart guard before conversation persistence`,
+    );
+    journal.settleToolCall(8, snapshot.requestId, 'click');
+    assert.equal(
+      journal.get(8).pendingToolCall,
+      null,
+      `${label}: the guard should clear only after the durable conversation checkpoint`,
+    );
+  }
+});
+
+test('submitted chat durability marker is persisted atomically with the user turn', async () => {
+  for (const [label, AgentClass, apiName] of [
+    ['chrome', AgentCh, 'chrome'],
+    ['firefox', AgentFx, 'browser'],
+  ]) {
+    const previousApi = globalThis[apiName];
+    const session = {};
+    const writes = [];
+    globalThis[apiName] = {
+      storage: {
+        session: {
+          get: async key => ({ [key]: session[key] }),
+          set: async values => {
+            const cloned = structuredClone(values);
+            writes.push(cloned);
+            Object.assign(session, cloned);
+          },
+          remove: async key => { delete session[key]; },
+        },
+      },
+    };
+    try {
+      const tabId = label === 'chrome' ? 61 : 62;
+      const requestId = `${label}-durable-user-turn`;
+      const first = new AgentClass({});
+      first.conversations.set(tabId, [
+        { role: 'system', content: 'System prompt' },
+        { role: 'user', content: 'Original submitted prompt' },
+      ]);
+      first.conversationModes.set(tabId, 'act');
+      first.conversationIds.set(tabId, `${label}-conversation`);
+
+      await first._persistSubmittedTurn(tabId, requestId);
+
+      assert.equal(writes.length, 1, `${label}: the user turn and durability marker should share one storage write`);
+      const stored = session[`agentConv:${tabId}`];
+      assert.equal(stored.submittedRunRequestId, requestId, `${label}: storage should bind the durable turn to its run request`);
+      assert.equal(stored.messages.at(-1)?.content, 'Original submitted prompt', `${label}: the same write should contain the submitted user turn`);
+
+      const restarted = new AgentClass({});
+      assert.equal(
+        await restarted.hasDurableSubmittedTurn(tabId, requestId),
+        true,
+        `${label}: a restarted background should recognize the persisted submitted turn`,
+      );
+      assert.equal(
+        await restarted.hasDurableSubmittedTurn(tabId, `${requestId}-other`),
+        false,
+        `${label}: durability proof must stay request-scoped`,
+      );
+
+      globalThis[apiName].storage.session.set = async () => {
+        throw new Error('QUOTA_BYTES exceeded');
+      };
+      const quotaLimited = new AgentClass({});
+      quotaLimited.conversations.set(tabId, [
+        { role: 'system', content: 'System prompt' },
+        { role: 'user', content: 'A large but otherwise valid submitted prompt' },
+      ]);
+      assert.equal(
+        await quotaLimited._persistSubmittedTurn(tabId, `${requestId}-quota`),
+        false,
+        `${label}: a session-storage quota failure should only disable recovery durability`,
+      );
+      assert.equal(
+        await quotaLimited.hasDurableSubmittedTurn(tabId, `${requestId}-quota`),
+        false,
+        `${label}: a failed storage write must not be advertised as durable`,
+      );
+    } finally {
+      if (previousApi === undefined) delete globalThis[apiName];
+      else globalThis[apiName] = previousApi;
+    }
+  }
+});
+
+test('detached runs reconnect to a live request without starting it twice', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-live-reconnect`;
+    const starts = [];
+    const statuses = [];
+    const replayedStates = [];
+    const states = [
+      {
+        running: true,
+        starting: false,
+        runUi: { requestId, status: 'running', events: [] },
+      },
+      {
+        running: false,
+        starting: false,
+        runUi: {
+          requestId,
+          status: 'completed',
+          finalContent: 'Recovered answer',
+          successfulDone: true,
+          events: [{
+            type: 'tool_result',
+            data: { name: 'done', result: { done: true, outcome: 'success' } },
+          }],
+        },
+      },
+    ];
+    let firstStart = true;
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload: { tabId: 41, requestId, mode: 'act', text: 'inspect the page' },
+      start: async (action) => {
+        starts.push(action);
+        if (firstStart) {
+          firstStart = false;
+          throw new Error('WebBrain extension connection was lost while sending "chat_start".');
+        }
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: error => /connection was lost/i.test(error.message),
+      onStatus: status => statuses.push(status.phase),
+      onState: state => replayedStates.push(state?.runUi?.status),
+      wait: async () => {},
+    });
+
+    assert.deepEqual(starts, ['chat_start'], `${label}: uncertain delivery should not duplicate a live run`);
+    assert.equal(response.content, 'Recovered answer', `${label}: terminal content should come from the run journal`);
+    assert.equal(response.reconnected, true, `${label}: response should report reconnection`);
+    assert.equal(response.resumed, false, `${label}: a still-live run should not be resumed`);
+    assert.equal(response.successfulDone, true, `${label}: successful done state should survive journal replay`);
+    assert.ok(statuses.includes('reconnecting'), `${label}: reconnecting status should be visible`);
+    assert.ok(statuses.includes('reconnected'), `${label}: reconnected status should be visible`);
+    assert.deepEqual(replayedStates, ['running', 'completed'], `${label}: missed UI journal states should be replayable after reconnect`);
+  }
+});
+
+test('run-state probes only expose the snapshot requested by reconnect recovery', () => {
+  const previousSnapshot = {
+    requestId: 'previous-terminal-request',
+    status: 'completed',
+    finalContent: 'Old answer',
+  };
+  for (const [label, runUiSnapshotForRequest] of [
+    ['chrome', runUiSnapshotForRequestCh],
+    ['firefox', runUiSnapshotForRequestFx],
+  ]) {
+    assert.equal(
+      runUiSnapshotForRequest(previousSnapshot, 'new-starting-request'),
+      null,
+      `${label}: a new detached start must not replay the previous request journal`,
+    );
+    assert.equal(
+      runUiSnapshotForRequest(previousSnapshot, previousSnapshot.requestId),
+      previousSnapshot,
+      `${label}: reconnect recovery should receive its matching journal`,
+    );
+    assert.equal(
+      runUiSnapshotForRequest(previousSnapshot),
+      previousSnapshot,
+      `${label}: unscoped sidepanel restore should still receive the tab snapshot`,
+    );
+  }
+});
+
+test('runtime message channel closures are treated as reconnectable background failures', () => {
+  const connectionErrors = [
+    new Error('A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received'),
+    new Error('The message port closed before a response was received.'),
+  ];
+  for (const [label, isBackgroundConnectionError] of [
+    ['chrome', isBackgroundConnectionErrorCh],
+    ['firefox', isBackgroundConnectionErrorFx],
+  ]) {
+    for (const error of connectionErrors) {
+      assert.equal(
+        isBackgroundConnectionError(error),
+        true,
+        `${label}: ${error.message}`,
+      );
+    }
+    assert.equal(
+      isBackgroundConnectionError(new Error('Provider rejected the API key.')),
+      false,
+      `${label}: application failures must not enter the reconnect loop`,
+    );
+  }
+});
+
+test('detached runs never retry an uncertain start after observing the live request', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-confirmed-uncertain-start`;
+    const starts = [];
+    const states = [
+      {
+        running: true,
+        starting: false,
+        runUi: { requestId, status: 'running', events: [] },
+      },
+      { running: false, starting: false, runUi: null },
+      { running: false, starting: false, runUi: null },
+    ];
+
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 46, requestId, mode: 'act', text: 'click the target once' },
+        start: async (action) => {
+          starts.push(action);
+          throw new Error('WebBrain extension connection was lost while sending "chat_start".');
+        },
+        probe: async () => states.shift() || { running: false, starting: false, runUi: null },
+        isConnectionError: error => /connection was lost/i.test(error.message),
+        wait: async () => {},
+        maxMissingStateProbes: 2,
+        maxUncertainStartRetries: 1,
+      }),
+      /acknowledged the run but did not publish recoverable run state/i,
+      `${label}: confirmed delivery should fail closed when all recoverable state disappears`,
+    );
+
+    assert.deepEqual(
+      starts,
+      ['chat_start'],
+      `${label}: observing the live request must permanently disable uncertain-start retries`,
+    );
+  }
+});
+
+test('detached runs honor cancellation before retrying an uncertain start', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-cancel-uncertain-start`;
+    const starts = [];
+    let probes = 0;
+
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 48, requestId, mode: 'act', text: 'do not retry after Stop' },
+        start: async (action) => {
+          starts.push(action);
+          throw new Error('WebBrain extension connection was lost while sending "chat_start".');
+        },
+        probe: async () => {
+          probes += 1;
+          return { running: false, starting: false, runUi: null };
+        },
+        isConnectionError: error => /connection was lost/i.test(error.message),
+        shouldResume: () => false,
+        wait: async () => {},
+        maxUncertainStartRetries: 1,
+      }),
+      /recovery was cancelled/i,
+      `${label}: Stop should cancel an uncertain start before any retry is sent`,
+    );
+
+    assert.equal(probes, 2, `${label}: cancellation should be checked at the first retry boundary`);
+    assert.deepEqual(starts, ['chat_start'], `${label}: cancellation must prevent a second start`);
+  }
+});
+
+test('detached runs retry an acknowledged start that never published recoverable state', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-acknowledged-without-state`;
+    const starts = [];
+    const states = [
+      { running: false, starting: false, submittedTurnDurable: false, runUi: null },
+      { running: false, starting: false, submittedTurnDurable: false, runUi: null },
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUi: {
+          requestId,
+          status: 'completed',
+          finalContent: 'Recovered acknowledged prompt',
+          events: [],
+        },
+      },
+    ];
+
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload: { tabId: 49, requestId, mode: 'act', text: 'preserve this accepted prompt' },
+      start: async (action, nextPayload) => {
+        starts.push({ action, payload: nextPayload });
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: () => false,
+      wait: async () => {},
+      maxAcknowledgedStartRetries: 1,
+    });
+
+    assert.deepEqual(
+      starts.map(start => start.action),
+      ['chat_start', 'chat_start'],
+      `${label}: an ack without any live, journal, or durable-turn proof should replay the original start once`,
+    );
+    assert.deepEqual(starts[1].payload, starts[0].payload, `${label}: acknowledged-start recovery must preserve the full payload`);
+    assert.equal(response.content, 'Recovered acknowledged prompt', `${label}: replayed start should complete normally`);
+  }
+});
+
+test('detached runs fail closed when plan approval state was lost on restart', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-lost-plan-approval`;
+    const starts = [];
+
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 50, requestId, mode: 'act', text: 'wait for plan approval' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => ({
+          running: false,
+          starting: false,
+          pendingPlan: null,
+          submittedTurnDurable: true,
+          runUi: {
+            requestId,
+            status: 'awaiting_plan',
+            pendingPlanId: 'plan-before-restart',
+            events: [],
+          },
+        }),
+        isConnectionError: () => false,
+        wait: async () => {},
+      }),
+      /Plan approval expired after the extension background restarted/i,
+      `${label}: a lost approval waiter must never become an automatic continuation`,
+    );
+
+    assert.deepEqual(starts, ['chat_start'], `${label}: recovery must not send continue_start without approval`);
+  }
+});
+
+test('detached runs resume a persisted non-terminal request after background restart', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-restart-resume`;
+    const starts = [];
+    const statuses = [];
+    const states = [
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUi: { requestId, status: 'running', finalContent: '', events: [] },
+      },
+      {
+        running: true,
+        starting: false,
+        runUi: { requestId, status: 'running', finalContent: '', events: [] },
+      },
+      {
+        running: false,
+        starting: false,
+        runUi: { requestId, status: 'completed', finalContent: 'Resumed answer', events: [] },
+      },
+    ];
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload: { tabId: 42, requestId, mode: 'act', text: 'finish the task' },
+      start: async (action) => {
+        starts.push(action);
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: () => false,
+      onStatus: status => statuses.push(status.phase),
+      wait: async () => {},
+    });
+
+    assert.deepEqual(starts, ['chat_start', 'continue_start'], `${label}: stale live state should resume exactly once`);
+    assert.equal(response.content, 'Resumed answer', `${label}: resumed run should publish its terminal content`);
+    assert.equal(response.resumed, true, `${label}: response should report automatic resume`);
+    assert.ok(statuses.includes('resuming'), `${label}: automatic resume should be surfaced`);
+  }
+});
+
+test('detached runs fail closed on uncertain tool outcomes after background restart', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-uncertain-tool-outcome`;
+    const starts = [];
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 52, requestId, mode: 'act', text: 'publish once' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => ({
+          running: false,
+          starting: false,
+          submittedTurnDurable: true,
+          runUiDurable: true,
+          runUi: {
+            requestId,
+            status: 'running',
+            pendingToolCall: { name: 'click', seq: 4 },
+            events: [],
+          },
+        }),
+        isConnectionError: () => false,
+        wait: async () => {},
+      }),
+      /outcome of click is uncertain/i,
+      `${label}: an uncommitted page action must never be automatically replayed`,
+    );
+    assert.deepEqual(starts, ['chat_start'], `${label}: recovery must stop before continue_start`);
+  }
+});
+
+test('detached runs surface recorded terminal errors instead of resuming them', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-recorded-terminal-error`;
+    const starts = [];
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload: { tabId: 53, requestId, mode: 'act', text: 'stop on failure' },
+      start: async (action) => {
+        starts.push(action);
+        return { accepted: true, requestId };
+      },
+      probe: async () => ({
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUiDurable: true,
+        runUi: {
+          requestId,
+          status: 'running',
+          hadError: true,
+          lastError: 'Provider failed.',
+          events: [{ type: 'error', data: { message: 'Provider failed.' } }],
+        },
+      }),
+      isConnectionError: () => false,
+      wait: async () => {},
+    });
+
+    assert.equal(response.runStatus, 'failed', `${label}: the interrupted error snapshot should become terminal`);
+    assert.equal(response.hadError, true, `${label}: the terminal response should preserve the recorded error`);
+    assert.deepEqual(starts, ['chat_start'], `${label}: a recorded error must not launch continue_start`);
+  }
+});
+
+test('remounted recovery probes before adopting an orphaned run', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-remounted-orphan`;
+    const starts = [];
+    const states = [
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUiDurable: true,
+        runUi: { requestId, status: 'running', kind: 'chat', events: [] },
+      },
+      {
+        running: true,
+        starting: false,
+        runUi: { requestId, status: 'running', kind: 'chat', events: [] },
+      },
+      {
+        running: false,
+        starting: false,
+        runUi: { requestId, status: 'completed', finalContent: 'Adopted answer', events: [] },
+      },
+    ];
+    const response = await runDetachedWithReconnect({
+      initialAction: 'continue_start',
+      payload: { tabId: 54, requestId, mode: 'act' },
+      start: async (action) => {
+        starts.push(action);
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: () => false,
+      wait: async () => {},
+      probeFirst: true,
+      requireDurableSubmittedTurn: true,
+    });
+
+    assert.deepEqual(starts, ['continue_start'], `${label}: remount should probe first, then adopt the orphan exactly once`);
+    assert.equal(response.content, 'Adopted answer', `${label}: the remounted monitor should receive terminal output`);
+  }
+});
+
+test('remounted chat recovery fails closed when the submitted turn is not durable', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-remounted-nondurable`;
+    const starts = [];
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'continue_start',
+        payload: { tabId: 55, requestId, mode: 'act' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => ({
+          running: false,
+          starting: false,
+          submittedTurnDurable: false,
+          runUiDurable: true,
+          runUi: { requestId, status: 'running', kind: 'chat', events: [] },
+        }),
+        isConnectionError: () => false,
+        wait: async () => {},
+        probeFirst: true,
+        requireDurableSubmittedTurn: true,
+      }),
+      /submitted turn was not persisted before the sidebar reloaded/i,
+      `${label}: a remount without the original payload must not continue an older conversation`,
+    );
+    assert.deepEqual(starts, [], `${label}: probe-first recovery must fail before starting a continuation`);
+  }
+});
+
+test('fresh chat recovery resubmits the complete payload until its user turn is durable', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-fresh-chat-recovery`;
+    const payload = {
+      tabId: 47,
+      requestId,
+      text: 'upload and inspect this',
+      mode: 'act',
+      attachments: [{ kind: 'text', name: 'notes.txt', textContent: 'evidence' }],
+      runCapture: { kind: 'screenshot', saveAs: 'proof' },
+      apiMutationsAllowed: true,
+      recommendedAction: { id: 'inspect' },
+      locale: 'tr',
+      intentFailureMessage: 'Plan unavailable.',
+    };
+    const starts = [];
+    const states = [
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: false,
+        runUi: { requestId, status: 'running', finalContent: '', events: [] },
+      },
+      {
+        running: true,
+        starting: false,
+        submittedTurnDurable: true,
+        runUi: { requestId, status: 'running', finalContent: '', events: [] },
+      },
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUi: { requestId, status: 'completed', finalContent: 'Recovered original task', events: [] },
+      },
+    ];
+
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload,
+      start: async (action, nextPayload) => {
+        starts.push({ action, payload: nextPayload });
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: () => false,
+      wait: async () => {},
+    });
+
+    assert.deepEqual(
+      starts.map(start => start.action),
+      ['chat_start', 'chat_start'],
+      `${label}: a pre-durability restart must replay the original chat instead of continuing an older conversation`,
+    );
+    assert.deepEqual(
+      starts[1].payload,
+      payload,
+      `${label}: recovery must preserve text, attachments, capture options, and per-turn flags`,
+    );
+    assert.equal(response.content, 'Recovered original task', `${label}: replayed fresh chat should complete normally`);
+    assert.equal(response.resumed, true, `${label}: replayed fresh chat should be reported as recovered`);
+  }
+});
+
+test('fresh chat recovery never replays after live progress without a durable turn', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-live-progress-without-durable-turn`;
+    const starts = [];
+    const states = [
+      {
+        running: true,
+        starting: false,
+        submittedTurnDurable: false,
+        runUi: { requestId, status: 'running', seq: 3, events: [] },
+      },
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: false,
+        runUi: { requestId, status: 'running', seq: 3, events: [] },
+      },
+    ];
+
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 51, requestId, mode: 'act', text: 'do this exactly once' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => states.shift(),
+        isConnectionError: () => false,
+        wait: async () => {},
+      }),
+      /avoid duplicate page actions/i,
+      `${label}: live-observed work without a durable turn must fail closed`,
+    );
+
+    assert.deepEqual(starts, ['chat_start'], `${label}: recovery must not replay a chat that already made live progress`);
+  }
+});
+
+test('detached run recovery honors a user cancellation instead of auto-resuming', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-cancel-recovery`;
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 43, requestId, mode: 'act', text: 'do not resume' },
+        start: async () => ({ accepted: true, requestId }),
+        probe: async () => ({
+          running: false,
+          starting: false,
+          runUi: { requestId, status: 'awaiting_plan', events: [] },
+        }),
+        isConnectionError: () => false,
+        shouldResume: () => false,
+        wait: async () => {},
+      }),
+      /recovery was cancelled/i,
+      `${label}: cancelled plan/run should not restart after background loss`,
+    );
+  }
+});
+
+test('detached run recovery preserves background preflight errors', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-capture-preflight`;
+    let probes = 0;
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 44, requestId, mode: 'act', text: 'record this run' },
+        start: async () => ({ accepted: true, requestId }),
+        probe: async () => {
+          probes += 1;
+          return {
+            running: false,
+            starting: false,
+            detachedError: {
+              requestId,
+              message: 'Run capture could not start: microphone permission denied.',
+            },
+            runUi: null,
+          };
+        },
+        isConnectionError: () => false,
+        wait: async () => {},
+      }),
+      /Run capture could not start: microphone permission denied\./,
+      `${label}: detached capture preflight failure should reach the sidebar unchanged`,
+    );
+    assert.equal(probes, 1, `${label}: a reported detached failure should stop recovery immediately`);
+  }
+});
+
+test('plan approval reconnect recovers a lost reply without submitting twice', async () => {
+  for (const [label, sendPlanResponseWithReconnect] of [
+    ['chrome', sendPlanResponseWithReconnectCh],
+    ['firefox', sendPlanResponseWithReconnectFx],
+  ]) {
+    let sends = 0;
+    const statuses = [];
+    const response = await sendPlanResponseWithReconnect({
+      payload: { tabId: 44, planId: 'plan-lost-reply', decision: 'approve' },
+      requestId: `${label}-plan-request`,
+      send: async () => {
+        sends += 1;
+        throw new Error('WebBrain extension connection was lost while sending "plan_response".');
+      },
+      probe: async () => ({
+        running: true,
+        pendingPlan: null,
+        runUi: {
+          requestId: `${label}-plan-request`,
+          status: 'running',
+          lastPlanResolution: { planId: 'plan-lost-reply', decision: 'approve' },
+        },
+      }),
+      isConnectionError: error => /connection was lost/i.test(error.message),
+      onStatus: status => statuses.push(status.phase),
+      wait: async () => {},
+    });
+
+    assert.equal(sends, 1, `${label}: durable approval proof should prevent a duplicate plan decision`);
+    assert.equal(response.matched, true, `${label}: a delivered approval with a lost reply should still succeed`);
+    assert.equal(response.recovered, true, `${label}: recovered approval should be identified`);
+    assert.deepEqual(statuses, ['reconnecting', 'reconnected'], `${label}: approval recovery should be visible`);
+  }
+});
+
+test('plan approval reconnect retries only while the same plan remains pending', async () => {
+  for (const [label, sendPlanResponseWithReconnect] of [
+    ['chrome', sendPlanResponseWithReconnectCh],
+    ['firefox', sendPlanResponseWithReconnectFx],
+  ]) {
+    let sends = 0;
+    const response = await sendPlanResponseWithReconnect({
+      payload: { tabId: 45, planId: 'plan-still-pending', decision: 'approve' },
+      requestId: `${label}-pending-plan-request`,
+      send: async () => {
+        sends += 1;
+        if (sends === 1) {
+          throw new Error('WebBrain extension connection was lost while sending "plan_response".');
+        }
+        return { ok: true, matched: true };
+      },
+      probe: async () => ({
+        running: true,
+        pendingPlan: { planId: 'plan-still-pending' },
+        runUi: {
+          requestId: `${label}-pending-plan-request`,
+          status: 'awaiting_plan',
+          lastPlanResolution: null,
+        },
+      }),
+      isConnectionError: error => /connection was lost/i.test(error.message),
+      wait: async () => {},
+    });
+
+    assert.equal(sends, 2, `${label}: an unresolved live plan should receive one retry`);
+    assert.equal(response.matched, true, `${label}: retry should deliver the pending approval`);
+    assert.equal(response.reconnected, true, `${label}: retried approval should report reconnection`);
+  }
+});
+
+test('reconnect protocol is wired through both sidepanels and backgrounds', () => {
+  for (const [label, prefix] of [['chrome', 'src/chrome'], ['firefox', 'src/firefox']]) {
+    const background = fs.readFileSync(path.join(ROOT, prefix, 'src/background.js'), 'utf8');
+    const panel = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/sidepanel.js'), 'utf8');
+    assert.match(panel, /isBackgroundConnectionError,[\s\S]*?runDetachedWithReconnect,[\s\S]*?sendPlanResponseWithReconnect,[\s\S]*?from '\.\.\/run-reconnect\.js';/, `${label}: sidepanel should use the reconnect monitors`);
+    assert.match(panel, /sendRunWithReconnect\('chat_start'/, `${label}: chats should use detached starts`);
+    assert.match(panel, /sendRunWithReconnect\('continue_start'/, `${label}: manual continuations should use detached starts`);
+    assert.match(panel, /sendPlanReviewDecisionWithReconnect\(/, `${label}: plan decisions should survive a lost response channel`);
+    assert.match(panel, /showActivity\('Reconnecting…'\)/, `${label}: reconnect attempts should be visible`);
+    assert.match(panel, /onState: state => applyActiveRunState\(tabId, state\)/, `${label}: reconnect probes should replay missed UI journal events`);
+    assert.match(panel, /void adoptRestoredRunState\(numericTabId, state\)/, `${label}: remounted sidepanels should adopt orphaned run monitors`);
+    assert.match(panel, /probeFirst: true,[\s\S]*?requireDurableSubmittedTurn:/, `${label}: remount adoption should probe before any safe continuation`);
+    assert.match(panel, /if \(state\?\.running \|\| state\?\.starting\)/, `${label}: a reserved detached start should keep the composer and Stop UI in their active state`);
+    assert.match(panel, /cancelledRunRecoveryRequestIds/, `${label}: user cancellation should block automatic resume`);
+    const stopSection = panel.slice(
+      panel.indexOf('// --- Stop / Abort ---'),
+      panel.indexOf('// --- Voice input', panel.indexOf('// --- Stop / Abort ---')),
+    );
+    assert.match(stopSection, /localRunRequestIds\.get\(Number\(tabId\)\)[\s\S]*?cancelledRunRecoveryRequestIds\.add\(requestId\)[\s\S]*?setTabAbortRequested\(tabId, true\)/, `${label}: Stop should persist request-scoped cancellation before its UI timeout clears`);
+    assert.match(background, /case 'chat_start':[\s\S]*?launchDetachedRun\('chat'/, `${label}: background should acknowledge detached chat starts`);
+    assert.match(background, /case 'continue_start':[\s\S]*?launchDetachedRun\('continue'/, `${label}: background should acknowledge detached continuation starts`);
+    assert.match(background, /case 'chat':[\s\S]*?await beginContinuationRunUiSnapshot\(tabId, msg\.requestId,/, `${label}: replayed fresh chats should preserve journal sequence numbers`);
+    assert.match(background, /await beginContinuationRunUiSnapshot\(tabId, msg\.requestId,/, `${label}: resumed continuations should preserve their journal sequence`);
+    assert.match(background, /submittedTurnDurable:?\s*,/, `${label}: run probes should expose whether the submitted chat turn is durable`);
+    assert.match(background, /await agent\.hasDurableSubmittedTurn\(tabId, requestedRequestId\)/, `${label}: recovery should verify chat durability against persisted conversation state`);
+    assert.match(background, /beforeConsequentialTool: \(\) => flushRunUiSnapshot/, `${label}: consequential actions should await their pending journal checkpoint`);
+    assert.match(background, /afterConsequentialTool:[\s\S]*?settleToolCall/, `${label}: tool guards should clear only after durable conversation results`);
+    assert.match(background, /runUiDurable:/, `${label}: probes should expose journal persistence failures`);
+    assert.match(background, /detachedRequestId: runUi\.requestId/, `${label}: detached chats should bind their persisted user turn to the run request`);
+    assert.match(background, /startingRequestId: starting\?\.requestId \|\| null/, `${label}: run probes should expose in-flight start reservations`);
+    assert.match(background, /runUi: runUiSnapshotForRequest\(runUiSnapshot, requestedRequestId\)/, `${label}: reconnect probes should not receive another request's journal`);
+    assert.match(background, /const entry = \{ requestId, promise: null, cancelled: false \}/, `${label}: detached starts should retain request-scoped cancellation`);
+    assert.match(background, /assertDetachedRunStartNotCancelled\(tabId, detachedMessage\)/, `${label}: cancelled reservations should not launch queued runs`);
+    assert.match(background, /case 'abort':[\s\S]*?cancelDetachedRunStart\(tabId\)[\s\S]*?agent\.abort\(tabId\)/, `${label}: sidebar Stop should cancel both reserved and active runs`);
+    assert.match(background, /isDetachedStartCancelled: \(\) => isDetachedRunStartCancelled\(tabId, msg\)/, `${label}: cancellation should remain visible through async run setup`);
+    assert.match(background, /detachedRunFailures/, `${label}: detached task failures should remain queryable by request ID`);
+    assert.match(background, /detachedError,/, `${label}: run probes should return the original detached task failure`);
+    assert.match(background, /RUN_KEEPALIVE_INTERVAL_MS = 20_000/, `${label}: active runs should renew the background lease`);
+    assert.match(background, /releaseRunKeepalive\(\)/, `${label}: completed runs should release their background lease`);
+  }
+  const firefoxManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/firefox/manifest.json'), 'utf8'));
+  assert.equal(firefoxManifest.background.persistent, true, 'firefox: long-running agent background should remain persistent');
 });
 
 test('sidepanel run errors dedupe streamed, returned, and restored copies by tab and request', () => {
@@ -36987,7 +37929,7 @@ test('per-tab run UI protocol is wired into both backgrounds and side panels', (
     assert.match(background, /new RunUiJournal\(/, `${label}: background should own the bounded run journal`);
     assert.match(background, /function assertNoActiveTabRun\(tabId\)/, `${label}: background should prevent duplicate runs within one tab`);
     assert.match(background, /tabId,[\s\S]*?requestId,[\s\S]*?runId:[\s\S]*?seq:/, `${label}: agent updates should carry tab, request, run, and sequence IDs`);
-    assert.match(background, /case 'agent_run_state':[\s\S]*?runUi: await getRunUiSnapshot\(tabId\)/, `${label}: remount state should include the UI journal snapshot`);
+    assert.match(background, /case 'agent_run_state':[\s\S]*?const runUiSnapshot = await getRunUiSnapshot\(tabId\)[\s\S]*?runUi: runUiSnapshotForRequest\(runUiSnapshot, requestedRequestId\)/, `${label}: remount state should include only the requested UI journal snapshot`);
     assert.match(background, /case 'agent_run_ack':[\s\S]*?runUiJournal\.acknowledge/, `${label}: background should accept ordered replay acknowledgements`);
     assert.match(background, /status: snapshot\.status \|\| 'completed'/, `${label}: run_complete should carry explicit terminal status`);
     assert.match(panel, /const processingTabs = new Set\(\);/, `${label}: processing state should be tab scoped`);
@@ -37163,6 +38105,66 @@ test('planner gate: a stale abort flag does not cancel a fresh task', async () =
 
       assert.equal(abortSeenByGate, false, `${label} stale abort flag should be cleared before the gate`);
       assert.equal(final, 'Fresh task ran.', `${label} fresh task should run, not be cancelled`);
+    }
+  });
+});
+
+test('detached-start cancellation survives setup until before LLM work', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9311 : 9312;
+      const provider = {
+        supportsTools: false,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+      };
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      agent._hydrate = async () => {};
+      agent._manageContext = async () => {};
+      agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+      let cancellationChecks = 0;
+
+      const final = await agent.processMessage(
+        tabId,
+        'do not start after Stop',
+        () => {},
+        'act',
+        [],
+        {
+          detachedRequestId: `${label}-cancelled-start`,
+          isDetachedStartCancelled: () => {
+            cancellationChecks += 1;
+            return true;
+          },
+        },
+      );
+
+      assert.equal(final, 'Stopped by user before the run started.', `${label}: cancelled detached start should stop before provider work`);
+      assert.equal(cancellationChecks, 1, `${label}: cancellation should be checked at the final pre-LLM boundary`);
+      assert.equal(agent.activeRunState(tabId).running, false, `${label}: cancelled setup should release active-run state`);
+
+      const continueTabId = tabId + 100;
+      let continueCancellationChecks = 0;
+      const continued = await agent.continueProcessing(
+        continueTabId,
+        () => {},
+        'act',
+        {
+          isDetachedStartCancelled: () => {
+            continueCancellationChecks += 1;
+            return true;
+          },
+        },
+      );
+      assert.equal(continued, 'Stopped by user before the run started.', `${label}: cancelled detached continuation should stop before provider work`);
+      assert.equal(continueCancellationChecks, 1, `${label}: continueProcessing should forward detached cancellation`);
+      assert.equal(agent.activeRunState(continueTabId).running, false, `${label}: cancelled continuation should release active-run state`);
     }
   });
 });

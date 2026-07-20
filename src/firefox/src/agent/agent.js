@@ -85,6 +85,7 @@ export class Agent {
     this._progressSessionCounter = 0;
     this.conversationIds = new Map(); // tabId -> stable conversationId (regenerated on clearConversation)
     this.conversationModes = new Map(); // tabId -> 'ask' | 'act' | 'dev'
+    this.submittedRunRequestIds = new Map(); // tabId -> request whose user turn is durable in storage.session
     this.plannerFollowUpSkipTabs = new Set(); // tabIds allowed one short follow-up after an approved try-mode plan
     this.hydratedTabs = new Set(); // tabIds we've already pulled from storage
     this.persistTimers = new Map(); // tabId -> debounce handle
@@ -367,6 +368,9 @@ export class Agent {
         if (entry.conversationId) {
           this.conversationIds.set(tabId, entry.conversationId);
         }
+        if (entry.submittedRunRequestId) {
+          this.submittedRunRequestIds.set(tabId, String(entry.submittedRunRequestId));
+        }
         if (Array.isArray(entry.progressLedger)) {
           this.progressLedgers.set(tabId, entry.progressLedger);
         }
@@ -375,6 +379,32 @@ export class Agent {
         }
       }
     } catch (e) { /* session storage may be unavailable */ }
+  }
+
+  _conversationStorageEntry(tabId) {
+    const messages = this.conversations.get(tabId);
+    if (!messages) return null;
+    return {
+      mode: this.conversationModes.get(tabId) || 'ask',
+      messages,
+      conversationId: this.conversationIds.get(tabId) || null,
+      submittedRunRequestId: this.submittedRunRequestIds.get(tabId) || null,
+      progressLedger: this.progressLedgers.get(tabId) || [],
+      progressSession: this.progressSessions.get(tabId) || null,
+    };
+  }
+
+  async _persistNow(tabId) {
+    if (tabId == null) return false;
+    const existing = this.persistTimers.get(tabId);
+    if (existing) {
+      clearTimeout(existing);
+      this.persistTimers.delete(tabId);
+    }
+    const entry = this._conversationStorageEntry(tabId);
+    if (!entry) return false;
+    await browser.storage.session.set({ [this._convKey(tabId)]: entry });
+    return true;
   }
 
   /**
@@ -387,19 +417,34 @@ export class Agent {
     if (existing) clearTimeout(existing);
     const handle = setTimeout(() => {
       this.persistTimers.delete(tabId);
-      const messages = this.conversations.get(tabId);
-      if (!messages) return;
-      const mode = this.conversationModes.get(tabId) || 'ask';
-      const conversationId = this.conversationIds.get(tabId) || null;
-      const progressLedger = this.progressLedgers.get(tabId) || [];
-      const progressSession = this.progressSessions.get(tabId) || null;
-      try {
-        browser.storage.session.set({
-          [this._convKey(tabId)]: { mode, messages, conversationId, progressLedger, progressSession },
-        }).catch(() => {});
-      } catch (e) { /* ignore */ }
+      this._persistNow(tabId).catch(() => {});
     }, 300);
     this.persistTimers.set(tabId, handle);
+  }
+
+  async _persistSubmittedTurn(tabId, requestId = '') {
+    const cleanRequestId = String(requestId || '');
+    if (!cleanRequestId) {
+      this._persist(tabId);
+      return false;
+    }
+    const previousRequestId = this.submittedRunRequestIds.get(tabId);
+    this.submittedRunRequestIds.set(tabId, cleanRequestId);
+    try {
+      await this._persistNow(tabId);
+      return true;
+    } catch {
+      if (previousRequestId) this.submittedRunRequestIds.set(tabId, previousRequestId);
+      else this.submittedRunRequestIds.delete(tabId);
+      return false;
+    }
+  }
+
+  async hasDurableSubmittedTurn(tabId, requestId = '') {
+    const cleanRequestId = String(requestId || '');
+    if (!cleanRequestId) return false;
+    await this._hydrate(tabId);
+    return this.submittedRunRequestIds.get(tabId) === cleanRequestId;
   }
 
   async getConversationId(tabId) {
@@ -1936,7 +1981,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return false;
   }
 
-  async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null) {
+  async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null, runOptions = {}) {
     let didStateChange = false;
     const completionBatchStartState = this.completionInvariants.get(tabId) || null;
     const navNotices = [];
@@ -2268,7 +2313,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         beforeUrl = await this._currentUrl(tabId);
       }
 
-      onUpdate('tool_call', { name: fnName, args: fnArgs });
+      onUpdate('tool_call', {
+        name: fnName,
+        args: fnArgs,
+        outcomeUnknown: missingResponseOutcomeUnknown,
+      });
+      if (missingResponseOutcomeUnknown && typeof runOptions?.beforeConsequentialTool === 'function') {
+        try {
+          await runOptions.beforeConsequentialTool({ name: fnName });
+        } catch {}
+      }
       const _toolStart = Date.now();
       const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate, {
         completionBatchStartState,
@@ -2628,6 +2682,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         tool_call_id: tc.id,
         content: resultContent,
       });
+      if (missingResponseOutcomeUnknown && typeof runOptions?.afterConsequentialTool === 'function') {
+        const conversationDurable = await this._persistNow(tabId).catch(() => false);
+        if (conversationDurable) {
+          try {
+            await runOptions.afterConsequentialTool({ name: fnName });
+          } catch {}
+        }
+      }
       // A response can disappear while the page is navigating or reloading,
       // even for a read-only observation. Do not execute the rest of this
       // model-produced batch against unverified page state. Preserve provider
@@ -4303,7 +4365,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // transcript.
     const priorMessages = runIntent ? messages.slice() : null;
     messages.push(enriched);
-    this._persist(tabId);
+    await this._persistSubmittedTurn(tabId, runOptions?.detachedRequestId);
     if (!runIntent) {
       this.plannerFollowUpSkipTabs.delete(tabId);
       return { proceed: true, requestKind: 'execute', requiresStateChange: false };
@@ -6162,6 +6224,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.mastodonStates.delete(tabId);
     this.conversationModes.delete(tabId);
     this.conversationIds.delete(tabId);
+    this.submittedRunRequestIds.delete(tabId);
     this._lastInputTokens.delete(tabId);
     this._lastEstCharsAtReport.delete(tabId);
     this._compactCooldown.delete(tabId);
@@ -11016,14 +11079,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   /**
    * Continue processing from where we left off (after max steps).
    */
-  async continueProcessing(tabId, onUpdate = () => {}, mode = 'ask') {
+  async continueProcessing(tabId, onUpdate = () => {}, mode = 'ask', runOptions = {}) {
     return this.processMessage(
       tabId,
       'Please continue from where you left off.',
       onUpdate,
       mode,
       [],
-      { trustedContinuation: true },
+      { ...runOptions, trustedContinuation: true },
     );
   }
 
@@ -11294,6 +11357,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const provider = this.providerManager.getActive();
 
+    if (typeof runOptions?.isDetachedStartCancelled === 'function'
+        && runOptions.isDetachedStartCancelled()) {
+      this.abortFlags.delete(tabId);
+      return 'Stopped by user before the run started.';
+    }
+
     // Clear any stale abort flag before any LLM work. The planner gate makes a
     // paid LLM call and checks/consumes this flag, so a leftover flag from a
     // prior run must not cancel this fresh task. (#1)
@@ -11307,7 +11376,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const msg = this._devModeBlockedMessage(provider);
       messages.push(enriched);
       messages.push({ role: 'assistant', content: msg });
-      this._persist(tabId);
+      await this._persistSubmittedTurn(tabId, runOptions?.detachedRequestId);
       onUpdate('warning', { message: msg });
       return (finalResponse = msg);
     }
@@ -11560,7 +11629,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }, result.responseItems, result.reasoningContent, provider));
 
         const batchResult = await this._executeToolBatch(
-          tabId, result.toolCalls, messages, onUpdate, provider, result.content, allowedToolNames, steps
+          tabId, result.toolCalls, messages, onUpdate, provider, result.content, allowedToolNames, steps, runOptions
         );
         if (batchResult.action === 'return') {
           finalResponse = batchResult.value;
@@ -11951,7 +12020,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tool_calls: toolCalls,
           }, responseItems, reasoningContent, provider));
           const batchResult = await this._executeToolBatch(
-            tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps
+            tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps, runOptions
           );
           if (batchResult.action === 'return') {
             return finish(batchResult.value, batchResult.status);
