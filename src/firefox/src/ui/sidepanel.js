@@ -13,6 +13,7 @@ import { formatSelectionPromptForDisplay } from '../context-menu-storage.js';
 import { deleteChatHistoryRecord, saveChatHistoryRecord } from './chat-history-store.js';
 import { claimRunError } from './run-error-dedupe.js';
 import { RUN_CAPTURE_START_ERROR_PREFIX } from '../run-capture.js';
+import { runDetachedWithReconnect, sendPlanResponseWithReconnect } from '../run-reconnect.js';
 import {
   STORAGE_KEY as STORE_REVIEW_STORAGE_KEY,
   recordSuccessfulTask,
@@ -769,6 +770,7 @@ const awaitingPlanReviewTabs = new Set();
 const processingTabs = new Set();
 const abortRequestedTabs = new Set();
 const localRunRequestIds = new Map();
+const cancelledRunRecoveryRequestIds = new Set();
 let recommendationsRequestId = 0;
 let providerSelectionRequestId = 0;
 let providerTestRequestId = 0;
@@ -3060,6 +3062,10 @@ async function restoreActiveRunState(tabId = currentTabId) {
   } catch {
     return;
   }
+  await applyActiveRunState(numericTabId, state);
+}
+
+async function applyActiveRunState(numericTabId, state) {
   if (!sameTabId(currentTabId, numericTabId) || !sameTabId(renderedTabId, numericTabId)) return;
   const runUi = state?.runUi && typeof state.runUi === 'object' ? state.runUi : null;
   if (runUi?.requestId) {
@@ -4922,7 +4928,7 @@ async function sendMessage(extraChatParams = {}) {
   let completedSuccessfully = false;
   let promptEligibleCompletion = false;
   try {
-    const res = await sendToBackground('chat', {
+    const res = await sendRunWithReconnect('chat_start', {
       tabId,
       requestId,
       text,
@@ -4944,7 +4950,7 @@ async function sendMessage(extraChatParams = {}) {
       chatHistoryRecordIdsByTab.set(tabId, res.conversationId);
     }
     accepted = true;
-    completedSuccessfully = updatesContainSuccessfulDone(res?.updates);
+    completedSuccessfully = res?.successfulDone === true || updatesContainSuccessfulDone(res?.updates);
     promptEligibleCompletion = completedSuccessfully || isSuccessfulAskCompletion(modeForSend, res);
     const returnedErrorUpdate = Array.isArray(res?.updates)
       ? res.updates.find(u => u?.type === 'error')
@@ -5014,6 +5020,7 @@ async function sendMessage(extraChatParams = {}) {
     }
   } finally {
     if (localRunRequestIds.get(tabId) === requestId) localRunRequestIds.delete(tabId);
+    cancelledRunRecoveryRequestIds.delete(requestId);
     if (activeChatPayloadsByTab.get(tabId) === activePayloadState) {
       scheduleActiveChatPayloadCleanup(tabId, activePayloadState);
     }
@@ -5268,6 +5275,10 @@ function handleAgentUpdateMessage(msg) {
       break;
 
     case 'plan_review':
+      invalidatePlanReviewCards({
+        tabId: msg.tabId ?? currentTabId,
+        requestId: msg.requestId,
+      });
       renderPlanReviewCard({ ...data, tabId: msg.tabId ?? currentTabId, requestId: msg.requestId, runId: msg.runId });
       break;
 
@@ -5734,11 +5745,12 @@ function renderPlanReviewCard(data) {
     .find(card => String(card.dataset.planId || '') === planId
       && String(card.dataset.tabId || '') === String(tabId)
       && (!data.requestId || card.dataset.runRequestId === String(data.requestId))
-      && (!data.runId || card.dataset.runId === String(data.runId))
-      && !card.classList.contains('plan-reviewed'));
+      && (!data.runId || card.dataset.runId === String(data.runId)));
   if (existing) {
-    bindPlanReviewCard(existing);
-    setPlanReviewAwaiting(tabId, true, existing.closest('.message.assistant'));
+    if (!existing.classList.contains('plan-reviewed')) {
+      bindPlanReviewCard(existing);
+      setPlanReviewAwaiting(tabId, true, existing.closest('.message.assistant'));
+    }
     scrollToBottom();
     return;
   }
@@ -5831,9 +5843,14 @@ function submitPlanReview(card, tabId, planId, action, editedText) {
   card.classList.add('plan-reviewed');
   setPlanReviewAwaiting(tabId, false);
   if (action !== 'approve') {
+    const requestId = String(card.dataset.runRequestId || '');
+    if (requestId) cancelledRunRecoveryRequestIds.add(requestId);
+    setTabAbortRequested(tabId, true);
     card.remove();
     scrollToBottom();
-    sendToBackground('plan_response', { tabId, planId, decision: action, editedText, markdownMode }).catch(() => {});
+    sendPlanReviewDecisionWithReconnect({
+      tabId, planId, decision: action, editedText, markdownMode,
+    }, requestId).catch(() => {});
     return;
   }
   for (const el of card.querySelectorAll('button, textarea')) {
@@ -5846,7 +5863,10 @@ function submitPlanReview(card, tabId, planId, action, editedText) {
     ? 'WebBrain reloaded or the background worker stopped before this plan could be approved. Reload the sidebar and try again.'
     : expiredText();
 
-  sendToBackground('plan_response', { tabId, planId, decision: action, editedText, markdownMode })
+  sendPlanReviewDecisionWithReconnect(
+    { tabId, planId, decision: action, editedText, markdownMode },
+    String(card.dataset.runRequestId || ''),
+  )
     .then((res) => {
       if (action !== 'approve') return;
       if (res?.matched) {
@@ -5863,8 +5883,11 @@ function submitPlanReview(card, tabId, planId, action, editedText) {
       if (action === 'approve') {
         note.textContent = failureText(error);
         card.appendChild(note);
-        setPlanReviewAwaiting(tabId, false);
-        if (activeAssistantEl) clearPlanReviewActiveRun(activeAssistantEl, tabId);
+        card.classList.remove('plan-reviewed');
+        for (const el of card.querySelectorAll('button, textarea')) {
+          el.disabled = false;
+        }
+        setPlanReviewAwaiting(tabId, true, activeAssistantEl || card.closest('.message.assistant'));
         scrollToBottom();
       }
     });
@@ -6451,7 +6474,7 @@ async function continueAgent(options = {}) {
     showActivity(t('sp.activity.continuing'));
     localRunRequestIds.set(tabId, requestId);
 
-    const res = await sendToBackground('continue', {
+    const res = await sendRunWithReconnect('continue_start', {
       tabId,
       requestId,
       mode: modeForSend,
@@ -6478,6 +6501,7 @@ async function continueAgent(options = {}) {
     }
   } finally {
     if (localRunRequestIds.get(tabId) === requestId) localRunRequestIds.delete(tabId);
+    cancelledRunRecoveryRequestIds.delete(requestId);
     if (currentTabId === tabId && assistantEl) finalizeSteps(assistantEl);
     clearAssistantTextStreamState(assistantEl);
     setTabProcessing(tabId, false);
@@ -6808,6 +6832,51 @@ function startInputPlaceholderRotation() {
 function isBackgroundConnectionError(error) {
   const message = String(error?.message || error || '');
   return /Could not establish connection|Receiving end does not exist|Extension context invalidated|No response from WebBrain background|background script may have restarted|extension connection was lost/i.test(message);
+}
+
+function sendPlanReviewDecisionWithReconnect(payload, requestId = '') {
+  const tabId = Number(payload?.tabId);
+  return sendPlanResponseWithReconnect({
+    payload,
+    requestId,
+    send: nextPayload => sendToBackground('plan_response', nextPayload),
+    probe: () => sendToBackground('agent_run_state', { tabId }),
+    isConnectionError: isBackgroundConnectionError,
+    onState: state => applyActiveRunState(tabId, state),
+    onStatus: ({ phase }) => {
+      if (!sameTabId(currentTabId, tabId)) return;
+      if (phase === 'reconnecting') showActivity('Reconnecting…');
+      if (phase === 'reconnected' && !isAwaitingPlanReviewForTab(tabId)) {
+        showActivity('Reconnected — continuing…');
+      }
+    },
+  });
+}
+
+async function sendRunWithReconnect(initialAction, payload) {
+  const tabId = Number(payload?.tabId);
+  const requestId = String(payload?.requestId || '');
+  cancelledRunRecoveryRequestIds.delete(requestId);
+  return runDetachedWithReconnect({
+    initialAction,
+    payload,
+    start: (action, nextPayload) => sendToBackground(action, nextPayload),
+    probe: () => sendToBackground('agent_run_state', { tabId }),
+    isConnectionError: isBackgroundConnectionError,
+    onState: state => applyActiveRunState(tabId, state),
+    shouldResume: () => !isTabAbortRequested(tabId)
+      && !cancelledRunRecoveryRequestIds.has(requestId),
+    onStatus: ({ phase }) => {
+      if (!sameTabId(currentTabId, tabId)) return;
+      if (phase === 'reconnecting' || phase === 'retrying_start') {
+        showActivity('Reconnecting…');
+      } else if (phase === 'resuming') {
+        showActivity('Reconnected — resuming…');
+      } else if (phase === 'reconnected' && !isAwaitingPlanReviewForTab(tabId)) {
+        showActivity('Reconnected — continuing…');
+      }
+    },
+  });
 }
 
 function formatBackgroundSendError(action, message) {

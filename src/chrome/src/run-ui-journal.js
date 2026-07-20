@@ -49,7 +49,11 @@ export class RunUiJournal {
       truncatedBeforeSeq: 0,
       events: [],
       pendingPlanId: null,
+      lastPlanResolution: null,
       finalContent: '',
+      successfulDone: false,
+      hadError: false,
+      lastError: '',
       startedAt: Date.now(),
       endedAt: null,
     };
@@ -75,10 +79,28 @@ export class RunUiJournal {
     if (type === 'plan_review') {
       snapshot.status = 'awaiting_plan';
       snapshot.pendingPlanId = String(data?.planId || '') || null;
+      snapshot.lastPlanResolution = null;
     }
     if (type === 'plan_resolved') {
       snapshot.status = 'running';
       if (!data?.planId || String(data.planId) === String(snapshot.pendingPlanId)) snapshot.pendingPlanId = null;
+      snapshot.lastPlanResolution = {
+        planId: String(data?.planId || ''),
+        decision: String(data?.decision || ''),
+      };
+    }
+    if (type === 'tool_result'
+        && data?.name === 'done'
+        && data?.result?.done === true
+        && data?.result?.outcome === 'success'
+        && data?.result?.success !== false
+        && !data?.result?.error
+        && !data?.result?.blockedDone) {
+      snapshot.successfulDone = true;
+    }
+    if (type === 'error' || type === 'attachment_rejected' || type === 'max_steps_reached') {
+      snapshot.hadError = true;
+      snapshot.lastError = String(data?.message || data?.error || '').slice(0, 2000);
     }
     this._changed(tabId, snapshot);
     return { ...event, requestId: snapshot.requestId, runId: snapshot.runId };
@@ -108,6 +130,12 @@ export class RunUiJournal {
 
   restore(tabId, snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return null;
+    if (snapshot.successfulDone !== true) snapshot.successfulDone = false;
+    if (snapshot.hadError !== true) snapshot.hadError = false;
+    if (typeof snapshot.lastError !== 'string') snapshot.lastError = '';
+    if (!snapshot.lastPlanResolution || typeof snapshot.lastPlanResolution !== 'object') {
+      snapshot.lastPlanResolution = null;
+    }
     this.snapshots.set(tabId, snapshot);
     return snapshot;
   }

@@ -1271,9 +1271,63 @@ function sendAgentUpdate(tabId, requestId, type, data) {
 }
 
 function assertNoActiveTabRun(tabId) {
+  if (agent.activeRunState(tabId)?.running || detachedRunStarts.has(tabId)) {
+    throw new Error('A run is already active for this tab.');
+  }
+}
+
+const detachedRunStarts = new Map();
+const RUN_KEEPALIVE_INTERVAL_MS = 20_000;
+
+function assertRunCanStart(tabId, msg) {
+  const reserved = detachedRunStarts.get(tabId);
+  const internalRequestId = String(msg?.__detachedRunRequestId || '');
+  if (reserved) {
+    if (!internalRequestId || internalRequestId !== reserved.requestId) {
+      throw new Error('A run is already active for this tab.');
+    }
+  }
   if (agent.activeRunState(tabId)?.running) {
     throw new Error('A run is already active for this tab.');
   }
+}
+
+function acquireRunKeepalive() {
+  let released = false;
+  const touch = () => {
+    try {
+      chrome.runtime.getPlatformInfo().catch(() => {});
+    } catch {}
+  };
+  touch();
+  const timer = setInterval(touch, RUN_KEEPALIVE_INTERVAL_MS);
+  return () => {
+    if (released) return;
+    released = true;
+    clearInterval(timer);
+  };
+}
+
+function launchDetachedRun(action, msg, sender) {
+  const tabId = msg.tabId || sender.tab?.id;
+  if (!tabId) throw new Error('No tab ID');
+  assertNoActiveTabRun(tabId);
+  const requestId = String(msg.requestId || `req_${tabId}_${Date.now()}`);
+  const entry = { requestId, promise: null };
+  detachedRunStarts.set(tabId, entry);
+  const task = Promise.resolve().then(() => handleMessage({
+    ...msg,
+    action,
+    requestId,
+    __detachedRunRequestId: requestId,
+  }, sender));
+  entry.promise = task;
+  task.catch((error) => {
+    console.warn(`[WebBrain] detached ${action} run failed:`, error);
+  }).finally(() => {
+    if (detachedRunStarts.get(tabId) === entry) detachedRunStarts.delete(tabId);
+  });
+  return { ok: true, accepted: true, requestId };
 }
 
 function sendAgentRunComplete(tabId, snapshot = null) {
@@ -1782,12 +1836,19 @@ async function handleMessage(msg, sender) {
       };
     }
 
+    case 'chat_start':
+      return launchDetachedRun('chat', msg, sender);
+
+    case 'continue_start':
+      return launchDetachedRun('continue', msg, sender);
+
     case 'chat': {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) throw new Error('No tab ID');
-      assertNoActiveTabRun(tabId);
+      assertRunCanStart(tabId, msg);
       const mode = msg.mode || 'ask';
       const runUi = beginRunUiSnapshot(tabId, msg.requestId);
+      const releaseRunKeepalive = acquireRunKeepalive();
 
       // /allow-api flag is per-conversation. The sidebar tracks it locally
       // but sends it on every chat call so the agent stays in sync after a
@@ -1870,6 +1931,7 @@ async function handleMessage(msg, sender) {
           sendAgentRunComplete(tabId, snapshot);
         }
         sendIndicatorMessage(tabId, 'WB_HIDE_AGENT_INDICATORS');
+        releaseRunKeepalive();
       }
     }
 
@@ -1879,6 +1941,7 @@ async function handleMessage(msg, sender) {
       assertNoActiveTabRun(tabId);
       const mode = msg.mode || 'ask';
       const runUi = beginRunUiSnapshot(tabId, msg.requestId);
+      const releaseRunKeepalive = acquireRunKeepalive();
 
       if (msg.apiMutationsAllowed) agent.setApiMutationsAllowed(tabId, true);
 
@@ -1921,15 +1984,17 @@ async function handleMessage(msg, sender) {
         );
         sendAgentRunComplete(tabId, snapshot);
         sendIndicatorMessage(tabId, 'WB_HIDE_AGENT_INDICATORS');
+        releaseRunKeepalive();
       }
     }
 
     case 'continue': {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) throw new Error('No tab ID');
-      assertNoActiveTabRun(tabId);
+      assertRunCanStart(tabId, msg);
       const mode = msg.mode || 'ask';
       const runUi = beginRunUiSnapshot(tabId, msg.requestId);
+      const releaseRunKeepalive = acquireRunKeepalive();
 
       sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
       let userMemoryTurnContextTaken = false;
@@ -1965,6 +2030,7 @@ async function handleMessage(msg, sender) {
         );
         sendAgentRunComplete(tabId, snapshot);
         sendIndicatorMessage(tabId, 'WB_HIDE_AGENT_INDICATORS');
+        releaseRunKeepalive();
       }
     }
 
@@ -2003,7 +2069,14 @@ async function handleMessage(msg, sender) {
     case 'agent_run_state': {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) return { ok: false, error: 'No tab ID' };
-      return { ok: true, ...agent.activeRunState(tabId), runUi: await getRunUiSnapshot(tabId) };
+      const starting = detachedRunStarts.get(tabId) || null;
+      return {
+        ok: true,
+        ...agent.activeRunState(tabId),
+        starting: !!starting,
+        startingRequestId: starting?.requestId || null,
+        runUi: await getRunUiSnapshot(tabId),
+      };
     }
 
     case 'agent_run_ack': {
