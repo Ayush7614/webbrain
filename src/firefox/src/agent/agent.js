@@ -9391,7 +9391,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     // Tools handled by the background/service worker
     if (name === 'navigate') {
-      const rawUrl = String(args.url || '').trim();
+      const requestedUrl = String(args.url || '').trim();
+      let rawUrl = requestedUrl;
       if (!rawUrl) {
         return {
           success: false,
@@ -9400,6 +9401,51 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           error: 'navigate: url is required',
         };
       }
+      // Match Chrome's existing behavior for relative and protocol-relative
+      // inputs while still requiring the resolved destination to be HTTP(S).
+      if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rawUrl)) {
+        try {
+          const tab = await browser.tabs.get(tabId);
+          const base = tab && tab.url;
+          if (base && /^https?:/i.test(base)) {
+            rawUrl = new URL(rawUrl, base).toString();
+          } else {
+            return {
+              success: false,
+              dispatched: false,
+              noDispatch: true,
+              error: `navigate: "${args.url}" is not an absolute URL. Provide the full URL including scheme and host (e.g. "https://dashboard.stripe.com/${String(args.url).replace(/^\/+/, '')}"). Do NOT pass bare paths — they resolve to local files.`,
+            };
+          }
+        } catch (e) {
+          return {
+            success: false,
+            dispatched: false,
+            noDispatch: true,
+            error: `navigate: cannot resolve relative URL "${args.url}" — no current tab URL available. Pass an absolute URL starting with https://.`,
+          };
+        }
+      }
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(rawUrl);
+      } catch {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'navigate: invalid URL. Provide an absolute http:// or https:// URL.',
+        };
+      }
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: `navigate: unsupported URL scheme "${parsedUrl.protocol}". Only http:// and https:// navigations are allowed; use page interaction tools instead of javascript:, data:, file:, or extension URLs.`,
+        };
+      }
+      rawUrl = parsedUrl.toString();
       // Guard against discarding unsaved work. Re-navigating (even to the
       // same URL) resets forms like GitHub's "New release" page, silently
       // dropping the tag, title, and any attached binaries. A model that
@@ -9410,10 +9456,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (blocked) return blocked;
       }
 
-      await browser.tabs.update(tabId, { url: rawUrl });
+      try {
+        await browser.tabs.update(tabId, { url: rawUrl });
+      } catch (e) {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: `navigate: browser rejected the navigation: ${e?.message || String(e)}`,
+        };
+      }
       // Wait a moment for navigation
       await new Promise(r => setTimeout(r, 2000));
-      return { success: true, dispatched: true, url: rawUrl };
+      return { success: true, dispatched: true, url: rawUrl, requestedUrl };
     }
 
     if (name === 'go_back' || name === 'go_forward') {

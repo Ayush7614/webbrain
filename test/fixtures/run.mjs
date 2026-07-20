@@ -800,7 +800,53 @@ test('ambiguity: two Cancels return rich candidates with ancestor', async (page)
   }
 });
 
-// ─── click_ax same-page anchors ─────────────────────────────────────────────
+// ─── CDP upload selector bridge ─────────────────────────────────────────────
+test('CDP upload selector bridge resolves hidden and open-shadow file inputs', async (page) => {
+  await page.setContent(`<!doctype html>
+    <input id="upload-addon" type="file" hidden>
+    <div id="shadow-host"></div>
+    <script>
+      document.querySelector('#shadow-host')
+        .attachShadow({ mode: 'open' })
+        .innerHTML = '<input id="shadow-upload" type="file">';
+    </script>`);
+
+  const session = await page.context().newCDPSession(page);
+  const client = new CDPClient();
+  client.sendCommand = async (_tabId, method, params = {}) => session.send(method, params);
+
+  const fixtureFile = path.join(root, 'package.json');
+  const attachThroughSelector = async (selector) => {
+    const query = await client.querySelectorPierce(42, selector);
+    if (query.objectIds.length !== 1 || !query.objectIds[0]) {
+      throw new Error(`file input did not resolve to one CDP object handle: ${JSON.stringify(query)}`);
+    }
+    try {
+      // Refreshing Chrome's DOM mirror invalidates frontend nodeIds. Runtime
+      // object handles must remain valid across an unrelated DOM traversal.
+      await session.send('DOM.getDocument', { depth: -1, pierce: true });
+      await client.setFileInputFiles(42, query.objectIds[0], [fixtureFile]);
+      const files = await client.getFileInputFiles(42, query.objectIds[0]);
+      if (files?.[0]?.name !== 'package.json') {
+        throw new Error(`attached FileList was not readable through the Runtime handle: ${JSON.stringify(files)}`);
+      }
+    } finally {
+      await client.releaseObjectGroup(42, query.objectGroup);
+    }
+  };
+
+  await attachThroughSelector('#upload-addon');
+  await attachThroughSelector('#shadow-upload');
+  const attached = await page.evaluate(() => ({
+    hidden: document.querySelector('#upload-addon').files[0]?.name || '',
+    shadow: document.querySelector('#shadow-host').shadowRoot
+      .querySelector('#shadow-upload').files[0]?.name || '',
+  }));
+  if (attached.hidden !== 'package.json' || attached.shadow !== 'package.json') {
+    throw new Error(`DOM.setFileInputFiles did not attach through resolved nodes: ${JSON.stringify(attached)}`);
+  }
+});
+
 for (const browserKind of ['chrome', 'firefox']) {
   test(`file picker guard (${browserKind}): blocks the native chooser and returns the exact input`, async (page) => {
     await setupContentHtml(page, `<!doctype html>
@@ -1606,6 +1652,7 @@ test('ax_resolve_rect: English action labels stay blocked under Turkish locale c
   }
 });
 
+// ─── click_ax same-page anchors ─────────────────────────────────────────────
 test('click_ax: same-page anchor reports hash and scroll completion', async (page) => {
   await setup(page, 'anchor-click.html');
   const before = await page.evaluate(() => ({ hash: location.hash, scrollY: window.scrollY }));

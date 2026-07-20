@@ -10615,7 +10615,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     // Tools handled by the background/service worker
     if (name === 'navigate') {
-      let rawUrl = String(args.url || '').trim();
+      const requestedUrl = String(args.url || '').trim();
+      let rawUrl = requestedUrl;
       if (!rawUrl) {
         return {
           success: false,
@@ -10653,6 +10654,26 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           };
         }
       }
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(rawUrl);
+      } catch {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: 'navigate: invalid URL. Provide an absolute http:// or https:// URL.',
+        };
+      }
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: `navigate: unsupported URL scheme "${parsedUrl.protocol}". Only http:// and https:// navigations are allowed; use page interaction tools instead of javascript:, data:, file:, or extension URLs.`,
+        };
+      }
+      rawUrl = parsedUrl.toString();
       // Guard against discarding unsaved work. Re-navigating (even to the
       // same URL) resets forms like GitHub's "New release" page, silently
       // dropping the tag, title, and any attached binaries. A model that
@@ -10663,7 +10684,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (blocked) return blocked;
       }
 
-      await chrome.tabs.update(tabId, { url: rawUrl });
+      try {
+        await chrome.tabs.update(tabId, { url: rawUrl });
+      } catch (e) {
+        return {
+          success: false,
+          dispatched: false,
+          noDispatch: true,
+          error: `navigate: browser rejected the navigation: ${e?.message || String(e)}`,
+        };
+      }
       // Wait for navigation to commit so we can report the real final URL
       // (which may differ from rawUrl after redirects or auth walls).
       await new Promise(r => setTimeout(r, 2000));
@@ -10672,7 +10702,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const tab = await chrome.tabs.get(tabId);
         if (tab && tab.url) finalUrl = tab.url;
       } catch {}
-      return { success: true, dispatched: true, url: finalUrl, requestedUrl: rawUrl };
+      return { success: true, dispatched: true, url: finalUrl, requestedUrl };
     }
 
     if (name === 'go_back' || name === 'go_forward') {
@@ -12096,16 +12126,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { success: false, error: 'upload_file needs either downloadId (from download_files / list_downloads — preferred) or filePath (absolute local path).' };
       }
       let uploadDispatched = false;
+      let uploadQuery = null;
       try {
         await cdpClient.attach(tabId);
-        const nodeIds = await cdpClient.querySelectorPierce(tabId, args.selector);
-        if (!nodeIds || nodeIds.length === 0) {
+        uploadQuery = await cdpClient.querySelectorPierce(tabId, args.selector);
+        const objectIds = uploadQuery?.objectIds || [];
+        if (objectIds.length === 0) {
           return { success: false, error: `File input not found for selector "${args.selector}". Re-inspect the page with get_interactive_elements or get_accessibility_tree to find the real <input type=file> (some upload widgets hide it until you click their "add files" button first).` };
         }
-        if (nodeIds.length > 1) {
+        if (objectIds.length > 1) {
           return {
             success: false,
-            error: `Selector "${args.selector}" matched ${nodeIds.length} elements across the document and open shadow roots. Use an exact, unique selector for the intended <input type=file>; do not use a generic input[type=file] selector when multiple inputs exist.`,
+            error: `Selector "${args.selector}" matched ${objectIds.length} elements across the document and open shadow roots. Use an exact, unique selector for the intended <input type=file>; do not use a generic input[type=file] selector when multiple inputs exist.`,
           };
         }
 
@@ -12134,7 +12166,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const pathConfirmed = !!(probe && probe.exists && probe.readable === true);
 
         uploadDispatched = true;
-        await cdpClient.setFileInputFiles(tabId, nodeIds[0], [args.filePath]);
+        await cdpClient.setFileInputFiles(tabId, objectIds[0], [args.filePath]);
 
         // Verify the file actually attached. CDP's DOM.setFileInputFiles does
         // NOT throw on a non-existent path — it silently attaches a 0-byte
@@ -12146,7 +12178,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         let files = null;
         let readOk = false;
         try {
-          files = await cdpClient.getFileInputFiles(tabId, nodeIds[0]);
+          files = await cdpClient.getFileInputFiles(tabId, objectIds[0]);
           readOk = Array.isArray(files);
         } catch { readOk = false; }
 
@@ -12197,6 +12229,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return { success: true, file: args.filePath, verified: false, note: 'Attachment could not be verified (the input.files list was unreadable), but the local path validated as readable. If the file does not appear attached on the page, re-check the selector.' };
       } catch (e) {
         return { success: false, dispatched: uploadDispatched, error: `Upload failed: ${e.message}` };
+      } finally {
+        await cdpClient.releaseObjectGroup(tabId, uploadQuery?.objectGroup);
       }
     }
 
