@@ -5059,8 +5059,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!hasCheckboxFailure) return result;
 
     const uncheckedCheckboxes = (Array.isArray(result.fields) ? result.fields : [])
-      .filter(field => field?.type === 'checkbox' && field.checked === false)
+      .filter(field => field?.type === 'checkbox' && field.checked === false && /^ref_\d+$/.test(String(field.ref_id || '')))
       .map(field => ({
+        ref_id: field.ref_id,
         name: field.name || '',
         id: field.id || '',
         selector: field.selector || '',
@@ -5074,7 +5075,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       verifyFormCount: block.verifyFormCount,
       nextTool: 'set_checked',
       uncheckedCheckboxes,
-      instruction: 'The form state is unchanged. Do not call verify_form again and do not toggle the checkbox. Use set_checked(ref_id, true) once, then submit only after checkedAfter is true.',
+      instruction: `The form state is unchanged. Do not call verify_form again and do not toggle the checkbox. Use set_checked({ref_id: "${uncheckedCheckboxes[0].ref_id}", checked: true}) once, then submit only after checkedAfter is true.`,
     };
     if (block.verifyFormCount > 1) {
       result.success = false;
@@ -10596,6 +10597,25 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         `;
         const results = await browser.tabs.executeScript(tabId, { code });
         const result = (results && results[0]) || { found: false, error: 'Script returned no data' };
+
+        try {
+          const resolved = await browser.tabs.sendMessage(tabId, {
+            target: 'content',
+            action: 'resolve_form_field_refs',
+            params: { selector: args.selector || '' },
+          });
+          if (
+            resolved?.success === true
+            && Array.isArray(resolved.refs)
+            && Array.isArray(result.fields)
+            && resolved.refs.length === result.fields.length
+          ) {
+            result.fields = result.fields.map((field, index) => ({
+              ...field,
+              ...(typeof resolved.refs[index] === 'string' ? { ref_id: resolved.refs[index] } : {}),
+            }));
+          }
+        } catch {}
 
         // Capture screenshot (requires active tab)
         try {

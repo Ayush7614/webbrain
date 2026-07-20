@@ -23863,6 +23863,7 @@ test('unchanged failed-submit state permits one verify_form then directs checkbo
       success: true,
       found: true,
       fields: [{
+        ref_id: 'ref_512001',
         name: 'compatible_apps',
         id: 'firefox',
         selector: '#firefox',
@@ -23878,11 +23879,13 @@ test('unchanged failed-submit state permits one verify_form then directs checkbo
     assert.equal(first.formValidationRecovery.verifyFormCount, 1);
     assert.equal(first.formValidationRecovery.nextTool, 'set_checked');
     assert.deepEqual(first.formValidationRecovery.uncheckedCheckboxes, [{
+      ref_id: 'ref_512001',
       name: 'compatible_apps',
       id: 'firefox',
       selector: '#firefox',
       checked: false,
     }]);
+    assert.match(first.formValidationRecovery.instruction, /ref_512001/);
 
     const repeated = agent._applyVerifyFormRecovery(tabId, makeResult(), states);
     assert.equal(repeated.success, false, `${AgentClass.name}: unchanged second verify_form should be blocked`);

@@ -2754,6 +2754,28 @@
           return { error: 'Failed to build accessibility tree: ' + (e && e.message || String(e)) };
         }
       },
+      'resolve_form_field_refs': () => {
+        try {
+          if (typeof window.__wb_ax_ref !== 'function') {
+            return { success: false, error: 'accessibility-tree.js not injected' };
+          }
+          const selector = String(msg.params?.selector || '');
+          const focused = document.activeElement;
+          const form = selector
+            ? document.querySelector(selector)
+            : focused?.closest('form') || document.querySelector('form');
+          if (!form) return { success: false, error: 'No form found on page' };
+          const refs = [];
+          for (const el of form.querySelectorAll('input, select, textarea')) {
+            const type = String(el.type || el.tagName || '').toLowerCase();
+            if (type === 'hidden' || type === 'submit') continue;
+            refs.push(window.__wb_ax_ref(el));
+          }
+          return { success: true, refs };
+        } catch (error) {
+          return { success: false, error: error?.message || String(error) };
+        }
+      },
       'click_ax': () => {
         let dispatched = false;
         const failure = (error, extra = {}) => ({
@@ -2950,14 +2972,17 @@
                 desiredChecked,
                 actualChecked: checkedAfter,
               };
-              if (resp.checkedChanged) {
+              const stateMatchesDesired = checkedAfter === desiredChecked;
+              if (stateMatchesDesired) {
                 resp.verified = true;
-                resp.observedEffects = ['checked_state'];
-              } else if (inputType === 'checkbox') {
+                if (resp.checkedChanged) resp.observedEffects = ['checked_state'];
+              } else {
                 resp.success = false;
                 resp.noProgress = true;
                 resp.verified = false;
-                resp.error = `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after click_ax. Do not toggle it again; use set_checked({ref_id: "${ref_id}", checked: ${desiredChecked}}) so the requested state is applied idempotently and verified.`;
+                resp.error = inputType === 'checkbox'
+                  ? `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after click_ax. Do not toggle it again; use set_checked({ref_id: "${ref_id}", checked: ${desiredChecked}}) so the requested state is applied idempotently and verified.`
+                  : 'Radio remained unselected after click_ax. Re-read the accessibility tree and retry the intended radio option with a fresh ref_id.';
               }
             }
             try {

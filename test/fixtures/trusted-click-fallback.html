@@ -159,6 +159,10 @@
       <input id="selected-channel-radio" name="channel" value="stable" type="radio" checked>
       Selected channel
     </label>
+    <label class="external-label" for="blocked-channel-radio">
+      <input id="blocked-channel-radio" name="channel" value="blocked" type="radio">
+      Blocked channel
+    </label>
   </form>
   <div id="covered-wrap">
     <div id="covered-row" class="row" role="listitem" tabindex="0">Covered row</div>
@@ -177,6 +181,9 @@
     document.getElementById('trusted-firefox-checkbox').addEventListener('click', (event) => {
       window.__trustedCheckboxEvents.push({ trusted: event.isTrusted, checked: event.currentTarget.checked });
       if (!event.isTrusted) event.preventDefault();
+    });
+    document.getElementById('blocked-channel-radio').addEventListener('click', (event) => {
+      event.preventDefault();
     });
     document.getElementById('trusted-row').addEventListener('click', (event) => {
       window.__trustedClickEvents.push({ trusted: event.isTrusted, type: event.type });

@@ -1427,6 +1427,40 @@ for (const browserKind of ['chrome', 'firefox']) {
       throw new Error(`selected radio was represented as needing an uncheck: ${JSON.stringify(result)}`);
     }
   });
+
+  test(`click_ax (${browserKind}): a prevented radio selection is an explicit failure`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });
+    const match = String(tree?.pageContent || '').match(/radio "Blocked channel" \[(ref_\d+)\][^\n]*checked=false/);
+    if (!match) throw new Error(`expected blocked radio state in AX tree: ${tree?.pageContent}`);
+
+    const result = await call(page, 'click_ax', { ref_id: match[1] });
+    if (
+      result?.success !== false
+      || result.noProgress !== true
+      || result.verified !== false
+      || result.checkedBefore !== false
+      || result.checkedAfter !== false
+      || result.desiredChecked !== true
+      || result.checkboxState?.actualChecked !== false
+      || !/Radio remained unselected/.test(String(result.error || ''))
+    ) {
+      throw new Error(`prevented radio selection was not reported as a failure: ${JSON.stringify(result)}`);
+    }
+  });
+
+  test(`verify_form refs (${browserKind}): form controls receive actionable AX refs`, async (page) => {
+    await setupContentFixture(page, 'trusted-click-fallback.html', browserKind);
+    const result = await call(page, 'resolve_form_field_refs', { selector: 'form' });
+    if (
+      result?.success !== true
+      || !Array.isArray(result.refs)
+      || result.refs.length < 4
+      || result.refs.some(ref => !/^ref_\d+$/.test(String(ref || '')))
+    ) {
+      throw new Error(`form controls did not receive actionable refs: ${JSON.stringify(result)}`);
+    }
+  });
 }
 
 test('set_checked (firefox): waits for controlled checkbox reconciliation before verifying', async (page) => {
