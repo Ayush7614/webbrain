@@ -5124,6 +5124,7 @@ test('fetchUrl provides bounded pagination, literal search, and safe range metad
       const first = await fetchUrl('https://example.com/source.js');
       assert.equal(first.success, true, `${label}: first window failed`);
       assert.equal(first.offset, 0, `${label}: first offset`);
+      assert.equal(first.maxChars, 7000, `${label}: default maxChars`);
       assert.equal(first.maxChars, first.text.length, `${label}: delivered maxChars drifted`);
       assert.equal(first.nextOffset, first.text.length, `${label}: nextOffset drifted`);
       assert.equal(first.hasMore, true, `${label}: missing continuation`);
@@ -8011,7 +8012,7 @@ test('fetch_url schema documents semantic text controls and model-visible bounds
     assert.equal(properties.offset?.type, 'number', `[${label}] offset schema missing`);
     assert.match(properties.offset?.description || '', /Default 0.*nextOffset/i, `[${label}] offset continuation guidance missing`);
     assert.equal(properties.maxChars?.type, 'number', `[${label}] maxChars schema missing`);
-    assert.match(properties.maxChars?.description || '', /Default 6000.*1000\.\.7000/i, `[${label}] maxChars bounds missing`);
+    assert.match(properties.maxChars?.description || '', /Default 7000.*1000\.\.7000/i, `[${label}] maxChars bounds missing`);
     assert.equal(properties.find?.type, 'string', `[${label}] find schema missing`);
     assert.match(properties.find?.description || '', /case-insensitive literal search.*line and character offsets/i, `[${label}] literal find behavior missing`);
     assert.match(fetchUrl.function.description, /bounded text\/JSON window[\s\S]*offset: nextOffset[\s\S]*do not guess HTTP Range/i, `[${label}] fetch_url large-source guidance missing`);
