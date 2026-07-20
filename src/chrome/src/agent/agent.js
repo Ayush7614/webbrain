@@ -10579,11 +10579,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     let verified = null;
     try {
+      const verificationArgs = { ...contentArgs };
+      // A trusted checkbox handler may update the hash/query in-place. The
+      // document token and one-shot marker still identify the exact control,
+      // while the pre-click URL would incorrectly reject the post-click probe.
+      delete verificationArgs.expectedPageUrl;
       verified = await chrome.tabs.sendMessage(tabId, {
         target: 'content',
         action: 'set_checked',
         params: {
-          ...contentArgs,
+          ...verificationArgs,
           probeOnly: true,
           markForTrustedClick: false,
           cleanupMarker: marker || undefined,

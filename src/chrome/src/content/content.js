@@ -3680,14 +3680,19 @@
               { staleRef: true, documentChanged, routeChanged, documentToken, refScopeUrl: location.href },
             );
           }
+          let markedTarget = null;
           if (cleanupMarker) {
             try {
               const escapedMarker = String(cleanupMarker).replace(/["\\]/g, '\\$&');
               const marked = document.querySelector(`[data-webbrain-set-checked-target="${escapedMarker}"]`);
+              markedTarget = marked || null;
               marked?.removeAttribute?.('data-webbrain-set-checked-target');
             } catch {}
           }
-          const el = window.__wb_ax_lookup(ref_id);
+          // A same-document route update invalidates the AX registry after the
+          // trusted click. The private one-shot marker still points to the
+          // exact preflighted element for this verification pass.
+          const el = markedTarget || window.__wb_ax_lookup(ref_id);
           if (!el) return failure(`ref_id ${ref_id} not found. Re-read the accessibility tree to get a current checkbox ref_id.`);
           const tag = el.tagName ? el.tagName.toLowerCase() : '';
           const inputType = tag === 'input' ? String(el.type || '').toLowerCase() : '';

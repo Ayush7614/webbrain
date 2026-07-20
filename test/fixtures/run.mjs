@@ -1466,6 +1466,44 @@ for (const browserKind of ['chrome', 'firefox']) {
   });
 }
 
+test('set_checked (chrome): post-click verification survives same-document route changes', async (page) => {
+  await setupContentFixture(page, 'trusted-click-fallback.html', 'chrome');
+  const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });
+  const match = String(tree?.pageContent || '').match(/checkbox "Firefox compatibility" \[(ref_\d+)\][^\n]*checked=false/);
+  if (!match) throw new Error(`expected Chrome checkbox ref in AX tree: ${tree?.pageContent}`);
+
+  const preflight = await call(page, 'set_checked', {
+    ref_id: match[1],
+    checked: true,
+    expectedDocumentToken: tree.documentToken,
+    expectedPageUrl: tree.refScopeUrl,
+    probeOnly: true,
+    markForTrustedClick: true,
+  });
+  if (preflight?.needsTrustedClick !== true || !preflight.marker) {
+    throw new Error(`expected trusted checkbox preflight marker: ${JSON.stringify(preflight)}`);
+  }
+
+  await page.locator('#firefox-checkbox').click();
+  await page.evaluate(() => history.pushState({}, '', '#checked-filter'));
+  const verified = await call(page, 'set_checked', {
+    ref_id: match[1],
+    checked: true,
+    expectedDocumentToken: tree.documentToken,
+    probeOnly: true,
+    markForTrustedClick: false,
+    cleanupMarker: preflight.marker,
+  });
+  if (
+    verified?.success !== true
+    || verified.checkedAfter !== true
+    || verified.verified !== true
+    || verified.staleRef === true
+  ) {
+    throw new Error(`same-document route change invalidated marker verification: ${JSON.stringify(verified)}`);
+  }
+});
+
 test('set_checked (firefox): waits for controlled checkbox reconciliation before verifying', async (page) => {
   await setupContentFixture(page, 'trusted-click-fallback.html', 'firefox');
   const tree = await call(page, 'get_accessibility_tree', { filter: 'all', maxDepth: 10, maxChars: 30000 });

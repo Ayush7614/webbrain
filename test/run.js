@@ -1312,6 +1312,12 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
       tabs: {
         async sendMessage(_tabId, message) {
           messages.push(message);
+          assert.equal(message.params.expectedDocumentToken, 'doc-7');
+          assert.equal(
+            Object.prototype.hasOwnProperty.call(message.params, 'expectedPageUrl'),
+            false,
+            'post-click verification must not reuse the pre-click route URL',
+          );
           assert.ok(
             Date.now() - trustedClickCompletedAt >= 70,
             'trusted checkbox verification must wait for controlled state reconciliation',
@@ -1353,7 +1359,14 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
         checkedAfter: false,
         checkboxIdentity: 'form:/submit|name:apps|value:firefox',
       },
-      { ref_id: 'ref_7', checked: true, probeOnly: true, markForTrustedClick: true },
+      {
+        ref_id: 'ref_7',
+        checked: true,
+        expectedDocumentToken: 'doc-7',
+        expectedPageUrl: 'https://example.test/before',
+        probeOnly: true,
+        markForTrustedClick: true,
+      },
     );
 
     assert.equal(clickedSelector, '[data-webbrain-set-checked-target="marker-7"]');
