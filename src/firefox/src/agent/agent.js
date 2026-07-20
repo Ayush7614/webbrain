@@ -2042,14 +2042,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       const formValidationCandidate = this._isFormValidationCandidate(fnName, fnArgs);
       const formValidationAllFrames = fnName === 'iframe_click' || fnName === 'press_keys';
-      let detectedSubmitAction = formValidationCandidate && fnName === 'iframe_click'
+      const preflightSubmitDetection = formValidationCandidate
+        && ['click', 'click_ax', 'iframe_click'].includes(fnName);
+      let detectedSubmitAction = preflightSubmitDetection
         ? await this._detectLikelySubmitAction(tabId, fnName, fnArgs)
         : null;
       const validationBlock = formValidationCandidate ? this._formValidationBlocks.get(tabId) : null;
       let priorValidationFailure = !!validationBlock;
       let correctedPriorValidationFailure = false;
       const obviousSubmitAction = formValidationCandidate
-        && this._formValidationActionLooksSubmit(fnName, fnArgs);
+        && this._formValidationActionLooksSubmit(fnName, fnArgs, null, detectedSubmitAction);
       let formValidationBefore = (validationBlock || obviousSubmitAction)
         ? await this._captureFormValidationState(tabId, { allFrames: formValidationAllFrames })
         : [];

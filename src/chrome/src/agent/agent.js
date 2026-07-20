@@ -2446,10 +2446,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         || (fnName === 'click' && !!fnArgs?.selector)
         || (Array.isArray(formValidationCoordinateFrames) && formValidationCoordinateFrames.length > 0);
       const preflightSubmitDetection = formValidationCandidate
-        && (
-          fnName === 'iframe_click'
-          || (Array.isArray(formValidationCoordinateFrames) && formValidationCoordinateFrames.length > 0)
-        );
+        && ['click', 'click_ax', 'iframe_click'].includes(fnName);
       let detectedSubmitAction = preflightSubmitDetection
         ? await this._detectLikelySubmitAction(tabId, fnName, fnArgs, {
             ...(Array.isArray(formValidationCoordinateFrames)
@@ -12864,6 +12861,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                         role: el.getAttribute('role') || (el.getAttribute('contenteditable') != null ? 'contenteditable' : ''),
                         text: matches[0].txt.slice(0, 80),
                         widgetFallback: true,
+                        isEditableControl: el.isContentEditable
+                          || el.getAttribute('role') === 'textbox'
+                          || el.getAttribute('role') === 'combobox',
                       };
                     }
                   }
@@ -13057,6 +13057,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tag: info.tag,
             type: info.type || '',
             isSubmitControl: info.isSubmitControl === true,
+            isEditableControl: info.isEditableControl === true,
             text: info.text,
             matched: args.text,
             x: clickX,

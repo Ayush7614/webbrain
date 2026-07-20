@@ -22738,7 +22738,7 @@ test('submit confirmation honors scheduled and global gate bypasses', async () =
         1,
       );
 
-      assert.equal(submitProbeCalls, 0, `${AgentClass.name} ${scenario.label}: submit probe should be skipped before bypassed prompts`);
+      assert.equal(submitProbeCalls, 1, `${AgentClass.name} ${scenario.label}: validation preflight should run even when the submit prompt is bypassed`);
       assert.equal(executed, true, `${AgentClass.name} ${scenario.label}: bypassed submit tool should execute`);
       assert.equal(messages.length, 1, `${AgentClass.name} ${scenario.label}: expected one tool result`);
       assert.equal(JSON.parse(agent._unwrapUntrusted(messages[0].content)).success, true, `${AgentClass.name} ${scenario.label}: tool result should be successful`);
@@ -23611,6 +23611,82 @@ test('unattended iframe submits preflight validation in all frames', async () =>
     const result = JSON.parse(agent._unwrapUntrusted(messages[0].content).split('\n', 1)[0]);
     assert.equal(result.formValidationFailed, true, `${AgentClass.name}: unattended iframe validation failure was missed`);
     assert.match(result.error, /card verification failed/i);
+  }
+});
+
+test('unattended custom submits preflight validation', async () => {
+  const url = 'https://example.com/checkout';
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = AgentClass === AgentCh ? 5124 : 5125;
+    const before = [{
+      frameId: 0,
+      url,
+      activeInvalid: false,
+      invalidFields: [],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'ready',
+    }];
+    const after = [{
+      ...before[0],
+      alerts: ['Please correct the highlighted fields.'],
+      controlFingerprint: 'rejected',
+    }];
+
+    let detections = 0;
+    let captures = 0;
+    agent._ensureGateSetting = async () => true;
+    agent._skipPermissionGate = true;
+    agent._currentUrl = async () => url;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._progressWarningForAction = () => '';
+    agent._persist = () => {};
+    agent._detectLikelySubmitAction = async (_tabId, toolName) => {
+      detections += 1;
+      assert.equal(toolName, 'click');
+      return {
+        isSubmit: true,
+        host: 'example.com',
+        tool: 'click',
+        reason: 'button inside a form',
+        validationSubmitEvidence: 'heuristic',
+      };
+    };
+    agent._captureFormValidationState = async () => {
+      captures += 1;
+      return structuredClone(captures === 1 ? before : after);
+    };
+    agent.executeTool = async () => ({
+      success: true,
+      dispatched: true,
+      tag: 'BUTTON',
+      type: 'button',
+      isSubmitControl: false,
+      text: 'Continue',
+    });
+
+    const messages = [];
+    await agent._executeToolBatch(
+      tabId,
+      [{
+        id: 'unattended_custom_submit',
+        function: { name: 'click', arguments: '{"text":"Continue"}' },
+      }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['click']),
+      1,
+    );
+
+    assert.equal(detections, 1, `${AgentClass.name}: unattended custom submit skipped preflight detection`);
+    assert.ok(captures >= 2, `${AgentClass.name}: unattended custom submit skipped validation capture`);
+    const result = JSON.parse(agent._unwrapUntrusted(messages[0].content));
+    assert.equal(result.formValidationFailed, true, `${AgentClass.name}: unattended custom submit missed validation feedback`);
+    assert.match(result.error, /correct the highlighted fields/i);
   }
 });
 
@@ -25189,6 +25265,7 @@ test('submit controls bypass native select guards in click paths', () => {
   assert.match(chromeAgent, /const coordSelCheck = info\.isSubmitControl \? null : await cdpClient\.evaluate/, 'chrome agent: submit text clicks should skip coordinate select guard');
   assert.match(chromeAgent, /const postClickSel1 = info\.isSubmitControl \? null : await cdpClient\.evaluate/, 'chrome agent: submit text clicks should skip post-click select false errors');
   assert.match(chromeAgent, /isEditableControl: isEditableControl\(el\)/, 'chrome agent: resolved click target should expose its own editability');
+  assert.match(chromeAgent, /widgetFallback: true,[\s\S]*isEditableControl: el\.isContentEditable[\s\S]*role'\) === 'textbox'[\s\S]*role'\) === 'combobox'/, 'chrome agent: widened text-click fallback should preserve contenteditable/widget editability');
   assert.match(chromeAgent, /const isEditableTarget = info\.isEditableControl === true;/, 'chrome agent: stale-click exemption should use the clicked target, not post-submit focus');
 
   for (const [label, rel] of [
