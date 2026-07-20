@@ -23248,6 +23248,44 @@ test('form validation polling catches delayed errors', async () => {
       assert.equal(captures, 2, `${AgentClass.name}: validation polling did not retry after redirect to ${redirectedUrl}`);
     }
 
+    const hydratedRoute = `${url}/error`;
+    const redirectedShell = [{
+      frameId: 0,
+      url: hydratedRoute,
+      activeInvalid: false,
+      invalidFields: [],
+      ariaInvalidFields: [],
+      alerts: [],
+      controlFingerprint: 'redirected-shell',
+    }];
+    const hydratedError = [{
+      ...redirectedShell[0],
+      alerts: ['Server rejected this value after hydration.'],
+    }];
+    const hydratedAgent = new AgentClass({ getVisionProvider: async () => null });
+    let hydratedCaptures = 0;
+    hydratedAgent._captureFormValidationState = async () => {
+      hydratedCaptures += 1;
+      return structuredClone(hydratedCaptures < 3 ? redirectedShell : hydratedError);
+    };
+    const hydratedFailure = await hydratedAgent._waitForFormValidationFailure(
+      5116,
+      [{
+        ...redirectedShell[0],
+        url,
+        controlFingerprint: 'submitted',
+      }],
+      {
+        toolName: 'click',
+        args: { text: 'Submit' },
+        result: { success: true, tag: 'BUTTON', type: 'submit', isSubmitControl: true },
+      },
+      { checkpointsMs: [0, 360, 420] },
+    );
+    assert.ok(hydratedFailure, `${AgentClass.name}: hydrated validation feedback was missed after a different-path redirect`);
+    assert.match(hydratedFailure.error, /after hydration/i);
+    assert.equal(hydratedCaptures, 3, `${AgentClass.name}: redirected shell stopped polling before the late checkpoint`);
+
     const remainingError = [{
       frameId: 0,
       url,

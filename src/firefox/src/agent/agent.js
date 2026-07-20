@@ -4884,14 +4884,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // native validation via activeInvalid, but do not mislabel an unrelated
     // pre-existing alert.
     for (const state of before.length ? after : []) {
+      const route = this._normalizeUrlPath(String(state?.url || ''));
+      const includePersistentForState = includePersistentValidation
+        && (beforeRoutes.size === 0 || !route || beforeRoutes.has(route));
       for (const text of this._formValidationAlertTexts(state)) {
-        if (text && (includePersistentValidation || !beforeAlerts.has(text))) {
+        if (text && (includePersistentForState || !beforeAlerts.has(text))) {
           newAlerts.push(text);
         }
       }
       for (const field of Array.isArray(state?.ariaInvalidFields) ? state.ariaInvalidFields : []) {
         const key = `${field?.label || ''}|${field?.type || ''}|${field?.message || ''}`;
-        if (includePersistentValidation || !beforeAriaInvalid.has(key)) newAriaInvalid.push(field);
+        if (includePersistentForState || !beforeAriaInvalid.has(key)) newAriaInvalid.push(field);
       }
     }
 
@@ -4952,10 +4955,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     { allFrames = false, checkpointsMs = [0, 120, 350, 800, 1200] } = {},
   ) {
     const before = Array.isArray(beforeStates) ? beforeStates : [];
-    const beforeRoutes = new Set(before
-      .map(state => this._normalizeUrlPath(String(state?.url || '')))
-      .filter(Boolean));
-    let changedRouteObservedAt = null;
     const startedAt = Date.now();
     for (let checkpointIndex = 0; checkpointIndex < checkpointsMs.length; checkpointIndex += 1) {
       const checkpoint = checkpointsMs[checkpointIndex];
@@ -4970,22 +4969,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           && checkpointIndex === checkpointsMs.length - 1,
       });
       if (failure) return failure;
-      const afterRoutes = new Set(after
-        .map(state => this._normalizeUrlPath(String(state?.url || '')))
-        .filter(Boolean));
-      if (
-        beforeRoutes.size > 0
-        && afterRoutes.size > 0
-        && ![...afterRoutes].some(route => beforeRoutes.has(route))
-      ) {
-        if (changedRouteObservedAt == null) {
-          changedRouteObservedAt = Date.now();
-        } else if (Date.now() - changedRouteObservedAt >= 350) {
-          break;
-        }
-      } else {
-        changedRouteObservedAt = null;
-      }
     }
     return null;
   }
