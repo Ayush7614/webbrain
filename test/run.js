@@ -768,6 +768,15 @@ class LoopDetectorShim {
     const status = Number(result.status);
     return URL_FAMILY_TOOLS.has(name) && Number.isFinite(status) && status >= 400;
   }
+  _fetchUsesHttpByteRange(args) {
+    if (!args?.headers || typeof args.headers !== 'object') return false;
+    for (const [name, value] of Object.entries(args.headers)) {
+      if (String(name).toLowerCase() === 'range' && /^\s*bytes\s*=/i.test(String(value || ''))) {
+        return true;
+      }
+    }
+    return false;
+  }
   _loopCallKey(name, args, result) {
     if (result?.nonRetryableScope) {
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
@@ -830,7 +839,13 @@ class LoopDetectorShim {
       method === 'GET' &&
       this._isToolResultErroredForLoop(name, args, result)
     ) {
-      return { kind: 'stop' };
+      const rangedFetch = name === 'fetch_url' && this._fetchUsesHttpByteRange(args);
+      return {
+        kind: 'stop',
+        message: rangedFetch
+          ? 'Stopped: fetch_url failed three times while probing HTTP byte ranges. Use find, offset:nextOffset, or a partial answer.'
+          : `Stopped: ${name} failed three times for the same read-only resource.`,
+      };
     }
     this.healthyCallsSinceLoop.delete(tabId);
     const nudges = (this.loopNudges.get(tabId) || 0) + 1;
@@ -838,7 +853,16 @@ class LoopDetectorShim {
     if (nudges >= 8) {
       return { kind: 'stop' };
     }
-    return { kind: 'nudge' };
+    const rangedFetch = loop.type === 'repeat'
+      && name === 'fetch_url'
+      && method === 'GET'
+      && this._fetchUsesHttpByteRange(args);
+    return {
+      kind: 'nudge',
+      warning: rangedFetch
+        ? '[LOOP DETECTED: Use fetch_url find or offset:nextOffset; do not send another Range header.]'
+        : '[LOOP DETECTED]',
+    };
   }
   _checkAccessibilityReadLoop(tabId, name, args, result) {
     if (name !== 'get_accessibility_tree') {
@@ -2237,6 +2261,73 @@ test('trace export: identifies exporting and recording WebBrain versions', () =>
   assert.match(legacy.markdown, /recorded WebBrain version unavailable · legacy-model · done/);
 });
 
+test('trace export: renders loop-stopped final content and does not label it done', () => {
+  const stopped = [{
+    run: {
+      runId: 'loop-stop',
+      userMessage: 'Search this source file',
+      model: 'test',
+      status: 'done',
+      finalContent: 'Stopped: fetch_url failed three times for the same read-only resource.',
+    },
+    events: [
+      {
+        runId: 'loop-stop',
+        seq: 1,
+        kind: 'tool',
+        data: {
+          step: 3,
+          name: 'fetch_url',
+          args: { url: 'https://example.com/source.js', headers: { Range: 'bytes=450000-451000' } },
+          result: { success: false, status: 416, error: 'Fetch returned HTTP 416' },
+        },
+      },
+      {
+        runId: 'loop-stop',
+        seq: 2,
+        kind: 'error',
+        data: { step: 3, phase: 'loop', message: 'Stopped after repeated ranged fetches.' },
+      },
+    ],
+  }];
+  for (const [label, serialize] of [['chrome', tracesToMarkdown], ['firefox', tracesToMarkdownFx]]) {
+    const { markdown } = serialize(stopped);
+    assert.match(markdown, /test · loop_stopped/, `${label}: loop status missing`);
+    assert.doesNotMatch(markdown, /test · done/, `${label}: loop stop mislabeled done`);
+    assert.match(markdown, /\*\*Final:\*\* Stopped: fetch_url failed three times/, `${label}: final content missing`);
+  }
+});
+
+test('trace export: ordinary stopped prose remains a completed run without loop evidence', () => {
+  const completed = [{
+    run: {
+      runId: 'quoted-stop',
+      userMessage: 'Explain this log message',
+      model: 'test',
+      status: 'done',
+      finalContent: 'Stopped: the same call appears in the quoted log, but the review is complete.',
+    },
+    events: [],
+  }];
+  for (const [label, serialize] of [['chrome', tracesToMarkdown], ['firefox', tracesToMarkdownFx]]) {
+    const { markdown } = serialize(completed);
+    assert.match(markdown, /test · done/, `${label}: completed prose was not retained as done`);
+    assert.doesNotMatch(markdown, /loop_stopped/, `${label}: ordinary prose was misclassified as a loop`);
+  }
+});
+
+test('trace export: does not duplicate finalContent already rendered as the last assistant response', () => {
+  const final = 'The helper is scoped to the content-script IIFE.';
+  const { markdown } = tracesToMarkdown([{
+    run: { runId: 'dedupe-final', userMessage: 'Review this helper', model: 'test', status: 'done', finalContent: final },
+    events: [
+      { runId: 'dedupe-final', seq: 1, kind: 'llm_response', data: { step: 1, content: final } },
+    ],
+  }]);
+  assert.equal((markdown.match(/The helper is scoped/g) || []).length, 1);
+  assert.doesNotMatch(markdown, /\*\*Final:\*\*/);
+});
+
 test('trace export: chrome and firefox serializers are identical', () => {
   assert.equal(tracesToMarkdownFx(TRACE_RUNS).markdown, tracesToMarkdown(TRACE_RUNS).markdown);
 });
@@ -2750,6 +2841,21 @@ test('trace record and JSON exports carry WebBrain version metadata', () => {
   }
 });
 
+test('trace recorders normalize done only from explicit loop error evidence', () => {
+  for (const [label, prefix] of [
+    ['chrome', 'src/chrome'],
+    ['firefox', 'src/firefox'],
+  ]) {
+    const recorder = fs.readFileSync(path.join(ROOT, prefix, 'src/trace/recorder.js'), 'utf8');
+    assert.match(
+      recorder,
+      /ev\.kind === 'error' && ev\.data\?\.phase === 'loop'[\s\S]*?status === 'done' && sawLoopError \? 'loop_stopped' : status[\s\S]*?existing\.status = finalStatus/,
+      `${label}: recorder must use explicit loop error evidence before normalizing status`,
+    );
+    assert.doesNotMatch(recorder, /\^Stopped:[\s\S]*?failed three times/, `${label}: recorder must not classify ordinary final prose`);
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // Loop detection tests
 // ────────────────────────────────────────────────────────────────────────
@@ -2790,6 +2896,77 @@ test('three failed read-only URL calls stop instead of issuing eight nudges', ()
   d._checkLoop(tab, 'fetch_url', args, { success: false, error: 'network failed' });
   const result = d._checkLoop(tab, 'fetch_url', args, { success: false, error: 'network failed' });
   assert.equal(result.kind, 'stop');
+});
+
+test('ranged fetch thrashing receives source-specific recovery and eventually stops', () => {
+  const d = new LoopDetectorShim();
+  const tab = 35;
+  let recovery = null;
+  let stopped = null;
+  for (let i = 0; i < 12; i++) {
+    const result = d._checkLoop(
+      tab,
+      'fetch_url',
+      {
+        url: 'https://raw.githubusercontent.com/o/r/main/large.js',
+        headers: { Range: `bytes=${i * 1000}-${i * 1000 + 999}` },
+      },
+      { success: true, status: 206, contentRange: `bytes ${i * 1000}-${i * 1000 + 999}/443229` },
+    );
+    if (!recovery && result.kind === 'nudge') recovery = result;
+    if (result.kind === 'stop') {
+      stopped = result;
+      break;
+    }
+  }
+  assert.ok(recovery, 'expected a ranged-fetch recovery nudge');
+  assert.match(recovery.warning, /find|nextOffset/i);
+  assert.match(recovery.warning, /Range header/i);
+  assert.ok(stopped, 'expected repeated ranged fetches to hard-stop');
+});
+
+test('trace ranged-fetch failure sequence stops and propagates loop_stopped status in both agents', () => {
+  const d = new LoopDetectorShim();
+  const tab = 36;
+  const url = 'https://raw.githubusercontent.com/o/r/main/large.js';
+  for (const range of [
+    'bytes=0-9999',
+    'bytes=10000-19999',
+    'bytes=16000-16999',
+    'bytes=16400-16999',
+    'bytes=-500',
+    'bytes=-1000',
+  ]) {
+    d._checkLoop(tab, 'fetch_url', { url, headers: { Range: range } }, { success: true, status: 206 });
+  }
+  assert.equal(
+    d._checkLoop(tab, 'fetch_url', { url, headers: { Range: 'bytes=500000-501000' } }, { success: false, status: 416, error: 'Fetch returned HTTP 416' }).kind,
+    'none',
+  );
+  assert.equal(
+    d._checkLoop(tab, 'fetch_url', { url, headers: { Range: 'bytes=490000-491000' } }, { success: false, status: 416, error: 'Fetch returned HTTP 416' }).kind,
+    'none',
+  );
+  d._checkLoop(tab, 'fetch_url', { url, headers: { Range: 'bytes=400000-401000' } }, { success: true, status: 206 });
+  const stopped = d._checkLoop(
+    tab,
+    'fetch_url',
+    { url, headers: { Range: 'bytes=450000-451000' } },
+    { success: false, status: 416, error: 'Fetch returned HTTP 416' },
+  );
+  assert.equal(stopped.kind, 'stop');
+  assert.match(stopped.message, /find/i, 'terminal ranged-fetch recovery should name literal search');
+  assert.match(stopped.message, /offset:nextOffset/i, 'terminal ranged-fetch recovery should name semantic pagination');
+  assert.match(stopped.message, /partial answer/i, 'terminal ranged-fetch recovery should allow partial delivery');
+
+  for (const label of ['chrome', 'firefox']) {
+    const source = fs.readFileSync(path.join(ROOT, `src/${label}/src/agent/agent.js`), 'utf8');
+    assert.match(
+      source,
+      /if \(effectiveKind === 'stop'\)[\s\S]{0,1800}trace\.recordError\(loopRunId, step, 'loop', stopMessage\)[\s\S]{0,500}status: 'loop_stopped'/,
+      `${label}: loop trace/status propagation missing`,
+    );
+  }
 });
 
 test('failed mutating URL calls retain the ordinary nudge threshold', () => {
@@ -4356,6 +4533,124 @@ test('fetchUrl reports HTTP 4xx/5xx as unsuccessful while preserving response te
       assert.equal(result.status, 422, `${label}: expected status to be preserved`);
       assert.equal(result.error, 'Fetch returned HTTP 422', `${label}: expected HTTP error message`);
       assert.match(result.text, /Your browser did something unexpected/, `${label}: expected body text to be preserved`);
+      assert.equal(Object.hasOwn(result, 'contentLength'), false, `${label}: absent Content-Length should remain absent`);
+    }
+  } finally {
+    if (previousFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = previousFetch;
+    }
+  }
+});
+
+test('fetchUrl provides bounded pagination, literal search, and safe range metadata', async () => {
+  const previousFetch = globalThis.fetch;
+  const source = [
+    'first line',
+    'x'.repeat(8000),
+    'TargetHelper first occurrence',
+    'middle',
+    'targethelper second occurrence',
+    'last line',
+  ].join('\n');
+  const makeResponse = (body, contentType, extraHeaders = {}) => ({
+    status: 206,
+    url: 'https://example.com/source.js',
+    headers: new Headers({
+      'content-type': contentType,
+      'content-length': String(body.length),
+      'content-range': `bytes 0-${Math.max(0, body.length - 1)}/${body.length}`,
+      'accept-ranges': 'bytes',
+      ...extraHeaders,
+    }),
+    text: async () => body,
+  });
+  try {
+    for (const [label, fetchUrl, AgentClass] of [
+      ['chrome', fetchUrlCh, AgentCh],
+      ['firefox', fetchUrlFx, AgentFx],
+    ]) {
+      globalThis.fetch = async () => makeResponse(source, 'text/plain; charset=utf-8');
+
+      const first = await fetchUrl('https://example.com/source.js');
+      assert.equal(first.success, true, `${label}: first window failed`);
+      assert.equal(first.offset, 0, `${label}: first offset`);
+      assert.equal(first.maxChars, first.text.length, `${label}: delivered maxChars drifted`);
+      assert.equal(first.nextOffset, first.text.length, `${label}: nextOffset drifted`);
+      assert.equal(first.hasMore, true, `${label}: missing continuation`);
+      assert.equal(first.originalLength, source.length, `${label}: originalLength`);
+      assert.equal(first.contentRange, `bytes 0-${source.length - 1}/${source.length}`, `${label}: contentRange`);
+      assert.equal(first.contentLength, source.length, `${label}: contentLength`);
+      assert.equal(first.acceptRanges, 'bytes', `${label}: acceptRanges`);
+      assert.ok(JSON.stringify(first).length <= 8000, `${label}: first result exceeded agent cap`);
+      const firstModelVisible = JSON.parse(AgentClass.prototype._limitToolResult(first));
+      assert.equal(firstModelVisible.text, first.text, `${label}: generic limiter changed fetch text`);
+      assert.equal(firstModelVisible.nextOffset, first.nextOffset, `${label}: generic limiter changed continuation`);
+
+      const second = await fetchUrl('https://example.com/source.js', {
+        offset: first.nextOffset,
+        maxChars: 1000,
+      });
+      assert.equal(second.offset, first.nextOffset, `${label}: second offset`);
+      assert.equal(second.text, source.slice(first.nextOffset, first.nextOffset + second.maxChars), `${label}: second window`);
+
+      const minimum = await fetchUrl('https://example.com/source.js', { maxChars: 0 });
+      assert.equal(minimum.maxChars, 1000, `${label}: explicit maxChars below the minimum must clamp to 1000`);
+      const maximum = await fetchUrl('https://example.com/source.js', { maxChars: 99999 });
+      assert.equal(maximum.maxChars, 7000, `${label}: maxChars above the maximum must clamp to 7000`);
+      const pastEnd = await fetchUrl('https://example.com/source.js', { offset: source.length + 500 });
+      assert.equal(pastEnd.offset, source.length, `${label}: offset past EOF must clamp to originalLength`);
+      assert.equal(pastEnd.maxChars, 0, `${label}: offset past EOF must return an empty window`);
+      assert.equal(pastEnd.text, '', `${label}: offset past EOF text`);
+      assert.equal(pastEnd.nextOffset, null, `${label}: offset past EOF continuation`);
+      assert.equal(pastEnd.hasMore, false, `${label}: offset past EOF hasMore`);
+
+      const found = await fetchUrl('https://example.com/source.js', { find: 'TARGETHELPER' });
+      assert.equal(found.find, 'TARGETHELPER', `${label}: find echo`);
+      assert.equal(found.matchCount, 2, `${label}: case-insensitive match count`);
+      assert.deepEqual(found.matches.map(match => match.offset), [
+        source.indexOf('TargetHelper'),
+        source.indexOf('targethelper'),
+      ], `${label}: match offsets`);
+      assert.deepEqual(found.matches.map(match => match.line), [3, 5], `${label}: match lines`);
+      assert.equal(found.nextOffset, null, `${label}: search should cover full response`);
+      assert.equal(found.hasMore, false, `${label}: search continuation should be closed`);
+
+      const missing = await fetchUrl('https://example.com/source.js', { find: 'not-present' });
+      assert.equal(missing.matchCount, 0, `${label}: no-match count`);
+      assert.deepEqual(missing.matches, [], `${label}: no-match list`);
+
+      const repeatedBody = Array.from({ length: 25 }, (_, i) => `line ${i} needle`).join('\n');
+      globalThis.fetch = async () => makeResponse(repeatedBody, 'text/plain');
+      const boundedMatches = await fetchUrl('https://example.com/repeated.txt', { find: 'needle' });
+      assert.equal(boundedMatches.matchCount, 20, `${label}: find match limit`);
+      assert.equal(boundedMatches.matches.length, 20, `${label}: bounded match list`);
+      assert.equal(boundedMatches.matchesTruncated, true, `${label}: extra matches should be disclosed`);
+
+      const jsonBody = JSON.stringify({ pad: 'z'.repeat(8000), target: 'NeedleValue' });
+      globalThis.fetch = async () => makeResponse(jsonBody, 'application/json');
+      const jsonPage = await fetchUrl('https://example.com/data.json', { offset: 1000, maxChars: 1000 });
+      assert.equal(typeof jsonPage.json, 'string', `${label}: paged JSON field missing`);
+      assert.equal(jsonPage.offset, 1000, `${label}: JSON offset`);
+      assert.ok(JSON.stringify(jsonPage).length <= 8000, `${label}: JSON result exceeded agent cap`);
+      const jsonFind = await fetchUrl('https://example.com/data.json', { find: 'needlevalue' });
+      assert.equal(jsonFind.matchCount, 1, `${label}: JSON find`);
+
+      const htmlBody = '<html><title>Example</title><body><p>Alpha</p><p>ScopedHelper here</p></body></html>';
+      globalThis.fetch = async () => makeResponse(htmlBody, 'text/html; charset=utf-8');
+      const htmlFind = await fetchUrl('https://example.com/page', { find: 'scopedhelper' });
+      assert.equal(htmlFind.matchCount, 1, `${label}: HTML find`);
+      assert.equal(htmlFind.title, 'Example', `${label}: HTML title`);
+
+      const escapeHeavy = '"\\\\\\n'.repeat(4000);
+      globalThis.fetch = async () => makeResponse(escapeHeavy, 'text/plain');
+      const constrained = await fetchUrl('https://example.com/escaped.txt', { maxChars: 7000 });
+      assert.ok(JSON.stringify(constrained).length <= 8000, `${label}: escaped result exceeded agent cap`);
+      assert.equal(constrained.nextOffset, constrained.offset + constrained.text.length, `${label}: constrained continuation drifted`);
+      const constrainedModelVisible = JSON.parse(AgentClass.prototype._limitToolResult(constrained));
+      assert.equal(constrainedModelVisible.text, constrained.text, `${label}: generic limiter changed constrained text`);
+      assert.equal(constrainedModelVisible.nextOffset, constrained.nextOffset, `${label}: model-visible continuation drifted`);
     }
   } finally {
     if (previousFetch === undefined) {
@@ -4462,10 +4757,10 @@ test('fetchUrl runs captured same-origin API replay in the active page context',
           return [{
             result: {
               ok: true,
-              status: 204,
+              status: 200,
               url: 'https://github.com/users/follow?target=bob',
               contentType: 'text/plain',
-              text: '',
+              text: 'x'.repeat(1500),
             },
           }];
         },
@@ -4474,12 +4769,15 @@ test('fetchUrl runs captured same-origin API replay in the active page context',
 
     const chromeResult = await fetchUrlCh(
       'https://github.com/users/follow?target=bob',
-      { replayRequestId: 'api_42_req_1' },
+      { replayRequestId: 'api_42_req_1', maxChars: 1000 },
       { tabId: 42 },
     );
     assert.equal(chromeResult.success, true, 'chrome: page-context replay should succeed');
-    assert.equal(chromeResult.status, 204, 'chrome: status should be preserved');
+    assert.equal(chromeResult.status, 200, 'chrome: status should be preserved');
     assert.equal(chromeResult.replayContext, 'page', 'chrome: result should identify page replay');
+    assert.equal(chromeResult.text.length, 1000, 'chrome: page replay should honor maxChars');
+    assert.equal(chromeResult.nextOffset, 1000, 'chrome: page replay should expose aligned continuation');
+    assert.equal(chromeResult.hasMore, true, 'chrome: page replay should disclose remaining text');
     assert.equal(chromeSeen.world, 'ISOLATED', 'chrome: replay should run in the isolated world so the page cannot monkey-patch fetch/URL/Response');
     assert.equal(chromeSeen.args[1].method, 'POST', 'chrome: replay should reuse captured method');
     assert.equal(chromeSeen.args[1].body, 'authenticity_token=opaque-token', 'chrome: replay should reuse captured body');
@@ -4496,7 +4794,7 @@ test('fetchUrl runs captured same-origin API replay in the active page context',
             status: 200,
             url: 'https://github.com/users/follow?target=bob',
             contentType: 'application/json',
-            text: '{"ok":true}',
+            text: JSON.stringify({ pad: 'z'.repeat(2000), target: 'NeedleValue' }),
           }];
         },
       },
@@ -4504,12 +4802,14 @@ test('fetchUrl runs captured same-origin API replay in the active page context',
 
     const firefoxResult = await fetchUrlFx(
       'https://github.com/users/follow?target=bob',
-      { replayRequestId: 'api_42_req_1' },
+      { replayRequestId: 'api_42_req_1', find: 'needlevalue' },
       { tabId: 42 },
     );
     assert.equal(firefoxResult.success, true, 'firefox: page-context replay should succeed');
     assert.equal(firefoxResult.replayContext, 'page', 'firefox: result should identify page replay');
-    assert.match(firefoxResult.json, /"ok": true/, 'firefox: JSON response should still be formatted');
+    assert.equal(firefoxResult.matchCount, 1, 'firefox: page replay should honor literal find');
+    assert.equal(firefoxResult.matches[0].line >= 1, true, 'firefox: replay find should include line metadata');
+    assert.equal(Object.hasOwn(firefoxResult, 'json'), false, 'firefox: find should return matches instead of the full JSON window');
     assert.equal(firefoxSeen.tabId, 42, 'firefox: replay should run in the active tab');
     assert.match(firefoxSeen.opts.code, /fetch\(targetUrl\.href/, 'firefox: replay script should fetch from the tab context');
 
@@ -4653,6 +4953,31 @@ test('bucketArgsKey: URL-family tools use resource bucket + method', () => {
   const get = bucketArgsKey('fetch_url', { url: 'https://x.com/a/b/c', method: 'GET' });
   const post = bucketArgsKey('fetch_url', { url: 'https://x.com/a/b/c', method: 'POST' });
   assert.notEqual(get, post);
+});
+
+test('fetch_url loop buckets allow semantic pages/searches but collapse guessed Range headers', () => {
+  const url = 'https://raw.githubusercontent.com/o/r/main/large.js';
+  const page0 = bucketArgsKey('fetch_url', { url, offset: 0, maxChars: 6000 });
+  const page1 = bucketArgsKey('fetch_url', { url, offset: 6000, maxChars: 6000 });
+  const page0DifferentSize = bucketArgsKey('fetch_url', { url, offset: 0, maxChars: 1000 });
+  const page0Default = bucketArgsKey('fetch_url', { url });
+  assert.notEqual(page0, page1, 'different semantic offsets should not collide');
+  assert.equal(page0, page0DifferentSize, 'changing only maxChars must not evade same-page loop detection');
+  assert.equal(page0, page0Default, 'the default first page must share the explicit offset:0 bucket');
+
+  const findHelper = bucketArgsKey('fetch_url', { url, find: '_siteInteractionText' });
+  const findHelperCase = bucketArgsKey('fetch_url', { url, find: '_SITEINTERACTIONTEXT' });
+  const findFallback = bucketArgsKey('fetch_url', { url, find: 'innerText || value' });
+  assert.equal(findHelper, findHelperCase, 'literal searches should be case-normalized');
+  assert.notEqual(findHelper, findFallback, 'different literal searches are legitimate');
+
+  const rangeA = bucketArgsKey('fetch_url', { url, headers: { Range: 'bytes=0-9999' } });
+  const rangeB = bucketArgsKey('fetch_url', { url, headers: { range: 'bytes=400000-401000' } });
+  assert.equal(rangeA, rangeB, 'HTTP byte-range guesses must stay in one loop bucket');
+
+  assert.equal(page0, bucketArgsKeyFx('fetch_url', { url, offset: 0, maxChars: 6000 }), 'firefox offset bucket drift');
+  assert.equal(findHelper, bucketArgsKeyFx('fetch_url', { url, find: '_siteInteractionText' }), 'firefox find bucket drift');
+  assert.equal(rangeA, bucketArgsKeyFx('fetch_url', { url, headers: { Range: 'bytes=0-9999' } }), 'firefox Range bucket drift');
 });
 
 test('bucketArgsKey: non-URL tools fall back to exact JSON args', () => {
@@ -7108,6 +7433,38 @@ test('schedule_task tool schema advertises supported modes and fixed-interval se
       `[${label}] recurring schema should forbid monthly interval conversion`,
     );
   }
+});
+
+test('fetch_url schema documents semantic text controls and model-visible bounds', () => {
+  for (const [label, getTools] of [
+    ['chrome', getToolsForModeCh],
+    ['firefox', getToolsForModeFx],
+  ]) {
+    const fetchUrl = getTools('act').find(t => t.function.name === 'fetch_url');
+    const properties = fetchUrl?.function.parameters.properties || {};
+    assert.ok(fetchUrl, `[${label}] fetch_url tool missing`);
+    assert.equal(properties.offset?.type, 'number', `[${label}] offset schema missing`);
+    assert.match(properties.offset?.description || '', /Default 0.*nextOffset/i, `[${label}] offset continuation guidance missing`);
+    assert.equal(properties.maxChars?.type, 'number', `[${label}] maxChars schema missing`);
+    assert.match(properties.maxChars?.description || '', /Default 6000.*1000\.\.7000/i, `[${label}] maxChars bounds missing`);
+    assert.equal(properties.find?.type, 'string', `[${label}] find schema missing`);
+    assert.match(properties.find?.description || '', /case-insensitive literal search.*line and character offsets/i, `[${label}] literal find behavior missing`);
+    assert.match(fetchUrl.function.description, /bounded text\/JSON window[\s\S]*offset: nextOffset[\s\S]*do not guess HTTP Range/i, `[${label}] fetch_url large-source guidance missing`);
+    assert.match(fetchUrl.function.description, /originalLength[\s\S]*nextOffset[\s\S]*hasMore/, `[${label}] continuation metadata missing`);
+  }
+});
+
+test('Dev prompt verifies helper scope, module boundary, and execution world before reuse', () => {
+  assert.match(
+    SYSTEM_PROMPT_DEV_APPENDIX_CH,
+    /definition and call site share a module\/lexical scope and JavaScript execution world[\s\S]*content-script IIFE helper is not callable from an ES module, a serialized CDP `Runtime\.evaluate` function, or the page main world/,
+    '[chrome] Dev helper-scope guidance missing',
+  );
+  assert.match(
+    SYSTEM_PROMPT_DEV_APPENDIX_FX,
+    /definition and call site share a module\/lexical scope and JavaScript execution world[\s\S]*content-script IIFE helper is not callable from a module or the page main world/,
+    '[firefox] Dev helper-scope guidance missing',
+  );
 });
 
 test('Ask prompts do not advertise removed Ask tools', () => {

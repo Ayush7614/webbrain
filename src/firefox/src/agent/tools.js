@@ -605,7 +605,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'fetch_url',
-      description: 'Fetch a URL directly from the background and return its text content. Cookies are attached only when the URL shares the registrable domain (eTLD+1) of the active tab — same-site reads work as the signed-in user; cross-site reads are anonymous. Best for: JSON APIs, RSS, plain HTML, raw text files, REST endpoints. Auto-trims HTML to readable text. NOT good for SPAs — use research_url for those. Returns up to ~192000 chars of text or ~96000 chars of pretty-printed JSON — generous enough to fit most articles in a single call; if truncated the result includes `truncated: true` and `originalLength` (re-fetch with section or page-range params, don\'t blindly retry the same URL). DO NOT use fetch_url to read the page the user is currently looking at — call read_page or get_accessibility_tree instead. fetch_url is for content on OTHER URLs.',
+      description: 'Fetch a URL directly from the background and return a bounded text/JSON window. Cookies are attached only when the URL shares the registrable domain (eTLD+1) of the active tab — same-site reads work as the signed-in user; cross-site reads are anonymous. Best for JSON APIs, RSS, plain HTML, raw text files, GitHub raw blobs, and REST endpoints. Auto-trims HTML to readable text. For large resources, use `find` for case-insensitive literal search or continue with `offset: nextOffset`; do not guess HTTP Range byte offsets. Results include `originalLength`, `nextOffset`, and `hasMore`, plus safe Content-Range metadata when the server supplies it. NOT good for SPAs that need JS rendering — use research_url. DO NOT use fetch_url to read the active tab — call read_page or get_accessibility_tree instead.',
       parameters: {
         type: 'object',
         properties: {
@@ -614,6 +614,9 @@ export const AGENT_TOOLS = [
           headers: { type: 'object', description: 'Optional request headers' },
           body: { type: 'string', description: 'Optional request body' },
           replayRequestId: { type: 'string', description: 'Optional opaque id from a bulk API mutation hint. Reuses captured same-origin XHR/fetch body and safe headers without exposing hidden form tokens.' },
+          offset: { type: 'number', description: 'Character offset for text/JSON pagination. Default 0; continue with the returned nextOffset.' },
+          maxChars: { type: 'number', description: 'Maximum text/JSON characters to return. Default 6000, clamped to 1000..7000.' },
+          find: { type: 'string', description: 'Optional case-insensitive literal search across the full decoded text/JSON response. Returns bounded matches with line and character offsets instead of a text window.' },
         },
         required: ['url'],
       },
@@ -1188,7 +1191,7 @@ LISTINGS & PAGINATION — read this:
 - Listing / search-result pages (URLs with ?page=, ?p=, ?sd=, ?offset=, ?after=, &cursor=; or pages with many product/result cards): EXTRACT first, paginate second.
 - Pattern: from the current page, list each visible item to the user as concrete bullets (title + price/date/identifier + canonical link), THEN move to the next page. Do NOT queue 2-3 page fetches and try to deliver everything at the end — the step budget runs out and you ship nothing.
 - Wrong tool for listings: \`get_accessibility_tree({filter:"all"})\` overflows the maxChars limit on most listing pages. If you hit "Output exceeds N character limit" once, do NOT retry the same call with a higher maxChars — switch tool. Use \`get_accessibility_tree({filter:"visible", maxDepth:8-10})\`, \`read_page\`, or \`extract_data({type:"links"})\` instead.
-- Don't refetch a URL you already fetched in this conversation. \`fetch_url\` and \`research_url\` against the same URL return the same content — reuse it.
+- Don't repeat a URL with the same arguments. If \`fetch_url\` returns \`hasMore:true\`, search it with \`find\` or continue with exactly \`offset:nextOffset\`; do not guess HTTP byte ranges. Reuse completed \`fetch_url\` / \`research_url\` results from context.
 - For terminal-list tasks ("give me the links", "list the items under $N"), call \`done({summary})\` with what you have as soon as it's useful. Partial-but-delivered beats complete-but-never-delivered.`;
 
 export const SYSTEM_PROMPT_ACT = `You are WebBrain, an AI browser agent running in Act mode. You can read web pages, interact with elements, navigate, and perform multi-step tasks autonomously.
@@ -1380,7 +1383,7 @@ LISTINGS & PAGINATION — read this:
 - Listing / search-result pages (URLs with query params like ?page=, ?p=, ?sd=, ?offset=, ?after=, &cursor=; or pages that show many product/result cards with Next/Sonraki/Suivant/下一页 controls): EXTRACT first, paginate second.
 - Required pattern: from the current page, list each visible item to the user as concrete bullets (title + price/date/identifier + canonical link), THEN move to the next page. Do not queue 2-3 pages of fetches and try to deliver everything at the end — the step budget runs out and you ship nothing.
 - Wrong tool for listings: \`get_accessibility_tree({filter:"all"})\` overflows the maxChars limit on almost every listing page (each card is dozens of nodes × dozens of cards). If you hit "Output exceeds N character limit" once, do NOT retry the same call with a higher maxChars — that is the wrong tool for this page. Switch to \`get_accessibility_tree({filter:"visible", maxDepth:8-10})\` for the in-viewport cards, then scroll + re-read; or use \`read_page\` if you need prose; or use \`extract_data({type:"links"})\` for raw href harvesting.
-- Don't refetch a URL you already fetched in this conversation. \`fetch_url\`, \`research_url\`, and \`navigate\` against the same URL all return the same content — reuse what you already have rather than calling another tool to "verify". If the previous fetch result was truncated, scroll/extract within it; don't hit the URL again.
+- Don't repeat \`fetch_url\`, \`research_url\`, or \`navigate\` with the same arguments. If \`fetch_url\` returns \`hasMore:true\`, use \`find\` or continue with exactly \`offset:nextOffset\`; never guess HTTP byte ranges.
 - Terminal-list tasks ("give me the links", "list the products under $N", "find all matching items"): call \`done({summary, outcome:"partial"})\` with the items you have collected as soon as you have a useful answer if it is not complete. Partial-but-delivered beats complete-but-never-delivered. Don't paginate forever in pursuit of completeness.`;
 
 export const SYSTEM_PROMPT_DEV_APPENDIX = `
@@ -1388,6 +1391,7 @@ DEV MODE APPENDIX:
 - You are in Dev mode: the user has allowed page source, style inspection, and page-debugging work in addition to the selected Mid/Full Act tools. Dev mode is not available for Compact-tier providers.
 - Use \`read_page_source\` when raw server HTML, linked stylesheet/script URLs, inline CSS/JS, SSR output, or static markup matters. Do not treat View Source as the rendered DOM or computed layout.
 - Use \`inspect_element_styles\` for live computed CSS, box model, spacing, z-index, visibility, and layout debugging on visible elements. Pair it with page/tree reads or visual context before proposing a UI/layout fix.
+- Before recommending reuse of a helper, verify the definition and call site share a module/lexical scope and JavaScript execution world. A content-script IIFE helper is not callable from a module or the page main world merely because its fallback expression looks identical.
 - Firefox Dev mode also exposes \`execute_js\`. Use it for focused debugging/readback or page-editing helpers that cannot be done through normal UI tools. Do not use it to mutate REST/GraphQL APIs or bypass visible UI approval for user-impacting actions.
 - Future HTML/CSS/page-editing tools belong in Dev mode. Keep normal browsing and form actions on the regular Act tools unless the user is explicitly asking for source/style/debug/page-editing work.`;
 
