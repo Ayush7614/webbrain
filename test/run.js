@@ -1369,6 +1369,70 @@ test('Chrome set_checked completes one selector-backed trusted click and verifie
   }
 });
 
+test('Chrome set_checked preserves partial trusted click dispatch on failure', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      tabs: {
+        async sendMessage() {
+          return {
+            success: true,
+            method: 'set_checked',
+            ref_id: 'ref_8',
+            checkedBefore: false,
+            checkedAfter: false,
+            desiredChecked: true,
+            checkboxIdentity: 'id:firefox',
+            selector: '#firefox',
+          };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: false,
+      dispatched: true,
+      error: 'mouse release failed after press',
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_8', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-8',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-8"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_8', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, false);
+    assert.equal(response.dispatched, true);
+    assert.notEqual(response.noDispatch, true);
+    assert.equal(response.trusted, true);
+    assert.equal(response.noProgress, true);
+    assert.match(response.error, /mouse release failed after press/);
+    assert.equal(
+      CompletionInvariantCh.didCompletionActionExecute('set_checked', { checked: true }, response),
+      true,
+      'partial trusted input must retain completion debt',
+    );
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
 test('navigation-prone detection includes only submit-capable key and field calls', () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({});
@@ -6544,6 +6608,23 @@ test('completion invariant state machine enforces post-action observation with C
     assert.equal(observationWithoutAction.hadAction, false, `${label}: observation-only run invented an action`);
     assert.equal(observationWithoutAction.verificationDebt, false, `${label}: observation-only run opened debt`);
     assert.equal(observationWithoutAction.lastObservation?.name, 'read_page', `${label}: successful observation without an action was not recorded`);
+
+    const idempotentCheckbox = invariant.recordCompletionToolResult(
+      invariant.createCompletionInvariantState(`${label}-idempotent-checkbox`),
+      'set_checked',
+      { ref_id: 'ref_checkbox', checked: true },
+      {
+        success: true,
+        idempotent: true,
+        verified: true,
+        dispatched: false,
+        noDispatch: true,
+        checkedBefore: true,
+        checkedAfter: true,
+      },
+    );
+    assert.equal(idempotentCheckbox.hadAction, false, `${label}: idempotent set_checked was recorded as an action`);
+    assert.equal(idempotentCheckbox.verificationDebt, false, `${label}: idempotent set_checked opened verification debt`);
 
     for (const name of ['schedule_task', 'schedule_resume']) {
       const scheduled = invariant.recordCompletionToolResult(

@@ -10542,13 +10542,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       : response.checkedAfter;
     const success = checkedAfter === args.checked;
     const checkboxIdentity = verified?.checkboxIdentity || response.checkboxIdentity;
+    const clickDispatched = clickResult?.dispatched === true || clickResult?.success === true;
     return {
       ...response,
       ...(verified || {}),
       success,
-      dispatched: !!clickResult && clickResult.success !== false,
-      noDispatch: !clickResult || clickResult.success === false,
-      trusted: !!clickResult && clickResult.success !== false,
+      dispatched: clickDispatched,
+      noDispatch: clickDispatched ? undefined : true,
+      trusted: clickDispatched,
       verified: success,
       needsTrustedClick: false,
       checkedBefore: response.checkedBefore,
