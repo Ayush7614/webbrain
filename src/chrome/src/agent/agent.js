@@ -10576,10 +10576,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!response || response.success !== true || response.needsTrustedClick !== true) {
       return response;
     }
+    const beforeDocument = await this._getDevDocumentIdentity(tabId);
     const trustedSelector = String(response.trustedSelector || '');
     const marker = String(response.marker || '');
     let clickResult = null;
     let clickError = null;
+    let verificationError = null;
     let trustedClickSucceeded = false;
     try {
       if (!trustedSelector) throw new Error('Checkbox preflight did not return a trusted selector');
@@ -10617,14 +10619,36 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         },
       });
     } catch (error) {
+      verificationError = error;
       if (!clickError) clickError = error;
     }
 
     const verificationObservedState = typeof verified?.checkedAfter === 'boolean';
-    const verificationLostAfterTrustedClick = trustedClickSucceeded && !verificationObservedState;
-    const checkedAfter = verificationObservedState
-      ? verified.checkedAfter
-      : (verificationLostAfterTrustedClick ? undefined : response.checkedAfter);
+    let afterDocument = null;
+    if (trustedClickSucceeded && !verificationObservedState) {
+      afterDocument = await this._getDevDocumentIdentity(tabId);
+    }
+    const documentChanged = !!(
+      beforeDocument?.documentId
+      && afterDocument?.documentId
+      && beforeDocument.documentId !== afterDocument.documentId
+    );
+    const pageUrlChanged = !!(
+      beforeDocument?.pageUrl
+      && afterDocument?.pageUrl
+      && this._normalizeUrl(beforeDocument.pageUrl) !== this._normalizeUrl(afterDocument.pageUrl)
+    );
+    const verificationTransportLost = !!(
+      verificationError
+      && /message (?:port|channel) closed|receiving end does not exist|(?:tab|frame).*(?:closed|removed)|no tab with id/i
+        .test(String(verificationError?.message || verificationError))
+    );
+    const verificationLostAfterTrustedClick = !!(
+      trustedClickSucceeded
+      && !verificationObservedState
+      && (verificationTransportLost || documentChanged || pageUrlChanged)
+    );
+    const checkedAfter = verificationObservedState ? verified.checkedAfter : undefined;
     const stateMatches = checkedAfter === args.checked;
     const success = trustedClickSucceeded && (stateMatches || verificationLostAfterTrustedClick);
     const checkboxIdentity = verified?.checkboxIdentity || response.checkboxIdentity;
@@ -10668,6 +10692,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         warning: 'The trusted checkbox click was sent, but its document disappeared before the checked state could be re-read, likely because the click navigated or reloaded the page. Do not repeat set_checked; observe the current page.',
       };
     }
+    const failureError = clickError
+      ? `Trusted checkbox click did not complete: ${clickError.message || clickError}`
+      : verified?.error
+        ? `Checkbox verification failed: ${verified.error}`
+        : 'Checkbox state could not be verified after one trusted selector click.';
     return {
       ...completed,
       ...(success ? {
@@ -10675,9 +10704,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         error: undefined,
       } : {
         noProgress: true,
-        error: clickError
-          ? `Trusted checkbox click did not complete: ${clickError.message || clickError}`
-          : `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after one trusted selector click.`,
+        error: failureError,
       }),
     };
   }

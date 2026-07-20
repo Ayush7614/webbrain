@@ -1617,6 +1617,70 @@ test('Chrome set_checked preserves navigation when post-click verification loses
   }
 });
 
+test('Chrome set_checked keeps same-document probe failures as failures', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalAttach = cdpClientCh.attach;
+  const originalClickElement = cdpClientCh.clickElement;
+  try {
+    globalThis.chrome = {
+      runtime: {},
+      webNavigation: {
+        async getFrame() {
+          return {
+            documentId: 'same-document',
+            url: 'https://example.com/preferences',
+          };
+        },
+      },
+      tabs: {
+        async sendMessage() {
+          return {
+            success: false,
+            error: 'ref_id ref_11 was not found',
+          };
+        },
+      },
+    };
+    cdpClientCh.attach = async () => ({ attached: true });
+    cdpClientCh.clickElement = async () => ({
+      success: true,
+      method: 'cdp-mouse',
+      rect: { x: 1, y: 2, w: 20, h: 20 },
+    });
+
+    const response = await new AgentCh({})._completeSetCheckedWithCdp(
+      42,
+      { ref_id: 'ref_11', checked: true },
+      {
+        success: true,
+        needsTrustedClick: true,
+        marker: 'marker-11',
+        trustedSelector: '[data-webbrain-set-checked-target="marker-11"]',
+        selector: '#firefox',
+        checkedBefore: false,
+        checkedAfter: false,
+        checkboxIdentity: 'id:firefox',
+      },
+      { ref_id: 'ref_11', checked: true, probeOnly: true, markForTrustedClick: true },
+    );
+
+    assert.equal(response.success, false);
+    assert.equal(response.dispatched, true);
+    assert.equal(response.trusted, true);
+    assert.equal(response.verified, false);
+    assert.equal(response.inconclusive, undefined);
+    assert.equal(response.navigationMayHaveOccurred, undefined);
+    assert.equal(response.checkedAfter, undefined);
+    assert.equal(response.noProgress, true);
+    assert.match(response.error, /ref_id ref_11 was not found/);
+  } finally {
+    cdpClientCh.attach = originalAttach;
+    cdpClientCh.clickElement = originalClickElement;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+});
+
 test('navigation-prone detection includes only submit-capable key and field calls', () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({});
