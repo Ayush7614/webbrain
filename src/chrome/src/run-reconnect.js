@@ -65,6 +65,7 @@ export async function runDetachedWithReconnect({
   reconnectDelaysMs = [250, 500, 1000, 2000, 4000],
   maxResumeAttempts = 3,
   maxUncertainStartRetries = 2,
+  maxAcknowledgedStartRetries = 2,
   maxMissingStateProbes = 6,
   maxConnectionFailures = 12,
 } = {}) {
@@ -78,8 +79,10 @@ export async function runDetachedWithReconnect({
   let actionPayload = payload;
   let resumeAttempts = 0;
   let uncertainStartRetries = 0;
+  let acknowledgedStartRetries = 0;
   let everReconnected = false;
   let startWasUncertain = false;
+  let startObserved = false;
 
   while (true) {
     let startAcknowledged = false;
@@ -156,6 +159,7 @@ export async function runDetachedWithReconnect({
         // than risking duplicate page actions.
         startAcknowledged = true;
         startWasUncertain = false;
+        startObserved = true;
         if (wasDisconnected) {
           everReconnected = true;
           wasDisconnected = false;
@@ -166,6 +170,11 @@ export async function runDetachedWithReconnect({
 
       if (state?.running === true || state?.starting === true) {
         throw new Error('Another run became active while reconnecting.');
+      }
+
+      if (sameSnapshot && snapshot.status === 'awaiting_plan') {
+        if (!shouldResume()) throw new Error('Run recovery was cancelled.');
+        throw new Error('Plan approval expired after the extension background restarted. Review the plan and run the request again.');
       }
 
       if (sameSnapshot && !TERMINAL_RUN_STATUSES.has(snapshot.status)) {
@@ -202,6 +211,18 @@ export async function runDetachedWithReconnect({
         if (!shouldResume()) throw new Error('Run recovery was cancelled.');
         uncertainStartRetries += 1;
         onStatus({ phase: 'retrying_start', requestId, attempt: uncertainStartRetries });
+        break;
+      }
+      if (startAcknowledged
+          && !startObserved
+          && state?.submittedTurnDurable !== true
+          && missingStateProbes >= 2
+          && acknowledgedStartRetries < maxAcknowledgedStartRetries) {
+        if (!shouldResume()) throw new Error('Run recovery was cancelled.');
+        acknowledgedStartRetries += 1;
+        action = initialAction;
+        actionPayload = payload;
+        onStatus({ phase: 'retrying_start', requestId, attempt: acknowledgedStartRetries });
         break;
       }
       if (startAcknowledged && missingStateProbes >= maxMissingStateProbes) {

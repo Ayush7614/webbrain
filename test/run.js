@@ -36840,6 +36840,91 @@ test('detached runs honor cancellation before retrying an uncertain start', asyn
   }
 });
 
+test('detached runs retry an acknowledged start that never published recoverable state', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-acknowledged-without-state`;
+    const starts = [];
+    const states = [
+      { running: false, starting: false, submittedTurnDurable: false, runUi: null },
+      { running: false, starting: false, submittedTurnDurable: false, runUi: null },
+      {
+        running: false,
+        starting: false,
+        submittedTurnDurable: true,
+        runUi: {
+          requestId,
+          status: 'completed',
+          finalContent: 'Recovered acknowledged prompt',
+          events: [],
+        },
+      },
+    ];
+
+    const response = await runDetachedWithReconnect({
+      initialAction: 'chat_start',
+      payload: { tabId: 49, requestId, mode: 'act', text: 'preserve this accepted prompt' },
+      start: async (action, nextPayload) => {
+        starts.push({ action, payload: nextPayload });
+        return { accepted: true, requestId };
+      },
+      probe: async () => states.shift(),
+      isConnectionError: () => false,
+      wait: async () => {},
+      maxAcknowledgedStartRetries: 1,
+    });
+
+    assert.deepEqual(
+      starts.map(start => start.action),
+      ['chat_start', 'chat_start'],
+      `${label}: an ack without any live, journal, or durable-turn proof should replay the original start once`,
+    );
+    assert.deepEqual(starts[1].payload, starts[0].payload, `${label}: acknowledged-start recovery must preserve the full payload`);
+    assert.equal(response.content, 'Recovered acknowledged prompt', `${label}: replayed start should complete normally`);
+  }
+});
+
+test('detached runs fail closed when plan approval state was lost on restart', async () => {
+  for (const [label, runDetachedWithReconnect] of [
+    ['chrome', runDetachedWithReconnectCh],
+    ['firefox', runDetachedWithReconnectFx],
+  ]) {
+    const requestId = `${label}-lost-plan-approval`;
+    const starts = [];
+
+    await assert.rejects(
+      runDetachedWithReconnect({
+        initialAction: 'chat_start',
+        payload: { tabId: 50, requestId, mode: 'act', text: 'wait for plan approval' },
+        start: async (action) => {
+          starts.push(action);
+          return { accepted: true, requestId };
+        },
+        probe: async () => ({
+          running: false,
+          starting: false,
+          pendingPlan: null,
+          submittedTurnDurable: true,
+          runUi: {
+            requestId,
+            status: 'awaiting_plan',
+            pendingPlanId: 'plan-before-restart',
+            events: [],
+          },
+        }),
+        isConnectionError: () => false,
+        wait: async () => {},
+      }),
+      /Plan approval expired after the extension background restarted/i,
+      `${label}: a lost approval waiter must never become an automatic continuation`,
+    );
+
+    assert.deepEqual(starts, ['chat_start'], `${label}: recovery must not send continue_start without approval`);
+  }
+});
+
 test('detached runs resume a persisted non-terminal request after background restart', async () => {
   for (const [label, runDetachedWithReconnect] of [
     ['chrome', runDetachedWithReconnectCh],
