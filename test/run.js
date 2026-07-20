@@ -863,7 +863,16 @@ class LoopDetectorShim {
   _checkLoop(tabId, name, args, result) {
     const { buf, key } = this._recordCall(tabId, name, args, result);
     if (STATE_CHANGE_TOOLS_TEST.has(name)) {
-      const failureScope = String(result?.failureScope || `${name}|${bucketArgsKey(name, args)}`).slice(0, 320);
+      const normalizeFailureScope = value => String(value).slice(0, 320);
+      const defaultFailureScope = normalizeFailureScope(`${name}|${bucketArgsKey(name, args)}`);
+      const failureScope = normalizeFailureScope(result?.failureScope || defaultFailureScope);
+      const equivalentFailureScopes = new Set([failureScope, defaultFailureScope]);
+      if ((name === 'set_field' || name === 'type_ax') && typeof args?.ref_id === 'string') {
+        equivalentFailureScopes.add(normalizeFailureScope(`field-value:${args.ref_id}`));
+      }
+      if (name === 'click' && typeof args?.text === 'string') {
+        equivalentFailureScopes.add(normalizeFailureScope(`ambiguous-click:${args.text.trim().toLowerCase()}`));
+      }
       const failures = this.failedActionLoops.get(tabId) || new Map();
       if (this._isToolResultErroredForLoop(name, args, result)) {
         const attempts = (failures.get(failureScope) || 0) + 1;
@@ -875,7 +884,7 @@ class LoopDetectorShim {
         }
         if (attempts === 2) return { kind: 'nudge', warning: '[FAILED ACTION LOOP]' };
       } else if (result?.success === true && result?.verified !== false) {
-        failures.delete(failureScope);
+        for (const scope of equivalentFailureScopes) failures.delete(scope);
         if (failures.size) this.failedActionLoops.set(tabId, failures);
         else this.failedActionLoops.delete(tabId);
       }
@@ -3587,6 +3596,25 @@ test('ambiguous click failure scope survives unrelated actions', () => {
   assert.equal(d._checkLoop(tab, 'click', { x: 10, y: 20 }, { success: true, verified: true }).kind, 'none');
   assert.equal(d._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'nudge');
   assert.equal(d._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'stop');
+});
+
+test('verified field retries clear equivalent scoped failures', () => {
+  const d = new LoopDetectorShim();
+  const tab = 332;
+  const args = { ref_id: 'ref_7', text: 'query' };
+  const failure = {
+    success: false,
+    verified: false,
+    failureScope: 'field-value:ref_7',
+    error: 'Controlled field reset its value',
+  };
+  assert.equal(d._checkLoop(tab, 'set_field', args, failure).kind, 'none');
+  assert.equal(d._checkLoop(tab, 'set_field', args, failure).kind, 'nudge');
+  assert.equal(d._checkLoop(tab, 'set_field', args, { success: true, verified: true }).kind, 'none');
+  assert.equal(d.failedActionLoops.has(tab), false, 'verified retry should clear the custom field failure scope');
+  const nextFailure = d._checkLoop(tab, 'set_field', args, failure);
+  assert.notEqual(nextFailure.kind, 'stop', 'the first failure after recovery must not be treated as the third consecutive failure');
+  assert.equal(d.failedActionLoops.get(tab)?.get('field-value:ref_7'), 1);
 });
 
 test('errored vs successful do not collapse together', () => {

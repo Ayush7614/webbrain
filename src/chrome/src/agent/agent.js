@@ -1815,9 +1815,16 @@ export class Agent {
   _checkLoop(tabId, toolName, toolArgs, toolResult) {
     const { buf, key } = this._recordCall(tabId, toolName, toolArgs, toolResult);
     if (this._isBrowserMutationTool(toolName)) {
-      const failureScope = String(
-        toolResult?.failureScope || `${toolName}|${bucketArgsKey(toolName, toolArgs)}`,
-      ).slice(0, 320);
+      const normalizeFailureScope = value => String(value).slice(0, 320);
+      const defaultFailureScope = normalizeFailureScope(`${toolName}|${bucketArgsKey(toolName, toolArgs)}`);
+      const failureScope = normalizeFailureScope(toolResult?.failureScope || defaultFailureScope);
+      const equivalentFailureScopes = new Set([failureScope, defaultFailureScope]);
+      if ((toolName === 'set_field' || toolName === 'type_ax') && typeof toolArgs?.ref_id === 'string') {
+        equivalentFailureScopes.add(normalizeFailureScope(`field-value:${toolArgs.ref_id}`));
+      }
+      if (toolName === 'click' && typeof toolArgs?.text === 'string') {
+        equivalentFailureScopes.add(normalizeFailureScope(`ambiguous-click:${toolArgs.text.trim().toLowerCase()}`));
+      }
       const failures = this.failedActionLoops.get(tabId) || new Map();
       if (this._isToolResultErroredForLoop(toolName, toolArgs, toolResult)) {
         const attempts = (failures.get(failureScope) || 0) + 1;
@@ -1838,7 +1845,7 @@ export class Agent {
           };
         }
       } else if (toolResult?.success === true && toolResult?.verified !== false) {
-        failures.delete(failureScope);
+        for (const scope of equivalentFailureScopes) failures.delete(scope);
         if (failures.size) this.failedActionLoops.set(tabId, failures);
         else this.failedActionLoops.delete(tabId);
       }
