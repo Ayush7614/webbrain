@@ -160,6 +160,7 @@ export class Agent {
     this.recentCalls = new Map();
     this.loopNudges = new Map();
     this.healthyCallsSinceLoop = new Map();
+    this.failedActionLoops = new Map(); // tabId -> Map(stable failure scope -> count)
     this._lastAxScopes = new Map(); // tabId -> { documentToken, pageUrl }, captured by the latest AX read
     // A model can walk ref_1, ref_2, … forever while every call looks unique
     // to the exact-argument loop detector. Track that semantic read pattern.
@@ -909,6 +910,7 @@ export class Agent {
     this.recentCalls.delete(tabId);
     this.loopNudges.delete(tabId);
     this.healthyCallsSinceLoop.delete(tabId);
+    this.failedActionLoops.delete(tabId);
     this.axReadStates.delete(tabId);
     this.noProgressScrolls.delete(tabId);
     this.deliveryObservationStreaks.delete(tabId);
@@ -921,6 +923,29 @@ export class Agent {
         this.failedBulkApiReplayShapes.delete(key);
       }
     }
+  }
+
+  _rememberAxScope(tabId, documentToken, pageUrl = '') {
+    const next = {
+      documentToken: String(documentToken || ''),
+      pageUrl: String(pageUrl || ''),
+    };
+    if (!next.documentToken && !next.pageUrl) return;
+    const previous = this._lastAxScopes.get(tabId);
+    const documentChanged = !!(
+      previous?.documentToken
+      && next.documentToken
+      && previous.documentToken !== next.documentToken
+    );
+    const routeChanged = !!(
+      previous?.pageUrl
+      && next.pageUrl
+      && this._normalizeUrl(previous.pageUrl) !== this._normalizeUrl(next.pageUrl)
+    );
+    // Refs, text targets, and coordinates belong to the observed document and
+    // route. Once either changes, old failures cannot describe the new page.
+    if (documentChanged || routeChanged) this._clearLoopState(tabId);
+    this._lastAxScopes.set(tabId, next);
   }
 
   _checkAccessibilityReadLoop(tabId, name, args, result) {
@@ -1637,7 +1662,47 @@ export class Agent {
   }
 
   _checkLoop(tabId, toolName, toolArgs, toolResult) {
+    // A navigation result is authoritative page-state evidence. Clear before
+    // recording this call so same-looking controls on the new page start at
+    // attempt one instead of inheriting an old third-strike counter.
+    if (toolResult?.pageUrlChanged === true) this._clearLoopState(tabId);
     const { buf, key } = this._recordCall(tabId, toolName, toolArgs, toolResult);
+    if (this._isBrowserMutationTool(toolName)) {
+      const normalizeFailureScope = value => String(value).slice(0, 320);
+      const defaultFailureScope = normalizeFailureScope(`${toolName}|${bucketArgsKey(toolName, toolArgs)}`);
+      const failureScope = normalizeFailureScope(toolResult?.failureScope || defaultFailureScope);
+      const equivalentFailureScopes = new Set([failureScope, defaultFailureScope]);
+      if ((toolName === 'set_field' || toolName === 'type_ax') && typeof toolArgs?.ref_id === 'string') {
+        equivalentFailureScopes.add(normalizeFailureScope(`field-value:${toolArgs.ref_id}`));
+      }
+      if (toolName === 'click' && typeof toolArgs?.text === 'string') {
+        equivalentFailureScopes.add(normalizeFailureScope(`ambiguous-click:${toolArgs.text.trim().toLowerCase()}`));
+      }
+      const failures = this.failedActionLoops.get(tabId) || new Map();
+      if (this._isToolResultErroredForLoop(toolName, toolArgs, toolResult)) {
+        const attempts = (failures.get(failureScope) || 0) + 1;
+        failures.set(failureScope, attempts);
+        if (failures.size > 32) failures.delete(failures.keys().next().value);
+        this.failedActionLoops.set(tabId, failures);
+        if (attempts >= 3) {
+          this._clearLoopState(tabId);
+          return {
+            kind: 'stop',
+            message: `Stopped: ${toolName} failed or made no progress three times for the same target. Repeating it or switching to a precomputed fallback cannot make progress without fresh page evidence.`,
+          };
+        }
+        if (attempts === 2) {
+          return {
+            kind: 'nudge',
+            warning: `[FAILED ACTION LOOP: ${toolName} has failed or made no progress twice for the same target. Do not retry it or use a queued fallback. Re-read the page/tree and choose a new action from current evidence.]`,
+          };
+        }
+      } else if (toolResult?.success === true && toolResult?.verified !== false) {
+        for (const scope of equivalentFailureScopes) failures.delete(scope);
+        if (failures.size) this.failedActionLoops.set(tabId, failures);
+        else this.failedActionLoops.delete(tabId);
+      }
+    }
     if (toolResult?.nonRetryable) {
       const repeats = buf.filter(entry => entry.key === key).length;
       if (repeats >= 2) {
@@ -2014,15 +2079,102 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return false;
   }
 
+  _isBrowserMutationTool(toolName) {
+    return Agent.STATE_CHANGE_TOOLS.has(toolName)
+      || toolName === 'iframe_click'
+      || toolName === 'iframe_type'
+      || toolName === 'upload_file'
+      || toolName === 'solve_captcha';
+  }
+
+  _browserActionFreshTurnReason(tier, toolName, toolResult) {
+    if (!this._isBrowserMutationTool(toolName)) return '';
+    if (
+      toolResult?.success === false
+      || toolResult?.error
+      || toolResult?.noProgress
+      || toolResult?.ambiguous
+      || toolResult?.outcomeUnknown
+      || toolResult?.stale
+    ) {
+      return 'action_failed';
+    }
+    if (toolResult?.inconclusive || toolResult?.verified === false) {
+      return 'action_unverified';
+    }
+    if (
+      toolResult?.pageUrlChanged === true
+      || toolName === 'navigate'
+      || toolName === 'go_back'
+      || toolName === 'go_forward'
+    ) {
+      return 'navigation_changed';
+    }
+    if (tier === 'mid' || tier === 'compact') {
+      return 'small_model_action_boundary';
+    }
+    return '';
+  }
+
+  _interruptToolBatchForFreshTurn(tabId, toolCalls, startIndex, messages, onUpdate, step, options = {}) {
+    if (startIndex >= toolCalls.length) return false;
+    const triggeringTool = options.triggeringTool || 'browser_action';
+    const reason = options.reason || 'action_failed';
+    const skippedCount = this._appendSyntheticToolResults(
+      tabId,
+      toolCalls,
+      startIndex,
+      messages,
+      onUpdate,
+      step,
+      (skippedName) => ({
+        success: false,
+        skipped: true,
+        skippedBecause: 'fresh_turn_required',
+        triggeringTool,
+        reason,
+        error: `Skipped ${skippedName}: ${triggeringTool} requires a fresh model turn before any dependent browser action.`,
+      }),
+    );
+    this._injectNavNotices(messages, options.navNotices || [], onUpdate);
+    onUpdate('warning', {
+      message: `Paused ${skippedCount} stale tool call(s) after ${triggeringTool}; continuing from the observed result.`,
+    });
+    const interruptedRunId = this.currentRunId.get(tabId);
+    if (interruptedRunId) {
+      trace.recordNote(interruptedRunId, step, 'tool_batch_interrupted', {
+        tier: options.tier || this._resolvePromptTier(),
+        triggeringTool,
+        reason,
+        skippedCount,
+      });
+    }
+    this._persist(tabId);
+    return true;
+  }
+
   /**
    * Execute one assistant turn's tool calls. A `recover` result asks the
    * caller for one terminal, tool-free salvage response after loop stopping.
    */
   async _executeToolBatch(tabId, toolCalls, messages, onUpdate, provider, partialAssistantText = null, allowedToolNames = AGENT_TOOL_NAMES, step = null, runOptions = {}) {
     let didStateChange = false;
+    const promptTier = this._resolvePromptTier();
     const completionBatchStartState = this.completionInvariants.get(tabId) || null;
     const navNotices = [];
     const failedApiMutationLoopKeysThisBatch = new Set();
+    const interruptFailedBrowserAction = (toolIndex, triggeringTool) => (
+      this._isBrowserMutationTool(triggeringTool)
+      && this._interruptToolBatchForFreshTurn(
+        tabId,
+        toolCalls,
+        toolIndex + 1,
+        messages,
+        onUpdate,
+        step,
+        { tier: promptTier, triggeringTool, reason: 'action_failed', navNotices },
+      )
+    );
 
     for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex++) {
       const tc = toolCalls[toolIndex];
@@ -2047,6 +2199,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           tool_call_id: tc.id,
           content: JSON.stringify({ success: false, denied: true, error }),
         });
+        if (interruptFailedBrowserAction(toolIndex, fnName)) return { action: 'continue' };
         continue;
       }
       const parsedArgs = this._parseToolCallArgs(tc);
@@ -2067,6 +2220,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             latencyMs: 0,
           });
         }
+        if (interruptFailedBrowserAction(toolIndex, fnName)) return { action: 'continue' };
         continue;
       }
       const argRepair = this._repairToolCallArgs(fnName, parsedArgs.args);
@@ -2173,6 +2327,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               content: this._wrapUntrusted(fnName, this._limitToolResult(blockedResult)),
             });
             onUpdate('warning', { message: 'Repeat submission blocked until the invalid form changes.' });
+            if (interruptFailedBrowserAction(toolIndex, fnName)) return { action: 'continue' };
             continue;
           }
         }
@@ -2206,6 +2361,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               }),
             });
             onUpdate('warning', { message: 'Form submission blocked until the user confirms.' });
+            if (interruptFailedBrowserAction(toolIndex, fnName)) return { action: 'continue' };
             continue;
           }
           // The submit-specific card is fresher and more precise than the
@@ -2291,6 +2447,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               error: `Cannot run ${fnName}: the target frame/host couldn't be identified, so it can't be permission-checked. Pass a urlFilter naming the iframe's domain (read it first with iframe_read / get_accessibility_tree) and retry.`,
             }),
           });
+          if (interruptFailedBrowserAction(toolIndex, fnName)) return { action: 'continue' };
           continue;
         }
         if (blocked) {
@@ -2303,6 +2460,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               error: `The user denied permission to ${CAPABILITY_LABEL[blocked.capability]} ${blocked.host}. Do NOT retry this action on that site. Continue with what you can without it, or ask the user how to proceed.`,
             }),
           });
+          if (interruptFailedBrowserAction(toolIndex, fnName)) return { action: 'continue' };
           continue;
         }
       }
@@ -2788,6 +2946,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         this._clearLoopState(tabId);
         this._persist(tabId);
         return { action: 'recover', value: stopMessage, status: 'loop_stopped' };
+      }
+      const freshTurnReason = this._browserActionFreshTurnReason(promptTier, fnName, toolResult);
+      if (freshTurnReason && this._interruptToolBatchForFreshTurn(
+        tabId,
+        toolCalls,
+        toolIndex + 1,
+        messages,
+        onUpdate,
+        step,
+        { tier: promptTier, triggeringTool: fnName, reason: freshTurnReason, navNotices },
+      )) {
+        // The interruption helper already emitted the queued synthetic results
+        // and navigation notice. Continue through the shared post-batch path so
+        // state_change/every_step auto-screenshots still reach the fresh turn.
+        if (this._shouldAutoScreenshot(fnName) && !toolResult?.error) didStateChange = true;
+        navNotices.length = 0;
+        break;
       }
       if (bulkApiShortcut?.apiAllowed && bulkApiShortcut.replayRequestId && toolIndex < toolCalls.length - 1) {
         const instruction = this._bulkApiReplayInstruction(bulkApiShortcut);
@@ -11058,10 +11233,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             && resolved.refs.length === result.fields.length
           ) {
             if (resolved.documentToken) {
-              this._lastAxScopes.set(tabId, {
-                documentToken: resolved.documentToken,
-                pageUrl: resolved.refScopeUrl || '',
-              });
+              this._rememberAxScope(tabId, resolved.documentToken, resolved.refScopeUrl || '');
             }
             result.fields = result.fields.map((field, index) => ({
               ...field,
@@ -11402,13 +11574,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (name === 'click' || name === 'click_ax') {
         response = await this._settleContentFilePickerGuard(tabId, response);
       }
-      if (name === 'get_accessibility_tree' && response?.documentToken) {
-        this._lastAxScopes.set(tabId, {
-          documentToken: response.documentToken,
-          pageUrl: response.refScopeUrl || '',
-        });
-        delete response.documentToken;
-        delete response.refScopeUrl;
+      if (response?.documentToken && (
+        name === 'get_accessibility_tree'
+        || response.documentChanged === true
+        || response.routeChanged === true
+        || response.staleRef === true
+      )) {
+        this._rememberAxScope(tabId, response.documentToken, response.refScopeUrl || '');
+        if (name === 'get_accessibility_tree') {
+          delete response.documentToken;
+          delete response.refScopeUrl;
+        }
       }
       this._annotateCredentialField(name, response);
       return response;
@@ -11424,13 +11600,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (name === 'click' || name === 'click_ax') {
           response = await this._settleContentFilePickerGuard(tabId, response);
         }
-        if (name === 'get_accessibility_tree' && response?.documentToken) {
-          this._lastAxScopes.set(tabId, {
-            documentToken: response.documentToken,
-            pageUrl: response.refScopeUrl || '',
-          });
-          delete response.documentToken;
-          delete response.refScopeUrl;
+        if (response?.documentToken && (
+          name === 'get_accessibility_tree'
+          || response.documentChanged === true
+          || response.routeChanged === true
+          || response.staleRef === true
+        )) {
+          this._rememberAxScope(tabId, response.documentToken, response.refScopeUrl || '');
+          if (name === 'get_accessibility_tree') {
+            delete response.documentToken;
+            delete response.refScopeUrl;
+          }
         }
         this._annotateCredentialField(name, response);
         return response;
@@ -11472,7 +11652,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * `fieldMeta`; we apply the policy here so the regex stays in one place.
    */
   _annotateCredentialField(toolName, response) {
-    if (toolName !== 'set_field') return;
+    if (toolName !== 'set_field' && toolName !== 'type_ax') return;
     if (!response || !response.fieldMeta) return;
     try {
       const det = isCredentialField(response.fieldMeta);
