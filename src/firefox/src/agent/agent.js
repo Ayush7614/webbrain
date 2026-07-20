@@ -745,6 +745,16 @@ export class Agent {
     return URL_FAMILY_TOOLS.has(name) && Number.isFinite(status) && status >= 400;
   }
 
+  _fetchUsesHttpByteRange(args) {
+    if (!args?.headers || typeof args.headers !== 'object') return false;
+    for (const [name, value] of Object.entries(args.headers)) {
+      if (String(name).toLowerCase() === 'range' && /^\s*bytes\s*=/i.test(String(value || ''))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   _loopCallKey(name, args, result) {
     if (result?.nonRetryableScope) {
       // Definitive platform/permission failures keep one identity across
@@ -1595,9 +1605,12 @@ export class Agent {
       this._isToolResultErroredForLoop(toolName, toolArgs, toolResult)
     ) {
       this._clearLoopState(tabId);
+      const rangedFetch = toolName === 'fetch_url' && this._fetchUsesHttpByteRange(toolArgs);
       return {
         kind: 'stop',
-        message: `Stopped: ${loop.name} failed three times for the same read-only resource. Repeating it or changing URL variants will not make progress. Please give a different instruction or inspect the page manually.`,
+        message: rangedFetch
+          ? 'Stopped: fetch_url failed three times while probing HTTP byte ranges for the same read-only resource. Use find or semantic offset:nextOffset pagination in a new run, or ask for a partial answer from the evidence already collected.'
+          : `Stopped: ${loop.name} failed three times for the same read-only resource. Repeating it or changing URL variants will not make progress. Please give a different instruction or inspect the page manually.`,
       };
     }
     this.healthyCallsSinceLoop.delete(tabId);
@@ -1616,7 +1629,12 @@ export class Agent {
     let warning;
     if (loop.type === 'repeat') {
       const shortcut = this._detectApiShortcut(tabId, loop, buf);
-      warning = shortcut
+      const rangedFetch = toolName === 'fetch_url'
+        && method === 'GET'
+        && this._fetchUsesHttpByteRange(toolArgs);
+      warning = rangedFetch
+        ? '[LOOP DETECTED: You are repeatedly probing the same resource with HTTP byte ranges. Stop guessing byte offsets or file size. Use fetch_url({url, find:"literal"}) to search the full decoded response, continue semantic text pagination with offset:nextOffset, or answer now with the evidence already collected. Do not send another Range header for this resource.]'
+        : shortcut
         ? `[LOOP DETECTED + API SHORTCUT FOUND: You've called ${loop.name} ${loop.count} times. Each click triggered the same background request pattern: ${shortcut.method} ${shortcut.url}. Instead of clicking again, consider fetch_url({url: "${shortcut.url}", method: "${shortcut.method}"${shortcut.replayRequestId ? `, replayRequestId: "${shortcut.replayRequestId}"` : ''}}) with the same method; follow the UI/API mutation policy for mutating methods.]`
         : `[LOOP DETECTED: You've just called ${loop.name} ${loop.count} times with the same arguments and the same outcome. The current approach is NOT working. Try something fundamentally different: a different selector, a different tool, scroll to find a different element, or re-read the page/tree to see what's actually on screen. DO NOT repeat this exact call again — try a creative alternative.]`;
     } else {
@@ -2669,9 +2687,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         messages.push({ role: 'assistant', content: stopMessage });
         onUpdate('text', { content: stopMessage });
         onUpdate('error', { message: 'Stuck in a loop. Stopped.' });
+        const loopRunId = this.currentRunId.get(tabId);
+        if (loopRunId) trace.recordError(loopRunId, step, 'loop', stopMessage);
         this._clearLoopState(tabId);
         this._persist(tabId);
-        return { action: 'return', value: stopMessage };
+        return { action: 'return', value: stopMessage, status: 'loop_stopped' };
       }
       if (bulkApiShortcut?.apiAllowed && bulkApiShortcut.replayRequestId && toolIndex < toolCalls.length - 1) {
         const instruction = this._bulkApiReplayInstruction(bulkApiShortcut);
