@@ -523,7 +523,7 @@
       const v = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
       if (v && v !== name) {
         const trimmed = v.length > 60 ? v.substring(0, 60) + '...' : v;
-        line += ' value="' + trimmed.replace(/"/g, '\\"') + '"';
+        line += ' value="' + trimmed.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
       }
     }
 
