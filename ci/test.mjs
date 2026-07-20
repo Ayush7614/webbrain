@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gradeScenario, inferStuckAt, renderSummary } from './lib/grader.mjs';
+import { resolveCloudRunId, suiteShouldFail } from './lib/suite.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const scenarios = JSON.parse(await fs.readFile(path.join(root, 'catalog', 'scenarios.json'), 'utf8'));
@@ -10,6 +11,14 @@ const scenarios = JSON.parse(await fs.readFile(path.join(root, 'catalog', 'scena
 assert.equal(new Set(scenarios.map((scenario) => scenario.id)).size, scenarios.length);
 assert.ok(scenarios.every((scenario) => scenario.output_schema?.type === 'object'));
 assert.ok(scenarios.every((scenario) => scenario.verify));
+
+assert.equal(resolveCloudRunId({ run_id: 'snake-case' }), 'snake-case');
+assert.equal(resolveCloudRunId({ runId: 'camel-case' }), 'camel-case');
+assert.equal(resolveCloudRunId({ id: 'generic-id' }), 'generic-id');
+assert.equal(resolveCloudRunId({}), '');
+assert.equal(suiteShouldFail({ failed: 0, skipped: 0 }), false);
+assert.equal(suiteShouldFail({ failed: 1, skipped: 0 }), true);
+assert.equal(suiteShouldFail({ failed: 0, skipped: 1 }), true);
 
 const mountainScenario = scenarios.find((scenario) => scenario.id === 'wikipedia-table-extraction');
 const invalidMountainHeights = gradeScenario({

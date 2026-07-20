@@ -5,6 +5,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { GnippetsE2EClient, WebBrainCloudClient } from './lib/webbrain-client.mjs';
 import { gradeScenario, renderSummary } from './lib/grader.mjs';
+import { resolveCloudRunId, suiteShouldFail } from './lib/suite.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const ARTIFACT_ROOT = path.join(ROOT, 'artifacts');
@@ -148,7 +149,8 @@ async function executeScenario({ scenario, suiteDir, cloud, gnippets, video }) {
       timeoutMs: scenario.timeout_ms,
       capture: video ? 'video' : 'none',
     });
-    const runId = started.run_id || started.id;
+    const runId = resolveCloudRunId(started);
+    if (!runId) throw new Error('WebBrain Cloud did not return a run id.');
     run = await cloud.waitForRun(browser.id, runId, { timeoutMs: scenario.timeout_ms + 120_000 });
     await writeJson(path.join(scenarioDir, 'run.json'), run);
     if (['completed', 'failed'].includes(run.status)) {
@@ -280,7 +282,7 @@ async function main() {
     ),
   ]);
   console.log(`Report: ${path.join(suiteDir, 'summary.md')}`);
-  if (summary.totals.failed > 0) process.exitCode = 1;
+  if (suiteShouldFail(summary.totals)) process.exitCode = 1;
 }
 
 main().catch((error) => {
