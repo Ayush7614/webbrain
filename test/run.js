@@ -773,6 +773,24 @@ class LoopDetectorShim {
     this.recentCoordClicks = new Map();
     this.axReadStates = new Map();
     this.noProgressScrolls = new Map();
+    this.recentNavUrls = new Map();
+  }
+  _normalizeUrl(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname + u.search + u.hash;
+    } catch { return url; }
+  }
+  _noteNavArrival(tabId, url) {
+    const normalized = this._normalizeUrl(url);
+    if (!normalized) return false;
+    const seen = this.recentNavUrls.get(tabId) || [];
+    const revisited = seen.includes(normalized);
+    seen.push(normalized);
+    if (seen.length > 5) seen.shift();
+    this.recentNavUrls.set(tabId, seen);
+    return revisited;
   }
   _checkCoordClickLoop(tabId, x, y) {
     const bx = Math.round(x / 5) * 5;
@@ -861,7 +879,7 @@ class LoopDetectorShim {
     return null;
   }
   _checkLoop(tabId, name, args, result) {
-    if (result?.pageUrlChanged === true) {
+    if (result?.pageUrlChanged === true && !this._noteNavArrival(tabId, result.currentUrl)) {
       this.recentCalls.delete(tabId);
       this.loopNudges.delete(tabId);
       this.healthyCallsSinceLoop.delete(tabId);
@@ -3777,6 +3795,51 @@ test('failed action counters reset on navigation and replacement-page evidence',
     assert.equal(agent.failedActionLoops.has(tab), false, `${label}: fresh route retained old failures`);
     assert.equal(agent._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'none');
   }
+});
+
+test('revisiting a recent URL keeps loop state so navigation ping-pong is caught', () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    const tab = label === 'chrome' ? 336 : 337;
+    const arrive = (url) => ({ success: true, pageUrlChanged: true, currentUrl: url });
+    const listUrl = 'https://example.com/list';
+    const itemUrl = 'https://example.com/item/1';
+
+    // First visits are real progress and reset the detector as before.
+    assert.equal(agent._checkLoop(tab, 'click', { text: 'Item 1' }, arrive(itemUrl)).kind, 'none');
+    assert.equal(agent._checkLoop(tab, 'go_back', {}, arrive(listUrl)).kind, 'none');
+    // From here every hop revisits a recent URL, so the call buffer survives
+    // and the click/go_back oscillation is detected instead of laundering the
+    // loop state through pageUrlChanged on every hop.
+    assert.equal(agent._checkLoop(tab, 'click', { text: 'Item 1' }, arrive(itemUrl)).kind, 'none');
+    assert.equal(agent._checkLoop(tab, 'go_back', {}, arrive(listUrl)).kind, 'none');
+    assert.equal(
+      agent._checkLoop(tab, 'click', { text: 'Item 1' }, arrive(itemUrl)).kind,
+      'nudge',
+      `${label}: navigation ping-pong evaded the oscillation detector`,
+    );
+
+    // Tree reads on those revisited routes must not clear the state either.
+    agent._rememberAxScope(tab, 'doc-list', listUrl);
+    agent._rememberAxScope(tab, 'doc-item', itemUrl);
+    assert.equal(agent.recentCalls.has(tab), true, `${label}: AX scope on a revisited route wiped the call buffer`);
+    assert.equal(agent.loopNudges.get(tab), 1, `${label}: AX scope on a revisited route reset the nudge counter`);
+
+    // A genuinely new URL is still authoritative progress evidence.
+    assert.equal(agent._checkLoop(tab, 'navigate', { url: 'https://example.com/item/2' }, arrive('https://example.com/item/2')).kind, 'none');
+    assert.equal(agent.loopNudges.has(tab), false, `${label}: arriving on a fresh URL no longer resets loop state`);
+    assert.equal(agent.recentCalls.get(tab)?.length, 1, `${label}: fresh-URL arrival should leave only the arriving call in the buffer`);
+  }
+
+  // Shim mirror of the same arrival rule.
+  const shim = new LoopDetectorShim();
+  const tab = 338;
+  const arrive = (url) => ({ success: true, pageUrlChanged: true, currentUrl: url });
+  shim._checkLoop(tab, 'click', { text: 'Next' }, arrive('https://example.com/b'));
+  shim._checkLoop(tab, 'go_back', {}, arrive('https://example.com/a'));
+  shim._checkLoop(tab, 'click', { text: 'Next' }, arrive('https://example.com/b'));
+  shim._checkLoop(tab, 'go_back', {}, arrive('https://example.com/a'));
+  assert.equal(shim._checkLoop(tab, 'click', { text: 'Next' }, arrive('https://example.com/b')).kind, 'nudge');
 });
 
 test('errored vs successful do not collapse together', () => {
