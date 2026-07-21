@@ -3230,7 +3230,7 @@ async function restoreActiveRunState(tabId = currentTabId) {
 }
 
 function isTerminalRunUiStatus(status) {
-  return ['completed', 'stopped', 'failed', 'cancelled'].includes(String(status || ''));
+  return ['completed', 'stopped', 'failed', 'cancelled', 'clarification_required'].includes(String(status || ''));
 }
 
 async function adoptRestoredRunState(tabId, state) {
@@ -3359,7 +3359,7 @@ async function applyActiveRunState(numericTabId, state) {
     setPlanReviewAwaiting(numericTabId, false);
     setTabProcessing(numericTabId, false);
     setTabAbortRequested(numericTabId, false);
-    if (runUi && ['completed', 'stopped', 'failed', 'cancelled'].includes(runUi.status)
+    if (runUi && ['completed', 'stopped', 'failed', 'cancelled', 'clarification_required'].includes(runUi.status)
         && Number(currentAssistantEl?.dataset.lastRenderedSeq || 0) < Number(runUi.seq || 0)) {
       handleAgentUpdateMessage({
         tabId: numericTabId,

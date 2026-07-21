@@ -41445,6 +41445,53 @@ test('per-tab run UI protocol is wired into both backgrounds and side panels', (
   }
 });
 
+test('clarification-required runs stay terminal and unsuccessful across chat paths', () => {
+  for (const [label, bgRel, reconnectRel, panelRel] of [
+    ['chrome', 'src/chrome/src/background.js', 'src/chrome/src/run-reconnect.js', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/background.js', 'src/firefox/src/run-reconnect.js', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const background = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    const reconnect = fs.readFileSync(path.join(ROOT, reconnectRel), 'utf8');
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+
+    assert.match(
+      background,
+      /function isClarificationRequiredRunUpdate\(update\)[\s\S]*update\?\.type === 'run_status'[\s\S]*update\?\.data\?\.status === 'clarification_required'/,
+      `${label}: structured clarification-required status should be recognized`,
+    );
+    assert.match(
+      background,
+      /if \(updates\.some\(isClarificationRequiredRunUpdate\)\) return 'clarification_required';/,
+      `${label}: clarification-required should be persisted as its own terminal run status`,
+    );
+    assert.equal(
+      (background.match(/succeeded: runUpdatesSucceeded\(updates\)/g) || []).length,
+      3,
+      `${label}: normal, streamed, and continued turns should all mark clarification-required memory input unsuccessful`,
+    );
+    assert.equal(
+      (background.match(/terminalRunUiStatus\(result, updates, runError\)/g) || []).length,
+      3,
+      `${label}: normal, streamed, and continued finalizers should all consume structured run status`,
+    );
+    assert.equal(
+      (background.match(/updates\.push\(\{ type, data \}\);/g) || []).length,
+      3,
+      `${label}: every chat path should retain run-status updates through finalization`,
+    );
+    assert.match(
+      reconnect,
+      /TERMINAL_RUN_STATUSES = new Set\(\[[^\]]*'clarification_required'[^\]]*\]\)/,
+      `${label}: reconnect should not resume a clarification-required terminal snapshot`,
+    );
+    assert.match(
+      panel,
+      /function isTerminalRunUiStatus\(status\)[\s\S]*'clarification_required'/,
+      `${label}: restored UI should treat clarification-required as terminal`,
+    );
+  }
+});
+
 test('sidepanel renders stopped-by-user as UI text instead of brittle bracket status', () => {
   for (const [label, panelRel, localeRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/src/ui/locales/en.js'],
