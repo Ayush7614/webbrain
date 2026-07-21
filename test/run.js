@@ -17118,8 +17118,8 @@ test('ScheduledJobManager preserves clarification-required terminal runs as need
       `${label}: clarification-required run must not emit completion`,
     );
     assert.ok(
-      h.updates.some((u) => u.type === 'scheduled_job' && u.data?.event === 'needs_user_input'),
-      `${label}: clarification-required run should emit a needs-input update`,
+      h.updates.some((u) => u.type === 'scheduled_job' && u.data?.event === 'clarification_required'),
+      `${label}: clarification-required run should emit a distinct terminal update`,
     );
 
     const restarted = makeSchedulerHarness(SchedulerMod, {
@@ -17140,6 +17140,38 @@ test('ScheduledJobManager preserves clarification-required terminal runs as need
       restarted.alarms.get(restarted.alarmName(created.jobId))?.when,
       now + SchedulerMod.QUEUE_RETRY_MS + 1000,
       `${label}: explicit retry should arm an immediate alarm`,
+    );
+  }
+});
+
+test('sidepanel settles terminal scheduled clarification events and renders their result', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const settleStart = panel.search(/async function settleScheduledRun\(event, job, tabId = currentTabId\)/);
+    const handlerStart = panel.search(/(?:async\s+)?function handleScheduledJobEvent\(data, tabId\)/);
+    const handlerEnd = panel.indexOf('if (scheduledJobsEl)', handlerStart);
+    assert.notEqual(settleStart, -1, `${label}: scheduled settlement helper missing`);
+    assert.notEqual(handlerStart, -1, `${label}: scheduled event handler missing`);
+    assert.notEqual(handlerEnd, -1, `${label}: scheduled event handler boundary missing`);
+    const settleBody = panel.slice(settleStart, handlerStart);
+    const handlerBody = panel.slice(handlerStart, handlerEnd);
+    assert.match(
+      settleBody,
+      /\['completed', 'clarification_required'\]\.includes\(event\)[\s\S]*?job\?\.lastResult[\s\S]*?formatMarkdown\(job\.lastResult\)/,
+      `${label}: terminal clarification result should render before settlement`,
+    );
+    assert.match(
+      handlerBody,
+      /\['completed', 'failed', 'clarification_required'\]\.includes\(event\)/,
+      `${label}: terminal clarification should route across panels like other terminal events`,
+    );
+    assert.match(
+      handlerBody,
+      /event === 'clarification_required'[\s\S]*?ensureScheduledTerminalMessage\(job\);[\s\S]*?settleScheduledRun\(event, job, runTabId\)/,
+      `${label}: terminal clarification should settle the spinner and scheduled assistant message`,
     );
   }
 });

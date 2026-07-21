@@ -2462,7 +2462,7 @@ async function settleScheduledRun(event, job, tabId = currentTabId) {
   if (assistantEl) {
     finalizeSteps(assistantEl);
     const textEl = assistantEl.querySelector('.message-text');
-    if (textEl && !textEl.textContent.trim() && event === 'completed' && job?.lastResult) {
+    if (textEl && !textEl.textContent.trim() && ['completed', 'clarification_required'].includes(event) && job?.lastResult) {
       textEl.innerHTML = formatMarkdown(job.lastResult);
       addMessageCopyButton(assistantEl);
     }
@@ -2491,7 +2491,7 @@ async function handleScheduledJobEvent(data, tabId) {
   const sameTab = tabId == null || tabId === currentTabId;
   const runTabId = normalizePlanReviewTabId(tabId ?? currentTabId);
   const jobId = job?.id ? String(job.id) : '';
-  const terminalScheduledEvent = ['completed', 'failed'].includes(event);
+  const terminalScheduledEvent = ['completed', 'failed', 'clarification_required'].includes(event);
   const crossPanelScheduledEvent = isUrlTargetScheduledJob(job) && (
     event === 'needs_user_input' ||
     terminalScheduledEvent
@@ -2515,6 +2515,9 @@ async function handleScheduledJobEvent(data, tabId) {
     await settleScheduledRun(event, job, runTabId);
   } else if (event === 'failed') {
     addMessage('error', t('sp.scheduled.failed', { title, msg: job.lastError || t('sp.scheduled.unknown_error') }));
+    await settleScheduledRun(event, job, runTabId);
+  } else if (event === 'clarification_required') {
+    ensureScheduledTerminalMessage(job);
     await settleScheduledRun(event, job, runTabId);
   } else if (event === 'needs_user_input') {
     ensureScheduledClarifyCards([job]);

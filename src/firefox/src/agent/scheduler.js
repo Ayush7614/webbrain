@@ -1108,7 +1108,7 @@ export class ScheduledJobManager {
       lastError: 'Scheduled run stopped because user input or authorization is required.',
       pendingClarify: null,
     }));
-    if (waiting) this._emit(waiting, 'needs_user_input');
+    if (waiting) this._emit(waiting, 'clarification_required');
   }
 
   async _runJob(jobId) {
