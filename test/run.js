@@ -21910,6 +21910,281 @@ test('CDP WebMCP discovery does not overwrite a re-registration that raced evalu
   assert.equal(catalog.tools[0].annotations.readOnly, true);
 });
 
+test('CDP WebMCP enables Page domain on the main session for frame lifecycle', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    commands.push({ tabId, method, params, sessionId });
+    return {};
+  };
+  await cdp.enableWebMCP(65);
+  assert.ok(commands.some(command => (
+    command.method === 'Page.enable' && !command.sessionId
+  )), 'main target must Page.enable so frameNavigated/frameDetached fire');
+});
+
+test('CDP WebMCP finishes pending invocations when a child frame navigates', async () => {
+  const cdp = new CDPClient();
+  const emit = (event, params, source = { tabId: 66 }) => {
+    for (const handler of cdp.eventHandlers.get(66)?.[event] || []) handler(params, source);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    if (method === 'WebMCP.enable') {
+      emit('WebMCP.toolsAdded', {
+        tools: [{
+          name: 'slow_child',
+          description: 'hangs until frame is gone',
+          frameId: 'child-frame',
+        }],
+      });
+      return {};
+    }
+    if (method === 'Page.getFrameTree') {
+      return {
+        frameTree: {
+          frame: { id: 'main-frame', url: 'https://example.com/' },
+          childFrames: [{
+            frame: {
+              id: 'child-frame',
+              parentId: 'main-frame',
+              url: 'https://example.com/embed',
+            },
+          }],
+        },
+      };
+    }
+    if (method === 'WebMCP.invokeTool') return { invocationId: 'frame-nav-inv' };
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(66);
+  const toolId = catalog.tools[0].tool_id;
+  const pending = cdp.invokeWebMCPTool(66, toolId, {}, { timeoutMs: 5000 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  emit('Page.frameNavigated', {
+    frame: {
+      id: 'child-frame',
+      parentId: 'main-frame',
+      url: 'https://example.com/embed-next',
+    },
+  });
+  const result = await pending;
+  assert.equal(result.success, false);
+  assert.equal(result.outcomeUnknown, true);
+  assert.match(result.error, /frame navigated/i);
+  assert.equal((await cdp.listWebMCPTools(66)).total, 0);
+});
+
+test('CDP WebMCP discovery does not reinsert tools after child session detach', async () => {
+  const cdp = new CDPClient();
+  const emit = (event, params, source = { tabId: 67 }) => {
+    for (const handler of cdp.eventHandlers.get(67)?.[event] || []) handler(params, source);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    if (method === 'WebMCP.enable' && !sessionId) return {};
+    if (method === 'Target.setAutoAttach' && !sessionId && params.autoAttach) {
+      emit('Target.attachedToTarget', {
+        sessionId: 'oopif-session',
+        targetInfo: {
+          targetId: 'oopif-frame',
+          type: 'iframe',
+          url: 'https://embed.test/',
+        },
+      });
+      return {};
+    }
+    if (method === 'WebMCP.enable' && sessionId === 'oopif-session') return {};
+    if (method === 'Page.enable') return {};
+    if (method === 'Target.setAutoAttach' && sessionId === 'oopif-session') return {};
+    if (method === 'Runtime.enable' && sessionId === 'oopif-session') {
+      emit('Runtime.executionContextCreated', {
+        context: { id: 91, auxData: { isDefault: true, frameId: 'oopif-frame' } },
+      }, { tabId: 67, sessionId });
+      return {};
+    }
+    if (method === 'Runtime.evaluate' && sessionId === 'oopif-session') {
+      emit('Target.detachedFromTarget', { sessionId: 'oopif-session' });
+      return {
+        result: {
+          value: [{ name: 'ghost_tool', description: 'should not reappear after detach' }],
+        },
+      };
+    }
+    if (method === 'Page.getFrameTree') {
+      return { frameTree: { frame: { id: 'main-frame', url: 'https://example.com/' } } };
+    }
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(67);
+  assert.equal(catalog.total, 0, 'detached OOPIF tools must not re-enter from stale discovery');
+});
+
+test('CDP WebMCP discovery ignores frames navigated before evaluate results merge', async () => {
+  const cdp = new CDPClient();
+  const emit = (event, params) => {
+    for (const handler of cdp.eventHandlers.get(68)?.[event] || []) handler(params);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    if (method === 'WebMCP.enable') return {};
+    if (method === 'Runtime.enable') {
+      emit('Runtime.executionContextCreated', {
+        context: { id: 101, auxData: { isDefault: true, frameId: 'nav-frame' } },
+      });
+      return {};
+    }
+    if (method === 'Runtime.evaluate') {
+      // Frame never had a registered tool, so toolsRemoved cannot bump tool gens.
+      // Frame mutation must still invalidate the discovery snapshot.
+      emit('Page.frameNavigated', {
+        frame: {
+          id: 'nav-frame',
+          parentId: 'main-frame',
+          url: 'https://example.com/after',
+        },
+      });
+      return {
+        result: {
+          value: [{ name: 'pre_nav_tool', description: 'from previous document' }],
+        },
+      };
+    }
+    if (method === 'Page.getFrameTree') {
+      return {
+        frameTree: {
+          frame: { id: 'main-frame', url: 'https://example.com/' },
+          childFrames: [{
+            frame: {
+              id: 'nav-frame',
+              parentId: 'main-frame',
+              url: 'https://example.com/after',
+            },
+          }],
+        },
+      };
+    }
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(68);
+  assert.equal(catalog.total, 0, 'frame navigation must invalidate discovery without prior tools');
+});
+
+test('CDP WebMCP resets discovery context budget after top-level navigation', async () => {
+  const cdp = new CDPClient();
+  const state = cdp._newWebMCPSession(69);
+  cdp.webMcpSessions.set(69, state);
+  const commands = [];
+  for (let index = 0; index < 500; index++) {
+    cdp._trackRuntimeContextEvent(69, {}, 'Runtime.executionContextCreated', {
+      context: {
+        id: 2000 + index,
+        auxData: { isDefault: true, frameId: `wave1-${index}` },
+      },
+    });
+  }
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    commands.push({ tabId, method, params, sessionId });
+    if (method === 'Runtime.evaluate') return { result: { value: [] } };
+    return {};
+  };
+  await cdp._discoverExistingWebMCPFrameTools(69, state);
+  assert.equal(commands.filter(command => command.method === 'Runtime.evaluate').length, 500);
+
+  // Simulate main-session root navigation handler.
+  state.discoveryContextsUsed = 0;
+  cdp.runtimeContexts.set(69, new Map());
+  for (let index = 0; index < 3; index++) {
+    cdp._trackRuntimeContextEvent(69, {}, 'Runtime.executionContextCreated', {
+      context: {
+        id: 3000 + index,
+        auxData: { isDefault: true, frameId: `wave2-${index}` },
+      },
+    });
+  }
+  await cdp._discoverExistingWebMCPFrameTools(69, state);
+  assert.equal(
+    commands.filter(command => command.method === 'Runtime.evaluate').length,
+    503,
+    'a new document wave should discover again after budget reset',
+  );
+});
+
+test('CDP WebMCP disable tears down child enable that races setAutoAttach', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  let releaseChildEnable = null;
+  const childEnableGate = new Promise(resolve => { releaseChildEnable = resolve; });
+  let childEnableStarted = null;
+  const childEnableStartedPromise = new Promise(resolve => { childEnableStarted = resolve; });
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    commands.push({ tabId, method, params, sessionId });
+    if (method === 'WebMCP.enable' && !sessionId) return {};
+    if (method === 'Page.enable' && !sessionId) return {};
+    if (method === 'Target.setAutoAttach' && !sessionId && params.autoAttach) {
+      for (const handler of cdp.eventHandlers.get(tabId)?.['Target.attachedToTarget'] || []) {
+        handler({
+          sessionId: 'late-child',
+          targetInfo: { targetId: 'late-frame', type: 'iframe', url: 'https://late.test/' },
+        }, { tabId });
+      }
+      return {};
+    }
+    if (sessionId === 'late-child' && method === 'WebMCP.enable') {
+      childEnableStarted();
+      await childEnableGate;
+      return {};
+    }
+    return {};
+  };
+
+  const enablePromise = cdp.enableWebMCP(70);
+  // Attach a rejection handler before disable can make enable throw, otherwise
+  // Node treats the mid-race rejection as unhandled and aborts the suite.
+  const enableOutcome = enablePromise.then(() => null, error => error);
+  await childEnableStartedPromise;
+  const disablePromise = cdp.disableWebMCP(70);
+  // Let disable mark closed and begin awaiting childEnablePromises first.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  releaseChildEnable();
+  const [enableError, disabled] = await Promise.all([enableOutcome, disablePromise]);
+  assert.ok(enableError instanceof Error);
+  assert.match(enableError.message, /session closed while it was enabling/);
+  assert.equal(disabled, true);
+  assert.equal(cdp.webMcpSessions.has(70), false);
+  const childTeardowns = commands.filter(command => (
+    command.sessionId === 'late-child'
+    && (
+      (command.method === 'Target.setAutoAttach' && command.params.autoAttach === false)
+      || command.method === 'WebMCP.disable'
+    )
+  ));
+  assert.ok(
+    childTeardowns.length >= 1,
+    'disable must tear down a child enable that raced past the closed flag',
+  );
+});
+
 test('WebMCP page annotations never bypass Act mode or frame-scoped permission', async () => {
   assert.equal(capabilityForCh('execute_webmcp_tool', { _webMcpDeclaredReadOnly: true }), CapabilityCh.CLICK);
   assert.equal(capabilityForCh('execute_webmcp_tool', { _webMcpDeclaredReadOnly: false }), CapabilityCh.CLICK);
