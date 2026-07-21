@@ -14538,6 +14538,49 @@ test('clarify result distinguishes waited timeout from user and Instant authoriz
   }
 });
 
+test('waited clarify timeout guard is persisted before clarify returns', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const agent = new AgentClass({});
+    const tabId = 4803 + index;
+    agent.clarifyTimeoutSec = 1205;
+    agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+    agent.conversationIds.set(tabId, `conv_${tabId}`);
+
+    let releasePersist;
+    let persistStarted = false;
+    let persistedEntry = null;
+    let clarifySettled = false;
+    const persistGate = new Promise(resolve => { releasePersist = resolve; });
+    agent._persistNow = async () => {
+      persistStarted = true;
+      persistedEntry = agent._conversationStorageEntry(tabId);
+      await persistGate;
+      return true;
+    };
+
+    const clarifyPromise = agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      (type, data) => {
+        if (type === 'clarify') agent.submitClarifyResponse(tabId, data.clarifyId, 'First', 'timeout');
+      },
+    ).then(result => {
+      clarifySettled = true;
+      return result;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(persistStarted, true, `${AgentClass.name}: timeout guard persistence did not start`);
+    assert.equal(persistedEntry?.clarificationAuthorizationGuard?.authorized, false, `${AgentClass.name}: durable entry did not contain the timeout guard`);
+    assert.equal(clarifySettled, false, `${AgentClass.name}: clarify returned before timeout guard persistence completed`);
+
+    releasePersist();
+    const result = await clarifyPromise;
+    assert.equal(result.authorized, false, `${AgentClass.name}: persisted timeout became authorization`);
+  }
+});
+
 test('waited clarify timeout guard persists across restart and ordinary user turns', async () => {
   const previousChrome = globalThis.chrome;
   const previousBrowser = globalThis.browser;
@@ -14550,7 +14593,8 @@ test('waited clarify timeout guard persists across restart and ordinary user tur
       first.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
       first.conversationIds.set(tabId, `conv_${tabId}`);
       first._persist = () => {};
-      first._recordClarificationAuthorization(tabId, 'timeout');
+      first._persistNow = async () => true;
+      await first._recordClarificationAuthorization(tabId, 'timeout');
       const storedEntry = first._conversationStorageEntry(tabId);
       assert.equal(storedEntry.clarificationAuthorizationGuard?.authorized, false, `${AgentClass.name}: persisted entry lost timeout guard`);
       assert.equal(storedEntry.clarificationAuthorizationGuard?.conversationId, `conv_${tabId}`, `${AgentClass.name}: guard was not scoped to its conversation`);
@@ -14607,7 +14651,7 @@ test('waited clarify timeout permits only partial or failed completion', async (
         executed = true;
         return { done: true, summary: 'should not execute', outcome: 'success' };
       };
-      agent._recordClarificationAuthorization(tabId, 'timeout');
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
 
       const messages = [];
       const result = await agent._executeToolBatch(
@@ -14631,7 +14675,7 @@ test('waited clarify timeout permits only partial or failed completion', async (
 
     const completionAgent = new AgentClass({});
     completionAgent._persist = () => {};
-    completionAgent._recordClarificationAuthorization(tabId, 'timeout');
+    await completionAgent._recordClarificationAuthorization(tabId, 'timeout');
     assert.equal(
       completionAgent._clarificationAuthorizationBlock(tabId, 'done', { outcome: 'partial' }, []),
       null,
@@ -14657,7 +14701,7 @@ test('waited clarify timeout blocks CAPTCHA solve before solver dispatch', async
       executed.push(name);
       return { success: true, dispatched: true, injected: true };
     };
-    agent._recordClarificationAuthorization(tabId, 'timeout');
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
 
     const messages = [];
     const result = await agent._executeToolBatch(
@@ -14699,7 +14743,7 @@ test('waited clarify timeout blocks outbound network reads before permission gat
         executed.push(toolName);
         return { success: true };
       };
-      agent._recordClarificationAuthorization(tabId, 'timeout');
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
 
       const messages = [];
       const result = await agent._executeToolBatch(
@@ -14736,7 +14780,7 @@ test('waited clarify timeout blocks consequential dispatch before permission gat
       executed.push(name);
       return { success: true };
     };
-    agent._recordClarificationAuthorization(tabId, 'timeout');
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
 
     assert.equal(agent._clarificationAuthorizationBlock(tabId, 'read_page', {}, []), null, `${AgentClass.name}: read-only inspection was blocked`);
     assert.equal(agent._clarificationAuthorizationBlock(tabId, 'navigate', {}, [Capability.NAVIGATE]), null, `${AgentClass.name}: direct navigation was blocked`);
@@ -14771,7 +14815,7 @@ test('waited clarify timeout blocks consequential dispatch before permission gat
     // The model may follow the recovery nudge and ask again. If that second
     // clarification also times out, it must not reset the blocked-attempt
     // counter and permit an endless timeout/retry loop.
-    agent._recordClarificationAuthorization(tabId, 'timeout');
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
     assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.blockedAttempts, 1, `${AgentClass.name}: repeated timeout reset the blocked-attempt counter`);
 
     const secondMessages = [];
@@ -14788,6 +14832,64 @@ test('waited clarify timeout blocks consequential dispatch before permission gat
     assert.equal(secondResult.action, 'return', `${AgentClass.name}: repeated blocked action did not stop the run`);
     assert.equal(secondResult.status, 'clarification_required', `${AgentClass.name}: repeated block returned the wrong status`);
     assert.equal(executed.length, 0, `${AgentClass.name}: second consequential tool dispatched`);
+  }
+});
+
+test('waited clarify timeout blocked actions fail closed at the step limit', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      calls: 0,
+      chat: async () => {
+        provider.calls += 1;
+        return {
+          content: null,
+          toolCalls: [{
+            id: `timeout_final_action_${index}`,
+            function: { name: 'click_ax', arguments: '{"ref_id":"ref_timeout_final"}' },
+          }],
+        };
+      },
+    };
+    const agent = new AgentClass({
+      getActive: () => provider,
+      getVisionProvider: async () => null,
+    });
+    const tabId = 4830 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    agent.maxSteps = 1;
+    const executed = [];
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true };
+    };
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
+    const updates = [];
+
+    const final = await agent.processMessage(
+      tabId,
+      'Apply the requested change.',
+      (type, data) => updates.push({ type, data }),
+      'act',
+    );
+
+    assert.equal(final, agent._clarificationAuthorizationStopMessage(), `${AgentClass.name}: final-step action block fell through to max_steps`);
+    assert.equal(provider.calls, 1, `${AgentClass.name}: final-step action block requested another model turn`);
+    assert.deepEqual(executed, [], `${AgentClass.name}: final-step action reached tool dispatch`);
+    assert.ok(
+      updates.some(update => update.type === 'run_status' && update.data?.status === 'clarification_required'),
+      `${AgentClass.name}: final-step action block lost clarification-required status`,
+    );
+    assert.equal(
+      updates.some(update => update.type === 'max_steps_reached'),
+      false,
+      `${AgentClass.name}: generic max-step fallback replaced the authorization stop`,
+    );
   }
 });
 
@@ -14851,7 +14953,7 @@ test('waited clarify timeout blocks plain finals after a denied action', async (
         executed.push(name);
         return { success: true };
       };
-      agent._recordClarificationAuthorization(tabId, 'timeout');
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
       const updates = [];
       const run = streaming ? agent.processMessageStream.bind(agent) : agent.processMessage.bind(agent);
 
@@ -14907,7 +15009,7 @@ test('waited clarify timeout plain finals fail closed at the step limit', async 
       const tabId = 4860 + (streaming ? 10 : 0) + index;
       configurePlanOnlyGuardAgent(agent, tabId);
       agent.maxSteps = 1;
-      agent._recordClarificationAuthorization(tabId, 'timeout');
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
       const updates = [];
       const run = streaming ? agent.processMessageStream.bind(agent) : agent.processMessage.bind(agent);
 
@@ -32380,6 +32482,7 @@ function configurePlanOnlyGuardAgent(agent, tabId) {
   agent._maybeReinjectAdapter = async () => {};
   agent._ensureProgressSessionForCurrentTask = async () => ({ mode: 'inactive' });
   agent._persist = () => {};
+  agent._persistNow = async () => true;
   agent.conversationModes.set(tabId, 'act');
   agent.conversations.set(tabId, [{ role: 'system', content: 'sys' }]);
   agent.executeTool = async (_toolTabId, name, args) => {

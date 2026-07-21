@@ -3034,13 +3034,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             error: 'skipped: a waited clarification timeout requires explicit authorization before actions or success completion',
           }),
         );
+        const clarificationAuthorizationStop = clarificationAuthorizationBlock.stop
+          || step >= this.maxSteps;
         onUpdate('warning', {
-          message: clarificationAuthorizationBlock.stop
-            ? `Stopped after a repeated blocked attempt tried to use a timed-out clarification as authorization (${clarificationAuthorizationBlock.blockedSuccessCompletion ? 'success completion' : 'consequential action'}).`
+          message: clarificationAuthorizationStop
+            ? `Stopped because ${clarificationAuthorizationBlock.stop ? 'a repeated blocked attempt' : 'the final allowed step'} tried to use a timed-out clarification as authorization (${clarificationAuthorizationBlock.blockedSuccessCompletion ? 'success completion' : 'consequential action'}).`
             : `${clarificationAuthorizationBlock.blockedSuccessCompletion ? 'Success completion' : 'Consequential action'} blocked until the user answers the clarification explicitly.`,
         });
-        this._persist(tabId);
-        if (clarificationAuthorizationBlock.stop) {
+        await this._persistNow(tabId);
+        if (clarificationAuthorizationStop) {
           return {
             action: 'return',
             status: 'clarification_required',
@@ -5421,7 +5423,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return true;
   }
 
-  _recordClarificationAuthorization(tabId, source) {
+  async _recordClarificationAuthorization(tabId, source) {
     const normalizedSource = source === 'timeout' ? 'timeout' : (source === 'auto' ? 'auto' : 'user');
     if (normalizedSource === 'timeout') {
       const conversationId = this.conversationIds.get(tabId) || null;
@@ -5443,7 +5445,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     } else {
       this._clarificationAuthorizationGuards.delete(tabId);
     }
-    if (this.conversations.has(tabId)) this._persist(tabId);
+    // A waited timeout must be durable before the model can continue. Otherwise
+    // a service-worker restart inside the normal debounce window could erase
+    // the structural authorization guard. Await deletions too so an explicit
+    // response cannot revive a stale guard after restart.
+    if (this.conversations.has(tabId)) await this._persistNow(tabId);
     return normalizedSource !== 'timeout';
   }
 
@@ -12331,7 +12337,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       const answer = String(response?.answer || '').trim();
       const source = response?.source || 'user';
-      const authorized = this._recordClarificationAuthorization(tabId, source);
+      const authorized = await this._recordClarificationAuthorization(tabId, source);
       let note;
       if (source === 'timeout') {
         // Passive wait expired — not deliberate auto-approve.
