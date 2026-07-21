@@ -30508,10 +30508,27 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
     );
 
     agent._planExecutionGuards.set(tabId, { enabled: true, requestKind: 'execute', requiresStateChange: true });
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Filled the requested fields without submitting.', 'success', {
+        ...finishState,
+        visibleFormCount: 1,
+        relevantFormCount: 1,
+      }, 'https://example.test/settings?edit=1'),
+      null,
+      `${AgentClass.name}: fill-only form task was forced to submit`,
+    );
+
+    agent._completionSubmitStates.set(tabId, {
+      currentUrl: submitUrl,
+      dispatched: false,
+      observedAfterSubmit: true,
+      documentChanged: false,
+      formValidationFailed: false,
+    });
     assert.match(
       agent._completionPageWarning(tabId, 'Submitted.', 'success', { ...finishState, visibleFormCount: 1, relevantFormCount: 1 }, submitUrl)?.warning || '',
       /task-relevant form/i,
-      `${AgentClass.name}: unchanged unsubmitted form was accepted`,
+      `${AgentClass.name}: unchanged form after a submit attempt was accepted`,
     );
 
     agent._planExecutionGuards.set(tabId, { enabled: true, requestKind: 'execute', requiresStateChange: false });
