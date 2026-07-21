@@ -30706,12 +30706,12 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
       agent._completionPageWarning(tabId, 'Submitted.', 'success', {
         ...finishState,
         url: submitUrl,
-        visibleFormCount: 1,
-        relevantFormCount: 1,
+        visibleFormCount: 0,
+        relevantFormCount: 0,
         successMessages: ['Saved'],
       }, submitUrl)?.warning || '',
       /failed validation/i,
-      `${AgentClass.name}: validation failure was hidden by a live region`,
+      `${AgentClass.name}: validation failure was hidden by a live region when the rejected form disappeared`,
     );
 
     agent._completionSubmitStates.delete(tabId);

@@ -516,12 +516,16 @@ export class Agent {
         warning: `WARNING: A modal/dialog is still open${titles}. Close or complete it and explicitly observe the resulting page before reporting success.`,
       };
     }
+    if (submit?.formValidationFailed) {
+      return {
+        key: `${documentKey}|submit-validation-failed`,
+        warning: 'WARNING: The attempted form submission failed validation. Correct the form, submit it again, and explicitly observe the result before reporting success.',
+      };
+    }
     if (pendingSubmitVerification && relevantForms > 0 && !verifiedFinalSubmit) {
       return {
-        key: `${documentKey}|pending-form|${relevantForms}|${submit?.formValidationFailed ? 'validation' : 'unverified'}`,
-        warning: submit?.formValidationFailed
-          ? 'WARNING: The attempted form submission failed validation. Correct the form, submit it again, and explicitly observe the result before reporting success.'
-          : 'WARNING: A task-relevant form is still visible and there is no verified successful submit transition. Submit the form and explicitly observe a URL/document change or a visible success message before reporting success.',
+        key: `${documentKey}|pending-form|${relevantForms}|unverified`,
+        warning: 'WARNING: A task-relevant form is still visible and there is no verified successful submit transition. Submit the form and explicitly observe a URL/document change or a visible success message before reporting success.',
       };
     }
     if (
