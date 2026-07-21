@@ -1595,21 +1595,35 @@
       const allSels = el instanceof HTMLSelectElement
         ? [el]
         : selectScope.querySelectorAll('select');
+      const matchingSelects = [];
       for (const sel of allSels) {
         const opts = Array.from(sel.options);
         const match = opts.find(o => o.text.trim() === needle)
           || opts.find(o => o.text.trim().toLowerCase() === lc)
           || opts.find(o => o.value === needle)
           || opts.find(o => o.value.toLowerCase() === lc);
-        if (match && sel.selectedIndex !== match.index) {
-          sel.focus();
-          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-          if (nativeSetter) nativeSetter.call(sel, match.value);
-          else sel.value = match.value;
-          sel.dispatchEvent(new Event('input', { bubbles: true }));
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true, method: 'auto-select', selectedText: match.text.trim(), selectedValue: match.value };
+        if (match) matchingSelects.push({ sel, match });
+      }
+      if (matchingSelects.length > 1) {
+        return {
+          success: false,
+          dispatched: false,
+          failureScope: `ambiguous-select-option:${lc}`,
+          error: `Ambiguous select option match for "${needle}" (${matchingSelects.length} dropdowns). Identify the intended field and use type_text on that select instead.`,
+        };
+      }
+      if (matchingSelects.length === 1) {
+        const { sel, match } = matchingSelects[0];
+        if (sel.selectedIndex === match.index) {
+          return { success: true, method: 'select-already-set', selectedText: match.text.trim(), selectedValue: match.value };
         }
+        sel.focus();
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+        if (nativeSetter) nativeSetter.call(sel, match.value);
+        else sel.value = match.value;
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return { success: true, method: 'auto-select', selectedText: match.text.trim(), selectedValue: match.value };
       }
     }
 

@@ -13888,6 +13888,11 @@ test('tab-chat persistence recovers when several sub-threshold chats exceed the 
     assert.ok(bounded.length <= 64 * 1024, `${label}: text-only fallback must respect its budget`);
     assert.match(bounded, /^<div class="message system">/, `${label}: text-only fallback should remain valid message markup`);
     assert.match(bounded, /<\/div><\/div>$/, `${label}: text-only fallback should close its markup`);
+
+    const whitespaceClosedRawText = `<div>${'visible text '.repeat(300)}<script>LEAK_SCRIPT</script ><style>LEAK_STYLE</style ></div>`;
+    const whitespaceClosedFallback = persistence.compactTabChatForPersist(whitespaceClosedRawText, 1024);
+    assert.doesNotMatch(whitespaceClosedFallback, /LEAK_SCRIPT|LEAK_STYLE/, `${label}: whitespace before raw-text end-tag brackets must not leak script/style text`);
+    assert.match(whitespaceClosedFallback, /visible text/, `${label}: safe readable text should survive raw-text removal`);
   }
 });
 
@@ -29447,6 +29452,22 @@ test('chrome CDP auto-select scopes to blocking dialogs and refuses ambiguous dr
   assert.match(body, /matchingSelects\.length !== 1/, 'chrome: auto-select should yield instead of choosing among multiple matching selects');
   assert.match(body, /globalThis\[targetSlot\] = sel/, 'chrome: auto-select should preserve the exact scoped select for refocus');
   assert.match(body, /const target = globalThis\[/, 'chrome: auto-select should refocus and verify the preserved select');
+});
+
+test('content auto-select refuses ambiguous option matches in both browser builds', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/content/content.js'],
+    ['firefox', 'src/firefox/src/content/content.js'],
+  ]) {
+    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const start = content.indexOf('function clickElement(params) {');
+    const end = content.indexOf('\n  function ', start + 10);
+    const body = content.slice(start, end);
+    assert.match(body, /const matchingSelects = \[\];/, `${label}: native select rescue should collect every option match`);
+    assert.match(body, /matchingSelects\.length > 1/, `${label}: native select rescue should reject ambiguous dropdowns`);
+    assert.match(body, /failureScope: `ambiguous-select-option:\$\{lc\}`/, `${label}: ambiguous dropdown failures should be loop-scoped`);
+    assert.match(body, /method: 'select-already-set'/, `${label}: already-selected options should not fall through to unrelated clickables`);
+  }
 });
 
 test('submit confirmation UI and scheduled persistence omit always allow', () => {

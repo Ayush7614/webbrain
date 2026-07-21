@@ -845,6 +845,52 @@ test('Firefox: modal auto-select changes the resolved select, not a background s
   await assertModalAutoSelectTargetsResolvedSelect(page, 'firefox');
 });
 
+async function assertAmbiguousNativeSelectOptionsAreRejected(page, browserKind) {
+  const label = browserKind === 'chrome' ? 'Chrome' : 'Firefox';
+  const setupHtml = browserKind === 'chrome' ? setupChromeHtml : setupFirefoxHtml;
+  await setupHtml(page, `<!doctype html>
+    <style>select, button { width: 180px; height: 40px; display: block; margin: 8px; }</style>
+    <button id="contact" onclick="window.__contactClicked = true">Contact us</button>
+    <label>Billing country
+      <select id="billing">
+        <option value="CA">Canada</option>
+        <option value="US">United States</option>
+      </select>
+    </label>
+    <label>Shipping country
+      <select id="shipping">
+        <option value="CA">Canada</option>
+        <option value="US">United States</option>
+      </select>
+    </label>`);
+
+  const response = await call(page, 'click', { text: 'US' });
+  const state = await page.evaluate(() => ({
+    billing: document.getElementById('billing').value,
+    shipping: document.getElementById('shipping').value,
+    contactClicked: window.__contactClicked === true,
+  }));
+  if (
+    response?.success !== false
+    || response?.dispatched !== false
+    || response?.failureScope !== 'ambiguous-select-option:us'
+    || !/Ambiguous select option match/.test(response?.error || '')
+  ) {
+    throw new Error(`${label}: expected explicit select-option ambiguity, got: ${JSON.stringify(response)}`);
+  }
+  if (state.billing !== 'CA' || state.shipping !== 'CA' || state.contactClicked) {
+    throw new Error(`${label}: ambiguous select rescue mutated page state: ${JSON.stringify(state)}`);
+  }
+}
+
+test('Chrome: ambiguous native select options do not mutate the first dropdown', async (page) => {
+  await assertAmbiguousNativeSelectOptionsAreRejected(page, 'chrome');
+});
+
+test('Firefox: ambiguous native select options do not mutate the first dropdown', async (page) => {
+  await assertAmbiguousNativeSelectOptionsAreRejected(page, 'firefox');
+});
+
 test('Chrome Agent: modal auto-select keeps the exact target after Escape blurs it', async (page) => {
   await page.setContent(`<!doctype html>
     <style>

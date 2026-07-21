@@ -18,6 +18,93 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;');
 }
 
+function findHtmlTagEnd(source, start) {
+  let quote = '';
+  for (let i = start; i < source.length; i++) {
+    const char = source[i];
+    if (quote) {
+      if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '>') return i;
+  }
+  return -1;
+}
+
+function describeHtmlTag(raw) {
+  let i = 0;
+  while (i < raw.length && /\s/.test(raw[i])) i++;
+  if (raw[i] === '!' || raw[i] === '?') return { closing: false, name: '' };
+  let closing = false;
+  if (raw[i] === '/') {
+    closing = true;
+    i++;
+    while (i < raw.length && /\s/.test(raw[i])) i++;
+  }
+  const start = i;
+  if (!/[a-z]/i.test(raw[i] || '')) return null;
+  while (i < raw.length && /[a-z0-9:-]/i.test(raw[i])) i++;
+  return {
+    closing,
+    name: raw.slice(start, i).toLowerCase(),
+  };
+}
+
+function htmlToPlainText(html) {
+  const source = String(html || '');
+  const chunks = [];
+  let cursor = 0;
+  let suppressedTag = '';
+
+  while (cursor < source.length) {
+    const open = source.indexOf('<', cursor);
+    if (open < 0) {
+      if (!suppressedTag) chunks.push(source.slice(cursor));
+      break;
+    }
+    if (!suppressedTag && open > cursor) chunks.push(source.slice(cursor, open));
+
+    if (source.startsWith('<!--', open)) {
+      const commentEnd = source.indexOf('-->', open + 4);
+      if (commentEnd < 0) break;
+      if (!suppressedTag) chunks.push(' ');
+      cursor = commentEnd + 3;
+      continue;
+    }
+
+    const close = findHtmlTagEnd(source, open + 1);
+    if (close < 0) {
+      if (!suppressedTag) chunks.push(source.slice(open));
+      break;
+    }
+    const tag = describeHtmlTag(source.slice(open + 1, close));
+    if (!tag) {
+      if (!suppressedTag) chunks.push('<');
+      cursor = open + 1;
+      continue;
+    }
+
+    if (tag.name === 'script' || tag.name === 'style') {
+      if (tag.closing && suppressedTag === tag.name) {
+        suppressedTag = '';
+        chunks.push(' ');
+      } else if (!tag.closing && !suppressedTag) {
+        suppressedTag = tag.name;
+        chunks.push(' ');
+      }
+    } else if (!suppressedTag) {
+      chunks.push(' ');
+    }
+    cursor = close + 1;
+  }
+
+  return chunks.join('');
+}
+
 export function compactTabChatForPersist(html, budget = TAB_CHAT_PERSIST_BUDGET) {
   const boundedBudget = Math.max(1024, Math.floor(Number(budget) || TAB_CHAT_PERSIST_BUDGET));
   const stripped = stripImagePayloadsForPersist(html);
@@ -26,10 +113,7 @@ export function compactTabChatForPersist(html, budget = TAB_CHAT_PERSIST_BUDGET)
   // This is the last-resort stored copy only. Keep recent readable text in
   // valid markup instead of slicing arbitrary HTML and potentially restoring
   // a broken DOM. The live in-memory transcript remains untouched.
-  const plainText = stripped
-    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
+  const plainText = htmlToPlainText(stripped)
     .replace(/\s+/g, ' ')
     .trim();
   const marker = '[Earlier persisted chat content omitted to fit browser session storage.] ';
