@@ -21289,6 +21289,44 @@ test('CDP WebMCP recovers tools registered in child frames before enable', async
   assert.ok(commands.some(command => command.method === 'Runtime.evaluate' && command.params.contextId === 12));
 });
 
+test('CDP WebMCP reuses default execution contexts reported before discovery starts', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp._trackRuntimeContextEvent(59, {}, 'Runtime.executionContextCreated', {
+    context: { id: 31, auxData: { isDefault: true, frameId: 'cached-frame' } },
+  });
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    commands.push({ tabId, method, params, sessionId });
+    if (method === 'Runtime.evaluate') {
+      assert.equal(params.contextId, 31);
+      return {
+        result: {
+          value: [{ name: 'cached_tool', description: 'discovered from the context cache' }],
+        },
+      };
+    }
+    if (method === 'Page.getFrameTree') {
+      return {
+        frameTree: {
+          frame: { id: 'cached-frame', url: 'https://cached.example/' },
+        },
+      };
+    }
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(59);
+  assert.equal(catalog.total, 1);
+  assert.equal(catalog.tools[0].name, 'cached_tool');
+  assert.equal(catalog.tools[0].frame_url, 'https://cached.example/');
+  assert.ok(commands.some(command => command.method === 'Runtime.enable'));
+  assert.ok(commands.some(command => command.method === 'Runtime.evaluate'));
+});
+
 test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', async () => {
   const cdp = new CDPClient();
   const commands = [];

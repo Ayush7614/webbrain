@@ -58,6 +58,7 @@ export class CDPClient {
     this.eventHandlers = new Map(); // tabId -> { eventName -> [handlers] }
     this.devDiagnostics = new Map(); // tabId -> bounded console/network buffers
     this.webMcpSessions = new Map(); // tabId -> WebMCP tools + pending invocations
+    this.runtimeContexts = new Map(); // tabId -> session/context key -> default context
     this.fileChooserGuards = new Map(); // tabId -> temporary protocol interception
   }
 
@@ -81,6 +82,7 @@ export class CDPClient {
 
         chrome.debugger.onEvent.addListener((source, method, params) => {
           if (source.tabId !== tabId) return;
+          this._trackRuntimeContextEvent(tabId, source, method, params);
           const handlers = this.eventHandlers.get(tabId)?.[method];
           if (handlers) {
             handlers.forEach(h => h(params, source));
@@ -93,6 +95,7 @@ export class CDPClient {
             this.sessions.delete(tabId);
             this.eventHandlers.delete(tabId);
             this.devDiagnostics.delete(tabId);
+            this.runtimeContexts.delete(tabId);
             const fileChooserGuard = this.fileChooserGuards.get(tabId);
             if (fileChooserGuard?.timer) clearTimeout(fileChooserGuard.timer);
             this.fileChooserGuards.delete(tabId);
@@ -117,6 +120,7 @@ export class CDPClient {
         this.sessions.delete(tabId);
         this.eventHandlers.delete(tabId);
         this.devDiagnostics.delete(tabId);
+        this.runtimeContexts.delete(tabId);
         this.fileChooserGuards.delete(tabId);
         resolve();
       });
@@ -218,6 +222,44 @@ export class CDPClient {
 
   _webMCPInvocationKey(sessionId, invocationId) {
     return `${String(sessionId || '').slice(0, 300)}\u0000${String(invocationId || '').slice(0, 300)}`;
+  }
+
+  _runtimeContextKey(sessionId, contextId) {
+    return `${String(sessionId || '').slice(0, 300)}\u0000${String(contextId ?? '').slice(0, 100)}`;
+  }
+
+  _trackRuntimeContextEvent(tabId, source = {}, method = '', params = {}) {
+    const sessionId = String(source.sessionId || '');
+    let contexts = this.runtimeContexts.get(tabId);
+    if (method === 'Runtime.executionContextCreated') {
+      const context = params.context;
+      const frameId = String(context?.auxData?.frameId || '');
+      if (!context?.auxData?.isDefault || !frameId || context.id == null) return;
+      if (!contexts) {
+        contexts = new Map();
+        this.runtimeContexts.set(tabId, contexts);
+      }
+      contexts.set(this._runtimeContextKey(sessionId, context.id), {
+        contextId: context.id,
+        frameId,
+        sessionId,
+      });
+      return;
+    }
+    if (!contexts) return;
+    if (method === 'Runtime.executionContextDestroyed') {
+      contexts.delete(this._runtimeContextKey(sessionId, params.executionContextId));
+    } else if (method === 'Runtime.executionContextsCleared') {
+      for (const [key, context] of contexts) {
+        if (context.sessionId === sessionId) contexts.delete(key);
+      }
+    } else if (method === 'Target.detachedFromTarget') {
+      const detachedSessionId = String(params.sessionId || '');
+      for (const [key, context] of contexts) {
+        if (context.sessionId === detachedSessionId) contexts.delete(key);
+      }
+    }
+    if (!contexts.size) this.runtimeContexts.delete(tabId);
   }
 
   _newWebMCPSession(tabId) {
@@ -376,6 +418,10 @@ export class CDPClient {
       contextsByFrame.set(frameId, context.id);
     };
     this.on(tabId, 'Runtime.executionContextCreated', onContextCreated);
+    for (const context of this.runtimeContexts.get(tabId)?.values() || []) {
+      if (context.sessionId !== owningSessionId) continue;
+      contextsByFrame.set(context.frameId, context.contextId);
+    }
     try {
       await this.sendCommand(tabId, 'Runtime.enable', {}, owningSessionId);
       // Runtime.enable reports existing contexts asynchronously. Keep this
