@@ -7,7 +7,6 @@ This changelog was generated from the repository Git history and release tags. V
 ## [25.2.0] - 2026-07-21
 
 ### Added
-- Initial release of WebBrain, introducing an open-source AI-powered browser agent.
 
 ### Changed
 
