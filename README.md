@@ -378,8 +378,8 @@ or initial screenshot cannot be started and saved, the run is not sent.
 Standalone `/record` and `/screenshot` keep their existing behavior.
 
 Saved workflows use a separate `webbrain-workflow/1` schema; they are not raw
-trace replays. Historical `ref_id` values, coordinates, query strings,
-fragments, and typed field values are excluded. Typed values become runtime
+trace replays. Historical `ref_id` values, action CSS selectors, coordinates,
+query strings, fragments, and typed field values are excluded. Typed values become runtime
 parameters, and each action is bound to the recorded origin and URL family.
 At run time WebBrain resolves a fresh accessibility-tree target and executes
 through the normal Act permission, submit-confirmation, and verification gates.

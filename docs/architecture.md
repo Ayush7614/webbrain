@@ -438,7 +438,7 @@ Saved workflows are compiled artifacts, not serialized trace events. The
 background reads the newest successful trace in the active conversation and
 normalizes its replayable actions into `webbrain-workflow/1`, stored under
 `wb_saved_workflows_v1`. Compilation removes historical element references,
-coordinates, query strings, fragments, and typed values. Every typed field
+action CSS selectors, coordinates, query strings, fragments, and typed values. Every typed field
 value becomes a declared runtime parameter; unsupported or failed actions are
 skipped and reported to the user as save warnings.
 

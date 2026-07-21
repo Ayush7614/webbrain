@@ -124,7 +124,7 @@ separate `webbrain-workflow/1` record in browser local storage
 (`wb_saved_workflows_v1`). The saved record contains action names, sanitized
 arguments, semantic target descriptors, URL origin/path families,
 postconditions, and parameter descriptors. It does not contain typed field
-values, raw historical `ref_id` values, coordinates, URL query strings, or URL
+values, raw historical `ref_id` values, action CSS selectors, coordinates, URL query strings, or URL
 fragments.
 
 `/workflow --run <id>` collects declared values in a temporary side-panel form

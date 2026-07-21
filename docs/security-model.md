@@ -171,7 +171,7 @@ The traces page (`ui/traces.html`) reads from local IndexedDB only. Export produ
 
 Saved workflows deliberately do not replay raw trace calls. Compilation uses an
 allowlist, replaces every typed value with a runtime parameter, discards raw
-references/coordinates and URL query or fragment data, and binds each action to
+references, action CSS selectors, coordinates and URL query or fragment data, and binds each action to
 an origin/path family plus a semantic target and postcondition.
 
 Before an action, replay must be on the recorded URL family and find one

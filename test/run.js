@@ -43735,15 +43735,19 @@ test('saved workflow compiler skips unsafe coordinates, failed calls, and unsupp
   const run = { runId: 'run_2', status: 'done', tabUrl: 'https://example.com/dashboard' };
   const events = [
     { seq: 1, kind: 'tool', data: { name: 'click', args: { x: 10, y: 20 }, result: { success: true } } },
-    { seq: 2, kind: 'tool', data: { name: 'execute_js', args: { code: 'alert(1)' }, result: { success: true } } },
-    { seq: 3, kind: 'tool', data: { name: 'navigate', args: { url: 'https://example.com/next?code=secret' }, result: { success: false, error: 'blocked' } } },
-    { seq: 4, kind: 'tool', data: { name: 'navigate', args: { url: 'https://example.com/next?query=public' }, result: { success: true } } },
+    { seq: 2, kind: 'tool', data: { name: 'click', args: { selector: '.card:nth-child(2) button' }, result: { success: true } } },
+    { seq: 3, kind: 'tool', data: { name: 'execute_js', args: { code: 'alert(1)' }, result: { success: true } } },
+    { seq: 4, kind: 'tool', data: { name: 'navigate', args: { url: 'https://example.com/next?code=secret' }, result: { success: false, error: 'blocked' } } },
+    { seq: 5, kind: 'tool', data: { name: 'navigate', args: { url: 'https://example.com/next?query=public' }, result: { success: true } } },
+    { seq: 6, kind: 'tool', data: { name: 'click', args: { text: 'Review' }, result: { success: true } } },
   ];
   const { workflow, warnings } = SavedWorkflowsCh.compileWorkflowFromTrace(run, events, { name: 'Safe flow', now: 2000 });
-  assert.equal(workflow.steps.length, 1);
+  assert.equal(workflow.steps.length, 2);
   assert.deepEqual(workflow.steps[0].args, { url: 'https://example.com/next' });
+  assert.deepEqual(workflow.steps[1].args, { text: 'Review' });
   assert.ok(warnings.some((warning) => /query or fragment/.test(warning)));
   assert.doesNotMatch(JSON.stringify(workflow), /alert|code=|query=|x.*10|y.*20/);
+  assert.doesNotMatch(JSON.stringify(workflow), /nth-child|selector/);
 });
 
 test('saved workflow normalization rejects imported raw refs and undeclared parameter markers', () => {
@@ -43761,6 +43765,10 @@ test('saved workflow normalization rejects imported raw refs and undeclared para
   assert.equal(SavedWorkflowsCh.normalizeSavedWorkflow({
     ...base,
     steps: [{ tool: 'set_field', args: { text: { [SavedWorkflowsCh.WORKFLOW_PARAM_REF_KEY]: 'missing' } }, target: { role: 'textbox', name: 'Email' } }],
+  }), null);
+  assert.equal(SavedWorkflowsCh.normalizeSavedWorkflow({
+    ...base,
+    steps: [{ tool: 'click', args: { selector: '#destructive-action' }, expected: { kind: 'tool_success' } }],
   }), null);
 });
 

@@ -33,7 +33,7 @@ export const REPLAYABLE_WORKFLOW_TOOLS = new Set([
 
 const TARGET_FIELDS = [
   'role', 'name', 'label', 'id', 'fieldName', 'type', 'ariaLabel',
-  'placeholder', 'href', 'selector',
+  'placeholder', 'href',
 ];
 
 function nowMs() { return Date.now(); }
@@ -269,9 +269,10 @@ function compileStepArgs(name, rawArgs, target, parameters, warnings) {
     // Coordinate and historical element-index replay are intentionally absent.
     if (args.x != null || args.y != null || args.index != null) return null;
     const text = cleanText(args.text);
-    const selector = cleanText(args.selector);
-    if (!text && !selector && !target) return null;
-    return { ...(text ? { text } : {}), ...(selector ? { selector } : {}) };
+    // A CSS selector can silently resolve to a different element after a page
+    // update. Text click retains the existing current-page ambiguity checks;
+    // ref-based actions are compiled separately with semantic target evidence.
+    return text ? { text } : null;
   }
   if (name === 'scroll') {
     if ((args.ref_id || args.refId) && !target) return null;
@@ -448,8 +449,13 @@ export function normalizeSavedWorkflow(input, options = {}) {
   for (const raw of Array.isArray(input?.steps) ? input.steps : []) {
     const tool = cleanText(raw?.tool, 80);
     if (!REPLAYABLE_WORKFLOW_TOOLS.has(tool)) continue;
-    const args = normalizeArgsValue(raw?.args || {}, parameterIds);
+    let args = normalizeArgsValue(raw?.args || {}, parameterIds);
     if (!args || typeof args !== 'object' || Array.isArray(args)) continue;
+    if (tool === 'click') {
+      const text = cleanText(args.text);
+      if (!text) continue;
+      args = { text };
+    }
     if ((tool === 'type_ax' || tool === 'set_field') && !args.text?.[WORKFLOW_PARAM_REF_KEY]) continue;
     const target = normalizeTarget(raw?.target);
     const scope = normalizeWorkflowScope(raw?.scope);
