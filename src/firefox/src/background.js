@@ -1384,7 +1384,7 @@ async function beginContinuationRunUiSnapshot(tabId, requestId, metadata = {}) {
   const existing = await getRunUiSnapshot(tabId);
   const sameNonTerminalRun = existing
     && String(existing.requestId || '') === String(requestId || '')
-    && !['completed', 'stopped', 'failed', 'cancelled'].includes(existing.status);
+    && !['completed', 'stopped', 'failed', 'cancelled', 'clarification_required'].includes(existing.status);
   if (sameNonTerminalRun) return runUiJournal.resume(tabId, requestId, metadata);
   return beginRunUiSnapshot(tabId, requestId, metadata);
 }
@@ -1393,12 +1393,22 @@ function recordRunUiEvent(tabId, requestId, type, data) {
   return runUiJournal.record(tabId, requestId, type, data, agent.currentRunId.get(tabId));
 }
 
+function isClarificationRequiredRunUpdate(update) {
+  return update?.type === 'run_status'
+    && update?.data?.status === 'clarification_required';
+}
+
+function runUpdatesSucceeded(updates = []) {
+  return !updates.some(update => update?.type === 'error' || isClarificationRequiredRunUpdate(update));
+}
+
 function terminalRunUiStatus(content, updates = [], error = null) {
   if (error) return 'failed';
   const text = String(content || '');
   if (/stopped by user|aborted by user/i.test(text)) return 'stopped';
   if (/before executing requested tool calls/i.test(text)) return 'cancelled';
   if (updates.some(update => update?.type === 'error')) return 'failed';
+  if (updates.some(isClarificationRequiredRunUpdate)) return 'clarification_required';
   return 'completed';
 }
 
@@ -1757,7 +1767,7 @@ async function handleMessage(msg, sender) {
           userText: msg.text,
           assistantText: result,
           mode,
-          succeeded: !updates.some((update) => update?.type === 'error'),
+          succeeded: runUpdatesSucceeded(updates),
         });
         userMemoryPayload.conversationId = await agent.getConversationId(tabId);
         userMemoryTurnContextTaken = true;
@@ -1803,7 +1813,7 @@ async function handleMessage(msg, sender) {
 
       sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
       let userMemoryTurnContextTaken = false;
-      let userMemoryTurnHadError = false;
+      const updates = [];
       let result = '';
       let runError = null;
       try {
@@ -1813,7 +1823,7 @@ async function handleMessage(msg, sender) {
           intentFailureMessage: msg.intentFailureMessage,
         };
         result = await agent.processMessageStream(tabId, msg.text, (type, data) => {
-          if (type === 'error') userMemoryTurnHadError = true;
+          updates.push({ type, data });
           sendAgentUpdate(tabId, runUi.requestId, type, data);
         }, mode, runOptions);
 
@@ -1821,7 +1831,7 @@ async function handleMessage(msg, sender) {
           userText: msg.text,
           assistantText: result,
           mode,
-          succeeded: !userMemoryTurnHadError,
+          succeeded: runUpdatesSucceeded(updates),
         });
         userMemoryPayload.conversationId = await agent.getConversationId(tabId);
         userMemoryTurnContextTaken = true;
@@ -1832,7 +1842,7 @@ async function handleMessage(msg, sender) {
         throw error;
       } finally {
         if (!userMemoryTurnContextTaken) clearUserMemoryTurnContext(tabId);
-        const snapshot = finishRunUiSnapshot(tabId, runUi.requestId, terminalRunUiStatus(result, userMemoryTurnHadError ? [{ type: 'error' }] : [], runError), result || (runError ? `Error: ${runError.message}` : ''));
+        const snapshot = finishRunUiSnapshot(tabId, runUi.requestId, terminalRunUiStatus(result, updates, runError), result || (runError ? `Error: ${runError.message}` : ''));
         sendAgentRunComplete(tabId, snapshot);
         sendIndicatorMessage(tabId, 'WB_HIDE_AGENT_INDICATORS');
         releaseRunKeepalive();
@@ -1849,12 +1859,12 @@ async function handleMessage(msg, sender) {
 
       sendIndicatorMessage(tabId, 'WB_SHOW_AGENT_INDICATORS');
       let userMemoryTurnContextTaken = false;
-      let userMemoryTurnHadError = false;
+      const updates = [];
       let result = '';
       let runError = null;
       try {
         result = await agent.continueProcessing(tabId, (type, data) => {
-          if (type === 'error') userMemoryTurnHadError = true;
+          updates.push({ type, data });
           sendAgentUpdate(tabId, runUi.requestId, type, data);
         }, mode, {
           detachedRequestId: runUi.requestId,
@@ -1870,7 +1880,7 @@ async function handleMessage(msg, sender) {
           userText: 'Please continue from where you left off.',
           assistantText: result,
           mode,
-          succeeded: !userMemoryTurnHadError,
+          succeeded: runUpdatesSucceeded(updates),
         });
         userMemoryPayload.conversationId = await agent.getConversationId(tabId);
         userMemoryTurnContextTaken = true;
@@ -1881,7 +1891,7 @@ async function handleMessage(msg, sender) {
         throw error;
       } finally {
         if (!userMemoryTurnContextTaken) clearUserMemoryTurnContext(tabId);
-        const snapshot = finishRunUiSnapshot(tabId, runUi.requestId, terminalRunUiStatus(result, userMemoryTurnHadError ? [{ type: 'error' }] : [], runError), result || (runError ? `Error: ${runError.message}` : ''));
+        const snapshot = finishRunUiSnapshot(tabId, runUi.requestId, terminalRunUiStatus(result, updates, runError), result || (runError ? `Error: ${runError.message}` : ''));
         sendAgentRunComplete(tabId, snapshot);
         sendIndicatorMessage(tabId, 'WB_HIDE_AGENT_INDICATORS');
         releaseRunKeepalive();

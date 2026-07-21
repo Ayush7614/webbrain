@@ -282,6 +282,11 @@ export class Agent {
     // abort() and clearConversation() cancel all pending clarifications so
     // the agent loop doesn't deadlock.
     this._pendingClarifications = new Map();
+    // A waited clarify timeout is not user authorization. Keep that fact in
+    // trusted app state instead of relying on the model to obey prose in the
+    // tool result. Consequential actions stay blocked until a direct clarify
+    // response or intentional Instant auto-approve arrives.
+    this._clarificationAuthorizationGuards = new Map(); // tabId -> { source, authorized, conversationId, blockedAttempts, updatedAt }
     this.cloudRunContexts = new Map(); // tabId -> { outputSchema, schemaRepairUsed }
     // Deterministic capability × origin permission gate. "Always" grants are
     // persisted in extension storage; "once" grants live for the current turn.
@@ -2995,6 +3000,57 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const isStateChangingCall = Agent.STATE_CHANGE_TOOLS.has(fnName);
       const missingResponseOutcomeUnknown = capabilities.length > 0 || isStateChangingCall;
       const executionMutationEvidence = this._isExecutionMutationEvidence(fnName, fnArgs, capabilities);
+      const clarificationAuthorizationBlock = this._clarificationAuthorizationBlock(
+        tabId,
+        fnName,
+        fnArgs,
+        capabilities,
+      );
+      if (clarificationAuthorizationBlock) {
+        const blockedResult = clarificationAuthorizationBlock.result;
+        onUpdate('tool_call', { name: fnName, args: fnArgs, outcomeUnknown: false });
+        onUpdate('tool_result', { name: fnName, result: blockedResult });
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify(blockedResult),
+        });
+        const runId = this.currentRunId.get(tabId);
+        if (runId) {
+          trace.recordToolCall(runId, step, {
+            name: fnName, args: fnArgs, result: blockedResult, latencyMs: 0,
+          });
+        }
+        this._appendSyntheticToolResults(
+          tabId,
+          toolCalls,
+          toolIndex + 1,
+          messages,
+          onUpdate,
+          step,
+          () => ({
+            success: false,
+            skipped: true,
+            error: 'skipped: a waited clarification timeout requires explicit authorization before actions or success completion',
+          }),
+        );
+        const clarificationAuthorizationStop = clarificationAuthorizationBlock.stop
+          || step >= this.maxSteps;
+        onUpdate('warning', {
+          message: clarificationAuthorizationStop
+            ? `Stopped because ${clarificationAuthorizationBlock.stop ? 'a repeated blocked attempt' : 'the final allowed step'} tried to use a timed-out clarification as authorization (${clarificationAuthorizationBlock.blockedSuccessCompletion ? 'success completion' : 'consequential action'}).`
+            : `${clarificationAuthorizationBlock.blockedSuccessCompletion ? 'Success completion' : 'Consequential action'} blocked until the user answers the clarification explicitly.`,
+        });
+        await this._persistNow(tabId);
+        if (clarificationAuthorizationStop) {
+          return {
+            action: 'return',
+            status: 'clarification_required',
+            value: this._clarificationAuthorizationStopMessage(),
+          };
+        }
+        return { action: 'continue' };
+      }
       await this._ensureGateSetting();
       const skillEndpointRedirect = this._skillEndpointToolRedirect(fnName, fnArgs, tabId);
       if (skillEndpointRedirect) {
@@ -5240,6 +5296,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (entry.progressSession && typeof entry.progressSession === 'object') {
           this.progressSessions.set(tabId, entry.progressSession);
         }
+        if (
+          entry.clarificationAuthorizationGuard?.source === 'timeout'
+          && entry.clarificationAuthorizationGuard?.authorized === false
+        ) {
+          this._clarificationAuthorizationGuards.set(tabId, {
+            source: 'timeout',
+            authorized: false,
+            conversationId: entry.conversationId || null,
+            blockedAttempts: Math.max(0, Number(entry.clarificationAuthorizationGuard.blockedAttempts) || 0),
+            updatedAt: Number(entry.clarificationAuthorizationGuard.updatedAt) || Date.now(),
+          });
+        }
       }
     } catch (e) { /* session storage may be unavailable */ }
   }
@@ -5247,6 +5315,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   _conversationStorageEntry(tabId) {
     const messages = this.conversations.get(tabId);
     if (!messages) return null;
+    const conversationId = this.conversationIds.get(tabId) || null;
+    const clarificationGuard = this._clarificationAuthorizationGuards.get(tabId);
+    const persistedClarificationGuard = clarificationGuard?.source === 'timeout'
+      && clarificationGuard?.authorized === false
+      && (!clarificationGuard.conversationId || clarificationGuard.conversationId === conversationId)
+      ? {
+          source: 'timeout',
+          authorized: false,
+          conversationId,
+          blockedAttempts: Math.max(0, Number(clarificationGuard.blockedAttempts) || 0),
+          updatedAt: Number(clarificationGuard.updatedAt) || Date.now(),
+        }
+      : null;
     const persistedMessages = messages.map(message => (
       message?.transientCompletionVerification === true
         ? { role: 'user', content: '[Completion verification screenshot omitted from persisted history.]' }
@@ -5255,10 +5336,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return {
       mode: this.conversationModes.get(tabId) || 'ask',
       messages: persistedMessages,
-      conversationId: this.conversationIds.get(tabId) || null,
+      conversationId,
       submittedRunRequestId: this.submittedRunRequestIds.get(tabId) || null,
       progressLedger: this.progressLedgers.get(tabId) || [],
       progressSession: this.progressSessions.get(tabId) || null,
+      clarificationAuthorizationGuard: persistedClarificationGuard,
     };
   }
 
@@ -5322,6 +5404,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.abortFlags.set(tabId, true);
     this._cancelClarifications(tabId, 'aborted by user');
     this._cancelPendingPlans(tabId, 'aborted by user');
+    // Stop cancels the current run; it is not an answer to a prior timed-out
+    // clarification. Keep that authorization guard until an explicit clarify
+    // response or conversation/tab cleanup resolves its scope.
   }
 
   /**
@@ -5336,6 +5421,131 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!entry) return false;
     this._settleClarification(entry, { answer, source });
     return true;
+  }
+
+  async requireExplicitClarificationAuthorization(tabId) {
+    await this._hydrate(tabId);
+    return await this._recordClarificationAuthorization(tabId, 'timeout');
+  }
+
+  async _recordClarificationAuthorization(tabId, source) {
+    const normalizedSource = source === 'timeout' ? 'timeout' : (source === 'auto' ? 'auto' : 'user');
+    if (normalizedSource === 'timeout') {
+      const conversationId = this.conversationIds.get(tabId) || null;
+      const previous = this._clarificationAuthorizationGuards.get(tabId);
+      const blockedAttempts = previous?.source === 'timeout'
+        && previous?.authorized === false
+        && previous?.conversationId === conversationId
+        ? Math.max(0, Number(previous.blockedAttempts) || 0)
+        : 0;
+      this._clarificationAuthorizationGuards.set(tabId, {
+        source: 'timeout',
+        authorized: false,
+        conversationId,
+        // A recovery clarify can time out too. Preserve prior blocks so a
+        // model cannot loop forever by re-asking and retrying the same action.
+        blockedAttempts,
+        updatedAt: Date.now(),
+      });
+    } else {
+      this._clarificationAuthorizationGuards.delete(tabId);
+    }
+    // A waited timeout must be durable before the model can continue. Otherwise
+    // a service-worker restart inside the normal debounce window could erase
+    // the structural authorization guard. Await deletions too so an explicit
+    // response cannot revive a stale guard after restart.
+    if (this.conversations.has(tabId)) await this._persistNow(tabId);
+    return normalizedSource !== 'timeout';
+  }
+
+  _prepareClarificationAuthorizationForRun(tabId) {
+    const guard = this._clarificationAuthorizationGuards.get(tabId);
+    if (!guard) return;
+    const conversationId = this.conversationIds.get(tabId) || null;
+    // A new user message is not necessarily an answer to the timed-out
+    // question. Keep the guard across turns and reconnects; only discard an
+    // entry that is provably scoped to another conversation.
+    if (guard.conversationId && conversationId && guard.conversationId !== conversationId) {
+      this._clarificationAuthorizationGuards.delete(tabId);
+      if (this.conversations.has(tabId)) this._persist(tabId);
+    }
+  }
+
+  _clarificationAuthorizationBlock(tabId, name, args = {}, capabilities = []) {
+    const guard = this._clarificationAuthorizationGuards.get(tabId);
+    if (!guard || guard.source !== 'timeout' || guard.authorized !== false) return null;
+    const conversationId = this.conversationIds.get(tabId) || null;
+    if (guard.conversationId && conversationId && guard.conversationId !== conversationId) {
+      this._clarificationAuthorizationGuards.delete(tabId);
+      if (this.conversations.has(tabId)) this._persist(tabId);
+      return null;
+    }
+    if (name === 'clarify') return null;
+
+    const doneOutcome = name === 'done_json' ? 'success' : normalizeDoneOutcome(args?.outcome);
+    const blockedSuccessCompletion = name === 'done_json'
+      || (name === 'done' && doneOutcome !== 'partial' && doneOutcome !== 'failed');
+    if (name === 'done' && !blockedSuccessCompletion) return null;
+
+    const blockedCapabilities = new Set([
+      Capability.CLICK,
+      Capability.TYPE,
+      Capability.EXECUTE_JS,
+      Capability.DEV_PATCH,
+      Capability.NETWORK,
+      Capability.DOWNLOAD,
+      Capability.UPLOAD,
+      Capability.SCHEDULE,
+    ]);
+    // solve_captcha intentionally has no permission capability, but it still
+    // spends external solver quota and can inject a token into the page.
+    const hasUngatedExternalSideEffect = name === 'solve_captcha';
+    const requiresExplicitAuthorization = blockedSuccessCompletion
+      || hasUngatedExternalSideEffect
+      || capabilities.some(capability => blockedCapabilities.has(capability));
+    if (!requiresExplicitAuthorization) return null;
+
+    guard.blockedAttempts = Math.max(0, Number(guard.blockedAttempts) || 0) + 1;
+    guard.updatedAt = Date.now();
+    const stop = guard.blockedAttempts > 1;
+    return {
+      stop,
+      blockedSuccessCompletion,
+      result: {
+        success: false,
+        denied: true,
+        blocked: true,
+        ...(blockedSuccessCompletion ? { blockedDone: true } : {}),
+        dispatched: false,
+        noDispatch: true,
+        authorized: false,
+        authorizationSource: 'timeout',
+        clarificationAuthorizationRequired: true,
+        error: stop
+          ? `A repeated blocked attempt (${blockedSuccessCompletion ? 'success completion' : 'consequential action'}) tried to use a waited clarify timeout as user authorization. Stop and ask the user to answer the clarification explicitly before retrying.`
+          : `This ${blockedSuccessCompletion ? 'success completion' : 'consequential action'} was blocked because the latest clarify answer was auto-selected after a waited timeout and is not user authorization. Call clarify again and wait for a direct user response, or call done with outcome partial or failed. Do not retry unchanged.`,
+      },
+    };
+  }
+
+  _clarificationAuthorizationStopMessage() {
+    return '[Agent stopped before dispatching another action or accepting a success completion because the latest clarification answer was auto-selected after a timeout and was not user authorization. Please answer the clarification explicitly and retry.]';
+  }
+
+  _clarificationAuthorizationPlainFinalDecision(tabId) {
+    const block = this._clarificationAuthorizationBlock(
+      tabId,
+      'done',
+      { outcome: 'success' },
+      [],
+    );
+    if (!block) return null;
+    return {
+      retry: !block.stop,
+      ...(block.stop ? {} : { nudge: `[CLARIFICATION AUTHORIZATION BLOCK: ${block.result.error}]` }),
+      failure: this._clarificationAuthorizationStopMessage(),
+      status: 'clarification_required',
+    };
   }
 
   /**
@@ -8206,6 +8416,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.activeSkillIds.delete(tabId);
     this._nytimesPageGateNotified.delete(tabId);
     this._lastInteractionRect.delete(tabId);
+    this._clarificationAuthorizationGuards.delete(tabId);
     this._doneBlockCount.delete(tabId);
     this._completionSubmitStates.delete(tabId);
     this._recentSubmitClicks.delete(tabId);
@@ -12131,6 +12342,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       const answer = String(response?.answer || '').trim();
       const source = response?.source || 'user';
+      const authorized = await this._recordClarificationAuthorization(tabId, source);
       let note;
       if (source === 'timeout') {
         // Passive wait expired — not deliberate auto-approve.
@@ -12145,6 +12357,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         success: true,
         answer,
         source,
+        authorized,
+        requiresExplicitConfirmation: !authorized,
         note,
       };
     }
@@ -16868,6 +17082,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _processMessageInner(tabId, userMessage, onUpdate, mode, attachments = [], runOptions = {}) {
     await this._hydrate(tabId);
+    this._prepareClarificationAuthorizationForRun(tabId);
     this._preactivateRecommendedActionSkill(tabId, runOptions, mode);
     const messages = this.getConversation(tabId, mode);
     this._expireCurrentToolReasoning(messages);
@@ -17192,7 +17407,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         );
         if (batchResult.action === 'return') {
           finalResponse = batchResult.value;
-          if (batchResult.status) _traceStatus = batchResult.status;
+          if (batchResult.status) {
+            _traceStatus = batchResult.status;
+            onUpdate('run_status', { status: batchResult.status, message: batchResult.value });
+          }
           return finalResponse;
         }
         if (batchResult.action === 'recover') {
@@ -17283,6 +17501,26 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       // Genuine final answer — emit and exit. Repeated-item progress recovery
       // takes priority so an unresolved ledger can still drive the next tool turn.
+      const clarificationFinalDecision = this._isActionMode(mode)
+        ? this._clarificationAuthorizationPlainFinalDecision(tabId)
+        : null;
+      if (clarificationFinalDecision?.retry && steps < this.maxSteps) {
+        messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems, result.reasoningContent, provider));
+        messages.push({ role: 'user', content: clarificationFinalDecision.nudge });
+        onUpdate('warning', { message: 'Plain final completion blocked until the user answers the clarification explicitly.' });
+        await this._persistNow(tabId);
+        continue;
+      }
+      if (clarificationFinalDecision?.failure) {
+        finalResponse = clarificationFinalDecision.failure;
+        _traceStatus = clarificationFinalDecision.status;
+        messages.push({ role: 'assistant', content: finalResponse });
+        onUpdate('text', { content: finalResponse, replace: true });
+        onUpdate('warning', { message: 'Run stopped because explicit clarification authorization is still required.' });
+        onUpdate('run_status', { status: clarificationFinalDecision.status, message: finalResponse });
+        await this._persistNow(tabId);
+        return finalResponse;
+      }
       const progressFinalBlock = this._plainFinalProgressBlock(tabId);
       const completionFinalBlock = this._completionPlainFinalBlock(tabId);
       const plainFinalBlocks = [progressFinalBlock, completionFinalBlock].filter(Boolean);
@@ -17385,6 +17623,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _processMessageStreamInner(tabId, userMessage, onUpdate, mode, runOptions = {}) {
     await this._hydrate(tabId);
+    this._prepareClarificationAuthorizationForRun(tabId);
     this._preactivateRecommendedActionSkill(tabId, runOptions, mode);
     const messages = this.getConversation(tabId, mode);
     this._expireCurrentToolReasoning(messages);
@@ -17623,6 +17862,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps, runOptions
           );
           if (batchResult.action === 'return') {
+            if (batchResult.status) {
+              onUpdate('run_status', { status: batchResult.status, message: batchResult.value });
+            }
             return finish(batchResult.value, batchResult.status);
           }
           if (batchResult.action === 'recover') {
@@ -17696,6 +17938,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
         emptyOutputRecoveryAttempted = false;
         compressionPlaceholderRecoveryAttempted = false;
+        const clarificationFinalDecision = this._isActionMode(mode)
+          ? this._clarificationAuthorizationPlainFinalDecision(tabId)
+          : null;
+        if (clarificationFinalDecision?.retry && steps < this.maxSteps) {
+          messages.push(this._withResponseItems({ role: 'assistant', content: fullText }, responseItems, reasoningContent, provider));
+          messages.push({ role: 'user', content: clarificationFinalDecision.nudge });
+          onUpdate('text', { content: '', replace: true });
+          onUpdate('warning', { message: 'Plain final completion blocked until the user answers the clarification explicitly.' });
+          await this._persistNow(tabId);
+          continue;
+        }
+        if (clarificationFinalDecision?.failure) {
+          messages.push({ role: 'assistant', content: clarificationFinalDecision.failure });
+          onUpdate('text', { content: clarificationFinalDecision.failure, replace: true });
+          onUpdate('warning', { message: 'Run stopped because explicit clarification authorization is still required.' });
+          onUpdate('run_status', {
+            status: clarificationFinalDecision.status,
+            message: clarificationFinalDecision.failure,
+          });
+          await this._persistNow(tabId);
+          return finish(clarificationFinalDecision.failure, clarificationFinalDecision.status);
+        }
         // Preserve the progress ledger's purpose-built continuation before
         // treating other plain terminal text as unverified.
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
