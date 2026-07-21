@@ -14982,6 +14982,77 @@ test('waited clarify timeout blocks plain finals after a denied action', async (
   }
 });
 
+test('waited clarify timeout persists plain-final attempts before retrying', async () => {
+  for (const streaming of [false, true]) {
+    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+      const responses = [
+        { content: 'Done.', toolCalls: [] },
+        { content: 'Done again.', toolCalls: [] },
+      ];
+      const provider = {
+        supportsTools: true,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        calls: 0,
+      };
+      if (streaming) {
+        provider.chatStream = async function* () {
+          this.calls += 1;
+          const next = responses.shift();
+          assert.ok(next, `${AgentClass.name}: streamed persistence guard called the model too many times`);
+          yield { type: 'text', content: next.content };
+          yield { type: 'done' };
+        };
+      } else {
+        provider.chat = async () => {
+          provider.calls += 1;
+          const next = responses.shift();
+          assert.ok(next, `${AgentClass.name}: persistence guard called the model too many times`);
+          return next;
+        };
+      }
+
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      const tabId = 4856 + (streaming ? 10 : 0) + index;
+      configurePlanOnlyGuardAgent(agent, tabId);
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
+
+      let releasePersist;
+      let persistCalls = 0;
+      let runSettled = false;
+      const persistGate = new Promise(resolve => { releasePersist = resolve; });
+      agent._persistNow = async () => {
+        persistCalls += 1;
+        if (persistCalls === 1) await persistGate;
+        return true;
+      };
+      const run = streaming ? agent.processMessageStream.bind(agent) : agent.processMessage.bind(agent);
+      const runPromise = run(tabId, 'Apply the requested change.', () => {}, 'act').then(result => {
+        runSettled = true;
+        return result;
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(persistCalls, 1, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: first plain-final attempt was not persisted immediately`);
+      assert.equal(provider.calls, 1, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: second model turn started before persistence`);
+      assert.equal(runSettled, false, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: run settled while persistence was pending`);
+      assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.blockedAttempts, 1, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: pending snapshot lost the first blocked attempt`);
+
+      releasePersist();
+      const final = await runPromise;
+      assert.equal(final, agent._clarificationAuthorizationStopMessage(), `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: repeated plain final did not fail closed`);
+      assert.equal(provider.calls, 2, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: retry did not resume after persistence`);
+      assert.equal(persistCalls, 2, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: terminal blocked attempt was not persisted immediately`);
+    }
+  }
+});
+
 test('waited clarify timeout plain finals fail closed at the step limit', async () => {
   for (const streaming of [false, true]) {
     for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
@@ -16479,6 +16550,7 @@ function makeSchedulerHarness(SchedulerMod, opts = {}) {
   const agent = {
     isRunning: opts.isRunning || (() => false),
     getConversationId: opts.getConversationId || (async () => 'conv-1'),
+    requireExplicitClarificationAuthorization: opts.requireExplicitClarificationAuthorization || (async () => {}),
     processMessage: opts.processMessage || (async () => 'scheduled result'),
     abort: opts.abort || (() => {}),
     setScheduledRunPolicy() {},
@@ -18003,10 +18075,12 @@ test('ScheduledJobManager keeps terminal URL authorization stops durable when he
   const now = Date.UTC(2026, 0, 1, 12, 0, 0);
   for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
     let abortCalls = 0;
+    const authorizationGuardTabs = [];
     const stoppedMessage = '[Scheduled run stopped for explicit clarification.]';
     const h = makeSchedulerHarness(SchedulerMod, {
       now,
       abort: () => { abortCalls += 1; },
+      requireExplicitClarificationAuthorization: async (tabId) => { authorizationGuardTabs.push(tabId); },
       processMessage: async (_tabId, _message, onUpdate) => {
         onUpdate('run_status', { status: 'clarification_required', message: stoppedMessage });
         return stoppedMessage;
@@ -18027,6 +18101,7 @@ test('ScheduledJobManager keeps terminal URL authorization stops durable when he
     const helperTabId = job.target.tabId;
     assert.equal(job.status, 'needs_user_input', `${label}: URL run should stop for clarification`);
     assert.equal(job.clarificationRequired, true, `${label}: URL run should persist the terminal marker`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: URL run should persist the structural authorization requirement`);
 
     // Browser alarms are one-shot; mirror their removal before simulating the
     // helper tab closing after the terminal run has already returned.
@@ -18037,10 +18112,25 @@ test('ScheduledJobManager keeps terminal URL authorization stops durable when he
     job = h.jobs()[0];
     assert.equal(job.status, 'needs_user_input', `${label}: helper-tab close must not queue the terminal stop`);
     assert.equal(job.clarificationRequired, true, `${label}: helper-tab close should preserve the terminal marker`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: helper-tab close should preserve the structural authorization requirement`);
     assert.equal(job.tabId, null, `${label}: helper-tab close should drop the stale top-level tab id`);
     assert.equal(job.target.tabId, null, `${label}: helper-tab close should drop the stale target tab id`);
     assert.equal(h.alarms.has(h.alarmName(created.jobId)), false, `${label}: helper-tab close must not arm a retry`);
     assert.equal(abortCalls, 0, `${label}: helper-tab close must not abort an already-terminal run`);
+
+    const retried = await h.manager.runNow(created.jobId);
+    assert.equal(retried.ok, true, `${label}: explicit Run now should restart the terminal job`);
+    job = h.jobs()[0];
+    assert.equal(job.status, 'pending', `${label}: explicit retry should return the terminal job to pending`);
+    assert.equal(job.clarificationRequired, false, `${label}: explicit retry should clear the UI terminal marker`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: explicit retry must carry the structural authorization requirement`);
+
+    await h.manager.handleAlarm(h.alarmName(created.jobId));
+    job = h.jobs()[0];
+    const replacementTabId = job.target.tabId;
+    assert.notEqual(replacementTabId, helperTabId, `${label}: explicit retry should resolve a fresh helper tab`);
+    assert.deepEqual(authorizationGuardTabs, [replacementTabId], `${label}: fresh helper tab did not reinstall the timeout-derived guard before execution`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: repeated terminal stop should keep the structural authorization requirement`);
   }
 });
 

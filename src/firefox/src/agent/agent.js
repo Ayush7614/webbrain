@@ -4567,6 +4567,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return true;
   }
 
+  async requireExplicitClarificationAuthorization(tabId) {
+    await this._hydrate(tabId);
+    return await this._recordClarificationAuthorization(tabId, 'timeout');
+  }
+
   async _recordClarificationAuthorization(tabId, source) {
     const normalizedSource = source === 'timeout' ? 'timeout' : (source === 'auto' ? 'auto' : 'user');
     if (normalizedSource === 'timeout') {
@@ -13056,7 +13061,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         messages.push(this._withResponseItems({ role: 'assistant', content: result.content }, result.responseItems, result.reasoningContent, provider));
         messages.push({ role: 'user', content: clarificationFinalDecision.nudge });
         onUpdate('warning', { message: 'Plain final completion blocked until the user answers the clarification explicitly.' });
-        this._persist(tabId);
+        await this._persistNow(tabId);
         continue;
       }
       if (clarificationFinalDecision?.failure) {
@@ -13066,7 +13071,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         onUpdate('text', { content: finalResponse, replace: true });
         onUpdate('warning', { message: 'Run stopped because explicit clarification authorization is still required.' });
         onUpdate('run_status', { status: clarificationFinalDecision.status, message: finalResponse });
-        this._persist(tabId);
+        await this._persistNow(tabId);
         return finalResponse;
       }
       const progressFinalBlock = this._plainFinalProgressBlock(tabId);
@@ -13480,7 +13485,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           messages.push({ role: 'user', content: clarificationFinalDecision.nudge });
           onUpdate('text', { content: '', replace: true });
           onUpdate('warning', { message: 'Plain final completion blocked until the user answers the clarification explicitly.' });
-          this._persist(tabId);
+          await this._persistNow(tabId);
           continue;
         }
         if (clarificationFinalDecision?.failure) {
@@ -13491,7 +13496,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             status: clarificationFinalDecision.status,
             message: clarificationFinalDecision.failure,
           });
-          this._persist(tabId);
+          await this._persistNow(tabId);
           return finish(clarificationFinalDecision.failure, clarificationFinalDecision.status);
         }
         // Preserve the progress ledger's purpose-built continuation before

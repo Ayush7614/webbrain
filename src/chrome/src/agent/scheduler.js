@@ -861,10 +861,12 @@ export class ScheduledJobManager {
     const job = await this._updateJobIf(jobId, (prev) => (
       ['pending', 'queued'].includes(prev.status)
       || (prev.status === 'needs_user_input' && prev.clarificationRequired === true)
-    ), () => ({
+    ), (prev) => ({
       status: 'pending',
       nextRunAt: iso(this.now() + 1000),
       queueDeferrals: 0,
+      clarificationAuthorizationRequired: prev.clarificationRequired === true
+        || prev.clarificationAuthorizationRequired === true,
       clarificationRequired: false,
       pendingClarify: null,
     }));
@@ -1103,6 +1105,8 @@ export class ScheduledJobManager {
           lastResult: String(result || '').slice(0, 2000),
           lastOutcome,
           lastError: null,
+          clarificationAuthorizationRequired: false,
+          clarificationRequired: false,
           pendingClarify: null,
         };
       });
@@ -1122,6 +1126,8 @@ export class ScheduledJobManager {
       lastResult: String(result || '').slice(0, 2000),
       lastOutcome,
       lastError: null,
+      clarificationAuthorizationRequired: false,
+      clarificationRequired: false,
       pendingClarify: null,
     }));
     if (completed) this._emit(completed, 'completed');
@@ -1132,6 +1138,7 @@ export class ScheduledJobManager {
       ['running', 'needs_user_input'].includes(prev.status)
     ), () => ({
       status: 'needs_user_input',
+      clarificationAuthorizationRequired: true,
       clarificationRequired: true,
       lastResult: String(result || '').slice(0, 2000),
       lastOutcome: null,
@@ -1238,6 +1245,9 @@ export class ScheduledJobManager {
     });
     try {
       await this.loadProviders();
+      if (running.clarificationAuthorizationRequired === true) {
+        await this.agent.requireExplicitClarificationAuthorization(tabId);
+      }
       const result = await this.agent.processMessage(tabId, this._messageForJob(running), onUpdate, running.mode || 'act');
       this._waitingForInput.delete(job.id);
       if (runStatus === 'clarification_required') {
