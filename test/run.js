@@ -39609,6 +39609,31 @@ test('Chrome Web Store release uses an always-on protected-page guard and opt-in
       blockOnWarnings: true,
       deployInfos: [{ deployPercentage: 25 }],
     }, `${label}: publish body should be warning-blocking and preserve explicit rollout`);
+
+    const preDispatchFailure = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, {
+      storage,
+      fetchImpl: {},
+      accessToken: 'test-token',
+    });
+    assert.equal(preDispatchFailure.success, false, `${label}: unavailable fetch should fail`);
+    assert.equal(preDispatchFailure.dispatched, false, `${label}: pre-dispatch setup failure was marked dispatched`);
+    assert.equal(preDispatchFailure.noDispatch, true, `${label}: pre-dispatch setup failure should avoid completion debt`);
+    assert.notEqual(preDispatchFailure.outcomeUnknown, true, `${label}: pre-dispatch setup failure should not be ambiguous`);
+
+    let ambiguousAttempts = 0;
+    const ambiguousFailure = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, {
+      storage,
+      fetchImpl: async () => {
+        ambiguousAttempts += 1;
+        throw new Error('connection reset');
+      },
+      accessToken: 'test-token',
+    });
+    assert.equal(ambiguousAttempts, 1, `${label}: ambiguous upload should attempt fetch once`);
+    assert.equal(ambiguousFailure.success, false, `${label}: rejected upload fetch should fail`);
+    assert.equal(ambiguousFailure.dispatched, true, `${label}: post-dispatch failure lost its dispatch marker`);
+    assert.equal(ambiguousFailure.outcomeUnknown, true, `${label}: post-dispatch failure should remain ambiguous`);
+    assert.notEqual(ambiguousFailure.noDispatch, true, `${label}: ambiguous upload must retain completion debt`);
   }
 
   const originalChrome = globalThis.chrome;

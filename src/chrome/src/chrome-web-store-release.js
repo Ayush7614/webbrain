@@ -90,24 +90,28 @@ function decodeBase64(value) {
   return bytes;
 }
 
-async function authorizedFetch(url, init, opts = {}) {
+async function authorizedFetch(url, init, opts = {}, dispatchState = {}) {
   const fetchImpl = opts.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('Network access is unavailable.');
   let token = opts.accessToken || await getSubscriptionAccessToken(CHROME_WEB_STORE_OAUTH_PROVIDER);
+  dispatchState.outcomeUnknown = init.method === 'POST';
   let response = await fetchImpl(url, {
     ...init,
     cache: 'no-store',
     credentials: 'omit',
     headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` },
   });
+  dispatchState.outcomeUnknown = false;
   if (response.status === 401 && !opts.accessToken) {
     token = (await refreshSubscription(CHROME_WEB_STORE_OAUTH_PROVIDER)).accessToken;
+    dispatchState.outcomeUnknown = init.method === 'POST';
     response = await fetchImpl(url, {
       ...init,
       cache: 'no-store',
       credentials: 'omit',
       headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` },
     });
+    dispatchState.outcomeUnknown = false;
   }
   return response;
 }
@@ -166,8 +170,9 @@ export async function executeChromeWebStoreSkillTool(tool, args = {}, opts = {})
   }
 
   const consequential = init.method === 'POST';
+  const dispatchState = { outcomeUnknown: false };
   try {
-    const response = await authorizedFetch(url, init, opts);
+    const response = await authorizedFetch(url, init, opts, dispatchState);
     const payload = await responsePayload(response);
     if (!response.ok) {
       return {
@@ -192,10 +197,11 @@ export async function executeChromeWebStoreSkillTool(tool, args = {}, opts = {})
       result: payload,
     };
   } catch (error) {
+    const dispatched = consequential && dispatchState.outcomeUnknown;
     return {
       success: false,
-      dispatched: consequential,
-      ...(consequential ? { outcomeUnknown: true } : { noDispatch: true }),
+      dispatched,
+      ...(dispatched ? { outcomeUnknown: true } : { noDispatch: true }),
       error: clean(error?.message || error, 1000),
     };
   }

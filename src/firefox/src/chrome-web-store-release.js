@@ -69,14 +69,18 @@ function decodeBase64(value) {
   return bytes;
 }
 
-async function authorizedFetch(url, init, opts = {}) {
+async function authorizedFetch(url, init, opts = {}, dispatchState = {}) {
   const fetchImpl = opts.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('Network access is unavailable.');
   let token = opts.accessToken || await getSubscriptionAccessToken(CHROME_WEB_STORE_OAUTH_PROVIDER);
+  dispatchState.outcomeUnknown = init.method === 'POST';
   let response = await fetchImpl(url, { ...init, cache: 'no-store', credentials: 'omit', headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
+  dispatchState.outcomeUnknown = false;
   if (response.status === 401 && !opts.accessToken) {
     token = (await refreshSubscription(CHROME_WEB_STORE_OAUTH_PROVIDER)).accessToken;
+    dispatchState.outcomeUnknown = init.method === 'POST';
     response = await fetchImpl(url, { ...init, cache: 'no-store', credentials: 'omit', headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
+    dispatchState.outcomeUnknown = false;
   }
   return response;
 }
@@ -109,13 +113,15 @@ export async function executeChromeWebStoreSkillTool(tool, args = {}, opts = {})
     init = { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ publishType, blockOnWarnings: true, ...(percentage == null ? {} : { deployInfos: [{ deployPercentage: percentage }] }) }) };
   }
   const consequential = init.method === 'POST';
+  const dispatchState = { outcomeUnknown: false };
   try {
-    const response = await authorizedFetch(url, init, opts);
+    const response = await authorizedFetch(url, init, opts, dispatchState);
     const payload = await responsePayload(response);
     if (!response.ok) return { success: false, dispatched: consequential, ...(consequential ? { outcomeUnknown: response.status >= 500 } : { noDispatch: true }), status: response.status, error: responseError(response, payload) };
     return { success: true, dispatched: consequential, ...(tool.name === 'chrome_web_store_status' ? { observed: true } : {}), ...(packageInfo ? { package: { name: packageInfo.name, size: Number(packageInfo.size) || 0, sha256: clean(packageInfo.sha256, 128) } } : {}), result: payload };
   } catch (error) {
-    return { success: false, dispatched: consequential, ...(consequential ? { outcomeUnknown: true } : { noDispatch: true }), error: clean(error?.message || error, 1000) };
+    const dispatched = consequential && dispatchState.outcomeUnknown;
+    return { success: false, dispatched, ...(dispatched ? { outcomeUnknown: true } : { noDispatch: true }), error: clean(error?.message || error, 1000) };
   }
 }
 
