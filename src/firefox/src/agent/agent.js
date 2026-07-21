@@ -396,6 +396,8 @@ export class Agent {
     const relevantForms = Number(pageState.relevantFormCount || 0);
     const liveSignals = Array.isArray(pageState.successMessages) ? pageState.successMessages : [];
     const submit = this._completionSubmitStates.get(tabId);
+    const stateChangingCompletion = this._planExecutionGuards.get(tabId)?.requiresStateChange === true
+      || !!submit;
     const currentDocumentMatchesSubmit = !!(
       submit?.currentUrl
       && this._normalizeUrl(pageUrl || pageState.url || '') === this._normalizeUrl(submit.currentUrl)
@@ -417,7 +419,7 @@ export class Agent {
         warning: `WARNING: A modal/dialog is still open${titles}. Close or complete it and explicitly observe the resulting page before reporting success.`,
       };
     }
-    if (relevantForms > 0 && !verifiedSubmit) {
+    if (stateChangingCompletion && relevantForms > 0 && !verifiedSubmit) {
       return {
         key: `${documentKey}|pending-form|${relevantForms}|${submit?.formValidationFailed ? 'validation' : 'unverified'}`,
         warning: submit?.formValidationFailed
@@ -426,7 +428,8 @@ export class Agent {
       };
     }
     if (
-      /\b(created|added|saved|submitted|posted|published|sent|done|completed|finished)\b/i.test(String(summary || ''))
+      stateChangingCompletion
+      && /\b(created|added|saved|submitted|posted|published|sent|done|completed|finished)\b/i.test(String(summary || ''))
       && /[?&](create|edit|new)\b/i.test(pageUrl || pageState.url || '')
       && liveSignals.length === 0
       && !verifiedSubmit

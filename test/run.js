@@ -30494,12 +30494,27 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
       `${AgentClass.name}: explicit no-dispatch result was treated as a possible submit`);
 
     agent._completionSubmitStates.delete(tabId);
+    agent._planExecutionGuards.set(tabId, { enabled: true, requestKind: 'execute', requiresStateChange: false });
+    assert.equal(
+      agent._completionPageWarning(
+        tabId,
+        'Completed the requested summary.',
+        'success',
+        { ...finishState, visibleFormCount: 1, relevantFormCount: 1 },
+        'https://example.test/article?edit=1',
+      ),
+      null,
+      `${AgentClass.name}: read-only completion was blocked by an unrelated page form or edit route`,
+    );
+
+    agent._planExecutionGuards.set(tabId, { enabled: true, requestKind: 'execute', requiresStateChange: true });
     assert.match(
       agent._completionPageWarning(tabId, 'Submitted.', 'success', { ...finishState, visibleFormCount: 1, relevantFormCount: 1 }, submitUrl)?.warning || '',
       /task-relevant form/i,
       `${AgentClass.name}: unchanged unsubmitted form was accepted`,
     );
 
+    agent._planExecutionGuards.set(tabId, { enabled: true, requestKind: 'execute', requiresStateChange: false });
     agent._completionSubmitStates.set(tabId, {
       currentUrl: submitUrl,
       dispatched: true,
@@ -30538,6 +30553,7 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
       `${AgentClass.name}: validation failure was hidden by a live region`,
     );
 
+    agent._completionSubmitStates.delete(tabId);
     assert.match(
       agent._completionPageWarning(tabId, 'Done.', 'success', {
         ...finishState,
