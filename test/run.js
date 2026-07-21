@@ -17126,6 +17126,16 @@ test('ScheduledJobManager preserves clarification-required terminal runs as need
     assert.equal(restoredJob.status, 'needs_user_input', `${label}: restart must not queue a terminal authorization stop`);
     assert.equal(restoredJob.clarificationRequired, true, `${label}: restart should preserve the terminal clarification marker`);
     assert.equal(restarted.alarms.has(restarted.alarmName(created.jobId)), false, `${label}: restart must not arm an unattended retry`);
+
+    const runNow = await restarted.manager.runNow(created.jobId);
+    assert.equal(runNow.ok, true, `${label}: an explicit Run now should restart a terminal clarification stop`);
+    assert.equal(restarted.jobs()[0].status, 'pending', `${label}: explicit retry should return the job to pending`);
+    assert.equal(restarted.jobs()[0].clarificationRequired, false, `${label}: explicit retry should clear the scheduler terminal marker`);
+    assert.equal(
+      restarted.alarms.get(restarted.alarmName(created.jobId))?.when,
+      now + SchedulerMod.QUEUE_RETRY_MS + 1000,
+      `${label}: explicit retry should arm an immediate alarm`,
+    );
   }
 });
 

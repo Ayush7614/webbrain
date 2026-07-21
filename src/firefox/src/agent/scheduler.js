@@ -832,10 +832,15 @@ export class ScheduledJobManager {
         error: 'Scheduled run is waiting for your answer. Reply to the prompt or cancel the run.',
       };
     }
-    const job = await this._updateJobIf(jobId, (prev) => ['pending', 'queued'].includes(prev.status), () => ({
+    const job = await this._updateJobIf(jobId, (prev) => (
+      ['pending', 'queued'].includes(prev.status)
+      || (prev.status === 'needs_user_input' && prev.clarificationRequired === true)
+    ), () => ({
       status: 'pending',
       nextRunAt: iso(this.now() + 1000),
       queueDeferrals: 0,
+      clarificationRequired: false,
+      pendingClarify: null,
     }));
     if (job) await this._setAlarm(job);
     return { ok: !!job, job: summarizeScheduledJob(job) };
