@@ -21292,6 +21292,8 @@ test('CDP WebMCP recovers tools registered in child frames before enable', async
 test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', async () => {
   const cdp = new CDPClient();
   const commands = [];
+  let oopifUrl = 'https://embed.test/';
+  let includeNestedFrame = true;
   const emit = (event, params, source = { tabId: 58 }) => {
     for (const handler of cdp.eventHandlers.get(58)?.[event] || []) handler(params, source);
   };
@@ -21307,7 +21309,27 @@ test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', as
       });
       return {};
     }
+    if (method === 'Runtime.enable' && sessionId === 'oopif-session') {
+      emit('Runtime.executionContextCreated', {
+        context: { id: 21, auxData: { isDefault: true, frameId: 'oopif-frame' } },
+      }, { tabId: 58, sessionId });
+      emit('Runtime.executionContextCreated', {
+        context: { id: 22, auxData: { isDefault: true, frameId: 'same-process-frame' } },
+      }, { tabId: 58, sessionId });
+      return {};
+    }
     if (method === 'Runtime.enable') return {};
+    if (method === 'Runtime.evaluate' && sessionId === 'oopif-session') {
+      if (params.contextId === 21) {
+        return { result: { value: [{ name: 'child_tool', description: 'child duplicate' }] } };
+      }
+      assert.equal(params.contextId, 22);
+      return {
+        result: {
+          value: [{ name: 'nested_tool', description: 'pre-registered same-process descendant' }],
+        },
+      };
+    }
     if (method === 'Target.setAutoAttach' && !sessionId && params.autoAttach) {
       emit('Target.attachedToTarget', {
         sessionId: 'oopif-session',
@@ -21325,14 +21347,35 @@ test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', as
     if (method === 'Target.setAutoAttach' && sessionId === 'oopif-session') return {};
     if (method === 'Page.enable') return {};
     if (method === 'Page.getFrameTree') {
+      if (sessionId === 'oopif-session') {
+        return {
+          frameTree: {
+            frame: {
+              id: 'oopif-frame',
+              url: oopifUrl,
+              securityOrigin: new URL(oopifUrl).origin,
+            },
+            childFrames: includeNestedFrame ? [{
+              frame: {
+                id: 'same-process-frame',
+                parentId: 'oopif-frame',
+                url: 'https://nested.embed.test/tool-frame',
+                securityOrigin: 'https://nested.embed.test',
+              },
+            }] : [],
+          },
+        };
+      }
       return {
         frameTree: {
           frame: { id: 'main-frame', url: 'https://example.com/' },
-          childFrames: [{ frame: { id: 'oopif-frame', url: 'https://embed.test/' } }],
         },
       };
     }
     if (method === 'WebMCP.invokeTool' && sessionId === 'oopif-session') {
+      if (params.toolName === 'next_child_tool') {
+        return { invocationId: 'detached-invocation' };
+      }
       assert.deepEqual(params, {
         frameId: 'oopif-frame',
         toolName: 'child_tool',
@@ -21349,9 +21392,13 @@ test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', as
   };
 
   const catalog = await cdp.listWebMCPTools(58);
-  assert.equal(catalog.total, 2);
+  assert.equal(catalog.total, 3);
   const child = catalog.tools.find(tool => tool.name === 'child_tool');
   assert.equal(child?.frame_url, 'https://embed.test/');
+  assert.equal(
+    catalog.tools.find(tool => tool.name === 'nested_tool')?.frame_url,
+    'https://nested.embed.test/tool-frame',
+  );
   assert.ok(commands.some(command => (
     command.method === 'WebMCP.enable' && command.sessionId === 'oopif-session'
   )));
@@ -21362,8 +21409,10 @@ test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', as
   assert.equal(invocation.success, true);
   assert.deepEqual(invocation.output, { frame: 'oopif' });
 
+  oopifUrl = 'https://embed.test/next';
+  includeNestedFrame = false;
   emit('Page.frameNavigated', {
-    frame: { id: 'oopif-frame', url: 'https://embed.test/next' },
+    frame: { id: 'oopif-frame', url: oopifUrl },
   }, { tabId: 58, sessionId: 'oopif-session' });
   const afterNavigation = await cdp.listWebMCPTools(58);
   assert.equal(afterNavigation.total, 1);
@@ -21371,14 +21420,25 @@ test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', as
     tools: [{ name: 'next_child_tool', description: 'next child', frameId: 'oopif-frame' }],
   }, { tabId: 58, sessionId: 'oopif-session' });
   const afterNewRegistration = await cdp.listWebMCPTools(58);
+  const nextChild = afterNewRegistration.tools.find(tool => tool.name === 'next_child_tool');
   assert.equal(
-    afterNewRegistration.tools.find(tool => tool.name === 'next_child_tool')?.frame_url,
+    nextChild?.frame_url,
     'https://embed.test/next',
   );
+  const detachedInvocation = cdp.invokeWebMCPTool(58, nextChild.tool_id, {});
+  await new Promise(resolve => setTimeout(resolve, 0));
   emit('Target.detachedFromTarget', { sessionId: 'oopif-session' });
+  const detachedResult = await detachedInvocation;
+  assert.equal(detachedResult.success, false);
+  assert.equal(detachedResult.outcomeUnknown, true);
+  assert.match(detachedResult.error, /frame detached/);
   const afterDetach = await cdp.listWebMCPTools(58);
   assert.equal(afterDetach.total, 1);
   assert.equal(afterDetach.tools[0].name, 'parent_tool');
+  emit('Page.frameNavigated', {
+    frame: { id: 'next-main-frame', url: 'https://example.com/next' },
+  });
+  assert.equal((await cdp.listWebMCPTools(58)).total, 0);
 });
 
 test('CDP WebMCP bounds hostile catalogs and cleans up after unsupported-domain errors', async () => {

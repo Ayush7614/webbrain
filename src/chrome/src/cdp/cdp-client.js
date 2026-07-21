@@ -261,6 +261,7 @@ export class CDPClient {
   }
 
   _storeWebMCPTools(state, tools, sessionId = '') {
+    const owningSessionId = String(sessionId || '');
     for (const rawTool of Array.isArray(tools) ? tools : []) {
       const name = String(rawTool?.name || '').trim().slice(0, 300);
       const frameId = String(rawTool?.frameId || '').trim().slice(0, 300);
@@ -292,8 +293,9 @@ export class CDPClient {
           : { type: 'object', properties: {}, required: [] },
         annotations,
         frameId,
-        sessionId: String(sessionId || ''),
+        sessionId: owningSessionId,
       });
+      state.childSessions.get(owningSessionId)?.frameIds.add(frameId);
     }
   }
 
@@ -320,6 +322,33 @@ export class CDPClient {
     return removed;
   }
 
+  _removeWebMCPSessionTools(state, sessionId = '') {
+    const targetSessionId = String(sessionId || '');
+    let removed = 0;
+    for (const [toolId, tool] of state.toolsById) {
+      if (tool.sessionId !== targetSessionId) continue;
+      state.toolsById.delete(toolId);
+      state.idsByKey.delete(this._webMCPToolKey(tool.frameId, tool.name));
+      removed++;
+    }
+    return removed;
+  }
+
+  _finishWebMCPSessionInvocations(state, sessionId, reason) {
+    const targetSessionId = String(sessionId || '');
+    for (const pending of [...state.pendingInvocations.values()]) {
+      if (pending.sessionId !== targetSessionId) continue;
+      try {
+        pending.finish({
+          success: false,
+          dispatched: true,
+          outcomeUnknown: true,
+          error: reason,
+        });
+      } catch {}
+    }
+  }
+
   _handleWebMCPResponse(state, params = {}, sessionId = '') {
     const invocationId = String(params.invocationId || '');
     if (!invocationId) return;
@@ -336,9 +365,11 @@ export class CDPClient {
     }
   }
 
-  async _discoverExistingWebMCPFrameTools(tabId, state) {
+  async _discoverExistingWebMCPFrameTools(tabId, state, sessionId = '') {
+    const owningSessionId = String(sessionId || '');
     const contextsByFrame = new Map();
-    const onContextCreated = (params = {}) => {
+    const onContextCreated = (params = {}, source = {}) => {
+      if (String(source.sessionId || '') !== owningSessionId) return;
       const context = params.context;
       const frameId = String(context?.auxData?.frameId || '');
       if (!context?.auxData?.isDefault || !frameId || context.id == null) return;
@@ -346,7 +377,7 @@ export class CDPClient {
     };
     this.on(tabId, 'Runtime.executionContextCreated', onContextCreated);
     try {
-      await this.sendCommand(tabId, 'Runtime.enable');
+      await this.sendCommand(tabId, 'Runtime.enable', {}, owningSessionId);
       // Runtime.enable reports existing contexts asynchronously. Keep this
       // bounded: live registrations are still delivered by WebMCP.toolsAdded.
       await new Promise(resolve => setTimeout(resolve, WEBMCP_DISCOVERY_SETTLE_MS));
@@ -364,7 +395,7 @@ export class CDPClient {
           awaitPromise: true,
           returnByValue: true,
           timeout: WEBMCP_CONTEXT_DISCOVERY_TIMEOUT_MS,
-        });
+        }, owningSessionId);
         if (evaluated?.exceptionDetails) return [];
         return (Array.isArray(evaluated?.result?.value) ? evaluated.result.value : [])
           .map(tool => ({ ...tool, frameId }));
@@ -374,7 +405,7 @@ export class CDPClient {
     let count = 0;
     for (const result of discovered) {
       if (result.status !== 'fulfilled') continue;
-      this._storeWebMCPTools(state, result.value);
+      this._storeWebMCPTools(state, result.value, owningSessionId);
       count += result.value.length;
     }
     return count;
@@ -404,6 +435,15 @@ export class CDPClient {
           filter: WEBMCP_IFRAME_TARGET_FILTER,
         }, sessionId),
       ]);
+      if (
+        state.closed
+        || this.webMcpSessions.get(tabId) !== state
+        || !state.childSessions.has(sessionId)
+      ) return;
+      // WebMCP.enable currently enumerates only the root document of each
+      // target. Recover pre-registered tools from same-process descendants of
+      // this OOPIF target just as we do for the top-level target.
+      await this._discoverExistingWebMCPFrameTools(tabId, state, sessionId);
     })().finally(() => state.childEnablePromises.delete(enabling));
     state.childEnablePromises.add(enabling);
   }
@@ -449,12 +489,6 @@ export class CDPClient {
     };
     register('WebMCP.toolsAdded', (params, source) => {
       this._storeWebMCPTools(state, params?.tools, source?.sessionId);
-      const child = state.childSessions.get(String(source?.sessionId || ''));
-      if (!child) return;
-      for (const tool of Array.isArray(params?.tools) ? params.tools : []) {
-        const frameId = String(tool?.frameId || '');
-        if (frameId) child.frameIds.add(frameId);
-      }
     });
     register('WebMCP.toolsRemoved', params => this._removeWebMCPTools(state, params?.tools));
     register('WebMCP.toolResponded', (params, source) => (
@@ -465,7 +499,12 @@ export class CDPClient {
       const sessionId = String(params?.sessionId || '');
       const child = state.childSessions.get(sessionId);
       if (!child) return;
-      for (const frameId of child.frameIds) this._removeWebMCPFrameTools(state, frameId);
+      this._removeWebMCPSessionTools(state, sessionId);
+      this._finishWebMCPSessionInvocations(
+        state,
+        sessionId,
+        'The WebMCP frame detached before Chrome reported the invocation outcome.',
+      );
       state.childSessions.delete(sessionId);
     });
     register('Target.targetInfoChanged', params => {
@@ -478,12 +517,32 @@ export class CDPClient {
       const frame = params?.frame || {};
       const frameId = String(frame.id || '');
       if (!frameId) return;
+      const sessionId = String(source?.sessionId || '');
+      const child = state.childSessions.get(sessionId);
+      if (!frame.parentId) {
+        const affectedSessionIds = sessionId
+          ? [sessionId]
+          : ['', ...state.childSessions.keys()];
+        for (const affectedSessionId of affectedSessionIds) {
+          this._removeWebMCPSessionTools(state, affectedSessionId);
+          this._finishWebMCPSessionInvocations(
+            state,
+            affectedSessionId,
+            'The WebMCP document navigated before Chrome reported the invocation outcome.',
+          );
+        }
+        if (!sessionId) {
+          for (const nestedChild of state.childSessions.values()) nestedChild.frameIds.clear();
+        }
+        if (child) {
+          child.frameIds.clear();
+          child.frameIds.add(frameId);
+          child.url = String(frame.url || child.url || '');
+        }
+        return;
+      }
       this._removeWebMCPFrameTools(state, frameId);
-      const child = state.childSessions.get(String(source?.sessionId || ''));
-      if (!child) return;
-      child.frameIds.clear();
-      child.frameIds.add(frameId);
-      child.url = String(frame.url || child.url || '');
+      child?.frameIds.delete(frameId);
     });
     register('Page.frameDetached', (params, source) => {
       const frameId = String(params?.frameId || '');
@@ -537,9 +596,14 @@ export class CDPClient {
     }
     if (state.enabled && this.sessions.has(tabId)) {
       await Promise.allSettled(
-        [...state.childSessions].map(([sessionId]) => (
-          this.sendCommand(tabId, 'WebMCP.disable', {}, sessionId)
-        )),
+        [...state.childSessions].flatMap(([sessionId]) => [
+          this.sendCommand(tabId, 'Target.setAutoAttach', {
+            autoAttach: false,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+          }, sessionId),
+          this.sendCommand(tabId, 'WebMCP.disable', {}, sessionId),
+        ]),
       );
       await this.sendCommand(tabId, 'Target.setAutoAttach', {
         autoAttach: false,
@@ -560,44 +624,55 @@ export class CDPClient {
     return tabIds.length;
   }
 
-  async _webMCPFrameUrls(tabId) {
-    const frames = await this.getAllFrames(tabId).catch(() => []);
-    const frameUrls = new Map(frames.map(frame => {
-      const frameId = String(frame.id || '');
-      const rawUrl = String(frame.url || '');
-      const securityOrigin = String(frame.securityOrigin || '');
-      // Prefer Chrome's effective security origin. Sandboxed/opaque frames may
-      // retain an https-looking document URL but must not borrow that host's
-      // grant. Older test doubles omit securityOrigin, so a valid network URL
-      // remains a compatible fallback.
-      if (securityOrigin) {
+  _webMCPSafeFrameUrl(frame = {}) {
+    const rawUrl = String(frame.url || '');
+    const securityOrigin = String(frame.securityOrigin || '');
+    // Prefer Chrome's effective security origin. Sandboxed/opaque frames may
+    // retain an https-looking document URL but must not borrow that host's
+    // grant. Older test doubles omit securityOrigin, so a valid network URL
+    // remains a compatible fallback.
+    if (securityOrigin) {
+      try {
+        const origin = new URL(securityOrigin);
+        if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return '';
         try {
-          const origin = new URL(securityOrigin);
-          if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return [frameId, ''];
-          try {
-            const url = new URL(rawUrl);
-            if (url.origin === origin.origin) return [frameId, url.href];
-          } catch {}
-          return [frameId, origin.origin];
-        } catch {
-          return [frameId, ''];
-        }
-      }
-      try {
-        const url = new URL(rawUrl);
-        return [frameId, url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''];
+          const url = new URL(rawUrl);
+          if (url.origin === origin.origin) return url.href;
+        } catch {}
+        return origin.origin;
       } catch {
-        return [frameId, ''];
+        return '';
       }
-    }));
+    }
+    try {
+      const url = new URL(rawUrl);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  async _webMCPFrameUrls(tabId) {
     const state = this.webMcpSessions.get(tabId);
-    for (const child of state?.childSessions?.values() || []) {
-      let safeUrl = '';
-      try {
-        const url = new URL(child.url);
-        if (url.protocol === 'http:' || url.protocol === 'https:') safeUrl = url.href;
-      } catch {}
-      for (const frameId of child.frameIds) frameUrls.set(frameId, safeUrl);
+    const childSessions = [...(state?.childSessions?.values() || [])];
+    const frameResults = await Promise.allSettled([
+      this.getAllFrames(tabId),
+      ...childSessions.map(child => this.getAllFrames(tabId, child.sessionId)),
+    ]);
+    const frameUrls = new Map();
+    for (const result of frameResults) {
+      if (result.status !== 'fulfilled') continue;
+      for (const frame of result.value) {
+        const frameId = String(frame.id || '');
+        if (frameId) frameUrls.set(frameId, this._webMCPSafeFrameUrl(frame));
+      }
+    }
+    // TargetInfo is a trusted fallback for the OOPIF root only. Descendant
+    // frame IDs must come from Page.getFrameTree so a different-origin child
+    // can never inherit its target root's permission host.
+    for (const child of childSessions) {
+      if (!child.targetId || frameUrls.has(child.targetId)) continue;
+      frameUrls.set(child.targetId, this._webMCPSafeFrameUrl({ url: child.url }));
     }
     return frameUrls;
   }
@@ -1401,9 +1476,9 @@ export class CDPClient {
   /**
    * Get all frames including cross-origin iframes.
    */
-  async getAllFrames(tabId) {
-    await this.sendCommand(tabId, 'Page.enable');
-    const result = await this.sendCommand(tabId, 'Page.getFrameTree');
+  async getAllFrames(tabId, sessionId = '') {
+    await this.sendCommand(tabId, 'Page.enable', {}, sessionId);
+    const result = await this.sendCommand(tabId, 'Page.getFrameTree', {}, sessionId);
     
     const frames = [];
     const collectFrames = (frameTree) => {
