@@ -4,6 +4,58 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [25.4.0] - 2026-07-21
+
+### Added
+- Added round-trip automatic progress policy to improve completion reliability across the full submit → completion → evidence loop.
+
+### Changed
+- Updated OpenAI model invocation to use `gpt-5.4-nano-2026-03-17` with `max_completion_tokens`.
+- Preserved reviewed submit requirements across continuations to keep validation consistent when a run resumes.
+- Hardened submit completion evidence requirements (including final-form completion evidence) to reduce false positives.
+- Improved submit-state reconciliation by carrying submit verification across continuations and reconciling from screenshot URLs.
+- Updated Chrome and Firefox builds to reflect the above completion/submit policy changes for parity.
+
+### Fixed
+- Prevented completion guard loops and stopped stale calls after completion-page blocks.
+- Tightened completion success evidence to avoid accepting incomplete or uncertain outcomes.
+- Improved handling of validation failures so they remain blocking for completion.
+- Fixed CI/release robustness issues related to changelog prompt parsing and release-context substitution.
+
+### Tests
+- Added/expanded CI grading and E2E coverage to diagnose Gnippets HTTP failures and validate cloud E2E control requests.
+- Added CI robustness improvements for unattended runs (disabling action prompts) and tightened grading inputs (e.g., accepting camelCase final URLs in CI grading).
+
+## [25.3.0] - 2026-07-21
+
+### Added
+- Added initial release note scaffolding for WebBrain.
+
+### Changed
+- Updated OpenAI model usage to **gpt-5.4-nano-2026-03-17** and switched to `max_completion_tokens` for completion limits.
+- Switched WebBrain Cloud provider integration from **GitHub Models** to direct **OpenAI API** calls (using `OPENAI_SECRET` via curl), improving consistency across providers.
+- Updated Chrome and Firefox builds to reflect the provider/model changes and associated configuration/UI updates.
+
+### Fixed
+- Resolved model-parameter compatibility issues by ensuring `max_completion_tokens` is used where required (avoids deprecated `max_tokens` errors).
+- Corrected prior provider model ID handling during the transition away from GitHub Models.
+- Improved release/changelog generation robustness by avoiding YAML parsing issues in the release prompt pipeline.
+
+### Tests
+- Added/expanded CI grading and E2E infrastructure coverage to better diagnose HTTP failures and validate cloud E2E control requests.
+- Added CI robustness improvements for unattended runs (disabling action prompts) and tightened grading inputs (e.g., accepting camelCase final URLs).
+
+## [25.2.0] - 2026-07-21
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Tests
+- Comprehensive test suite established for validating core functionality and browser compatibility.
+
 ## [25.0.0] - 2026-07-19
 
 ### Added

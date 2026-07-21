@@ -950,6 +950,30 @@
       || String(el?.innerText || '').trim().slice(0, 160);
   }
 
+  function _axCheckboxIdentity(el, refId = '') {
+    try {
+      const id = String(el?.id || '').trim();
+      if (id) return `id:${id}`;
+      const name = String(el?.getAttribute?.('name') || '').trim();
+      const value = String(el?.getAttribute?.('value') || '').trim();
+      if (name) return `name:${name}|value:${value}`;
+    } catch {}
+    return `ref:${String(refId || '')}`;
+  }
+
+  function _axStableControlSelector(el) {
+    try {
+      const id = String(el?.id || '').trim();
+      if (id) {
+        const escaped = globalThis.CSS?.escape
+          ? CSS.escape(id)
+          : id.replace(/["\\]/g, '\\$&');
+        return `#${escaped}`;
+      }
+    } catch {}
+    return '';
+  }
+
   function _axDocumentToken() {
     if (!window.__wbAxDocumentToken) {
       window.__wbAxDocumentToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -1515,6 +1539,7 @@
           return {
             success: false,
             dispatched: false,
+            failureScope: `ambiguous-click:${String(params.text || '').trim().toLowerCase()}`,
             error: `Ambiguous text match for "${params.text}" (mode=${usedMode}, matches=${matches.length})${_scopeNote}. ${candidates.length} candidates returned with cx/cy (precomputed click center, in CSS pixels) and ancestor context. Pick one and call click({x: candidate.cx, y: candidate.cy}) — no arithmetic needed. Use the ancestor field to disambiguate (e.g. an alertdialog's Cancel vs a form's Cancel sit in different containers). Do NOT retry click({text: "${params.text}"}) — it will fail the same way.`,
             candidates,
           };
@@ -2657,6 +2682,71 @@
     return typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
   }
 
+  function _fieldMeta(el) {
+    try {
+      const tag = el.tagName ? el.tagName.toLowerCase() : '';
+      const fieldType = el.tagName === 'INPUT' ? (el.type || 'text').toLowerCase() : tag;
+      const elId = el.id || null;
+      let labelText = null;
+      try {
+        if (elId) {
+          const escapedId = window.CSS && CSS.escape
+            ? CSS.escape(elId)
+            : elId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const label = document.querySelector(`label[for="${escapedId}"]`);
+          if (label) labelText = (label.textContent || '').trim().slice(0, 120);
+        }
+        if (!labelText && el.closest) {
+          const wrappingLabel = el.closest('label');
+          if (wrappingLabel) labelText = (wrappingLabel.textContent || '').trim().slice(0, 120);
+        }
+      } catch {}
+      return {
+        tag,
+        type: fieldType,
+        name: el.getAttribute ? el.getAttribute('name') : null,
+        id: elId,
+        autocomplete: el.getAttribute ? el.getAttribute('autocomplete') : null,
+        ariaLabel: el.getAttribute ? el.getAttribute('aria-label') : null,
+        placeholder: el.getAttribute ? el.getAttribute('placeholder') : null,
+        labelText,
+      };
+    } catch { return null; }
+  }
+
+  async function _retryFieldWithExecCommand(el, expected) {
+    try {
+      el.focus({ preventScroll: true });
+      if (el.isContentEditable) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } else if (typeof el.select === 'function') {
+        el.select();
+      } else if (typeof el.setSelectionRange === 'function') {
+        el.setSelectionRange(0, String(el.value || '').length);
+      }
+      const inserted = document.execCommand('insertText', false, expected);
+      if (!inserted) {
+        if (el.isContentEditable) {
+          el.textContent = expected;
+        } else {
+          const proto = el.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          if (setter) setter.call(el, expected); else el.value = expected;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, SET_FIELD_VERIFY_DELAY_MS));
+      return true;
+    } catch { return false; }
+  }
+
   // --- Message handler ---
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.target !== 'content') return;
@@ -2764,6 +2854,33 @@
           return { error: 'Failed to build accessibility tree: ' + (e && e.message || String(e)) };
         }
       },
+      'resolve_form_field_refs': () => {
+        try {
+          if (typeof window.__wb_ax_ref !== 'function') {
+            return { success: false, error: 'accessibility-tree.js not injected' };
+          }
+          const selector = String(msg.params?.selector || '');
+          const focused = document.activeElement;
+          const form = selector
+            ? document.querySelector(selector)
+            : focused?.closest('form') || document.querySelector('form');
+          if (!form) return { success: false, error: 'No form found on page' };
+          const refs = [];
+          for (const el of form.querySelectorAll('input, select, textarea')) {
+            const type = String(el.type || el.tagName || '').toLowerCase();
+            if (type === 'hidden' || type === 'submit') continue;
+            refs.push(window.__wb_ax_ref(el));
+          }
+          return {
+            success: true,
+            refs,
+            documentToken: _axDocumentToken(),
+            refScopeUrl: location.href,
+          };
+        } catch (error) {
+          return { success: false, error: error?.message || String(error) };
+        }
+      },
       'click_ax': () => {
         let dispatched = false;
         const failure = (error, extra = {}) => ({
@@ -2808,6 +2925,9 @@
             return failure(`ref_id ${ref_id} not found.${formatNote} The element may have been removed or the page replaced.${hint} Re-read the accessibility tree to get fresh ids — do NOT guess ref numbers or invent placeholders.`, { suggestions });
           }
           const tag = el.tagName ? el.tagName.toLowerCase() : '';
+          const inputType = tag === 'input' ? String(el.type || '').toLowerCase() : '';
+          const nativeCheckable = inputType === 'checkbox' || inputType === 'radio';
+          const checkedBefore = nativeCheckable ? !!el.checked : null;
           const targetRole = String(el.getAttribute?.('role') || '').toLowerCase();
           const canonicalTargetName = _axCanonicalName(el);
           const targetName = canonicalTargetName || _axAccessibleName(el);
@@ -2934,6 +3054,7 @@
             isTextEntry = !nonText.has(inputType);
           } else if (el.isContentEditable) isTextEntry = true;
           const buildResponse = () => {
+            const checkedAfter = nativeCheckable ? !!el.checked : null;
             const resp = {
               success: true,
               method: 'click_ax',
@@ -2943,6 +3064,32 @@
               ...(targetContext ? { targetContext } : {}),
               ...(filePickerGuard.guardId ? { _filePickerGuardId: filePickerGuard.guardId } : {}),
             };
+            if (nativeCheckable) {
+              const desiredChecked = inputType === 'radio' ? true : !checkedBefore;
+              const checkboxIdentity = _axCheckboxIdentity(el, ref_id);
+              resp.checkedBefore = checkedBefore;
+              resp.checkedAfter = checkedAfter;
+              resp.checkedChanged = checkedBefore !== checkedAfter;
+              resp.desiredChecked = desiredChecked;
+              resp.checkboxIdentity = checkboxIdentity;
+              resp.checkboxState = {
+                identity: checkboxIdentity,
+                desiredChecked,
+                actualChecked: checkedAfter,
+              };
+              const stateMatchesDesired = checkedAfter === desiredChecked;
+              if (stateMatchesDesired) {
+                resp.verified = true;
+                if (resp.checkedChanged) resp.observedEffects = ['checked_state'];
+              } else {
+                resp.success = false;
+                resp.noProgress = true;
+                resp.verified = false;
+                resp.error = inputType === 'checkbox'
+                  ? `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after click_ax. Do not toggle it again; use set_checked({ref_id: "${ref_id}", checked: ${desiredChecked}}) so the requested state is applied idempotently and verified.`
+                  : 'Radio remained unselected after click_ax. Re-read the accessibility tree and retry the intended radio option with a fresh ref_id.';
+              }
+            }
             try {
               if (targetName) resp.name = targetName;
             } catch {}
@@ -2997,7 +3144,10 @@
             }
             return resp;
           };
-          if (anchorMeta?.sameDocumentAnchor) {
+          const responseDelayMs = nativeCheckable
+            ? SET_FIELD_VERIFY_DELAY_MS
+            : (anchorMeta?.sameDocumentAnchor ? 120 : 0);
+          if (responseDelayMs > 0) {
             return new Promise((resolve) => {
               setTimeout(() => {
                 try {
@@ -3005,7 +3155,7 @@
                 } catch (e) {
                   resolve(failure(e && e.message || String(e)));
                 }
-              }, 120);
+              }, responseDelayMs);
             });
           }
           return buildResponse();
@@ -3013,7 +3163,103 @@
           return failure(e && e.message || String(e));
         }
       },
-      'type_ax': () => {
+      'set_checked': async () => {
+        let dispatched = false;
+        const failure = (error, extra = {}) => ({
+          success: false,
+          error,
+          ...extra,
+          ...(dispatched
+            ? { dispatched: true }
+            : { dispatched: false, noDispatch: true }),
+        });
+        try {
+          const { ref_id, checked, expectedDocumentToken, expectedPageUrl } = msg.params || {};
+          if (typeof ref_id !== 'string') return failure('ref_id (string, e.g. "ref_42") is required');
+          if (typeof checked !== 'boolean') return failure('checked (boolean) is required');
+          if (typeof window.__wb_ax_lookup !== 'function') return failure('accessibility-tree.js not injected');
+          const documentToken = _axDocumentToken();
+          const documentChanged = !!expectedDocumentToken && expectedDocumentToken !== documentToken;
+          const routeChanged = !!expectedPageUrl && expectedPageUrl !== location.href;
+          if (documentChanged || routeChanged) {
+            return failure(
+              `ref_id ${ref_id} belongs to a previous page or route. Re-read the accessibility tree and choose a fresh ref_id before changing the checkbox.`,
+              { staleRef: true, documentChanged, routeChanged, documentToken, refScopeUrl: location.href },
+            );
+          }
+          const el = window.__wb_ax_lookup(ref_id);
+          if (!el) return failure(`ref_id ${ref_id} not found. Re-read the accessibility tree to get a current checkbox ref_id.`);
+          const tag = el.tagName ? el.tagName.toLowerCase() : '';
+          const inputType = tag === 'input' ? String(el.type || '').toLowerCase() : '';
+          if (inputType !== 'checkbox') {
+            return failure(`set_checked only supports native input[type="checkbox"] controls; ${ref_id} resolved to ${tag || 'unknown'}${inputType ? `[type="${inputType}"]` : ''}.`);
+          }
+          try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
+          try { el.focus({ preventScroll: true }); } catch {}
+          const rect = el.getBoundingClientRect();
+          if (!el.isConnected || rect.width < 1 || rect.height < 1) {
+            return failure(`ref_id ${ref_id} is stale or not visibly rendered. Re-read the accessibility tree and retry.`);
+          }
+          const checkedBefore = !!el.checked;
+          const checkboxIdentity = _axCheckboxIdentity(el, ref_id);
+          const base = {
+            method: 'set_checked',
+            ref_id,
+            tag,
+            type: inputType,
+            name: _axAccessibleName(el),
+            checkboxIdentity,
+            desiredChecked: checked,
+            checkedBefore,
+            checkedAfter: checkedBefore,
+            changed: false,
+            verified: checkedBefore === checked,
+            rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+            selector: _axStableControlSelector(el),
+            checkboxState: {
+              identity: checkboxIdentity,
+              desiredChecked: checked,
+              actualChecked: checkedBefore,
+            },
+          };
+          if (checkedBefore === checked) {
+            return {
+              success: true,
+              dispatched: false,
+              noDispatch: true,
+              idempotent: true,
+              trusted: false,
+              ...base,
+            };
+          }
+          dispatched = true;
+          el.click();
+          await new Promise(resolve => setTimeout(resolve, SET_FIELD_VERIFY_DELAY_MS));
+          const checkedAfter = !!el.checked;
+          const success = checkedAfter === checked;
+          return {
+            ...base,
+            success,
+            dispatched: true,
+            trusted: false,
+            verified: success,
+            checkedAfter,
+            changed: checkedBefore !== checkedAfter,
+            checkboxState: {
+              identity: checkboxIdentity,
+              desiredChecked: checked,
+              actualChecked: checkedAfter,
+            },
+            ...(success ? {} : {
+              noProgress: true,
+              error: `Checkbox remained ${checkedAfter ? 'checked' : 'unchecked'} after one synthetic click. Firefox cannot synthesize trusted pointer input for page content.`,
+            }),
+          };
+        } catch (e) {
+          return failure(e && e.message || String(e));
+        }
+      },
+      'type_ax': async () => {
         let dispatched = false;
         const failure = (error, extra = {}) => ({
           success: false,
@@ -3050,8 +3296,13 @@
               return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
             } catch { return null; }
           })();
+          const fieldMeta = _fieldMeta(el);
+          let previous = '';
+          let method = '';
+          let selectExpected = null;
           if (el.isContentEditable) {
             dispatched = true;
+            previous = _editableTextValue(el);
             if (clear) {
               try {
                 const sel = window.getSelection();
@@ -3063,12 +3314,11 @@
               } catch {}
             }
             try { document.execCommand('insertText', false, text); } catch {
-              el.textContent = (clear ? '' : (el.textContent || '')) + text;
+              el.textContent = (clear ? '' : previous) + text;
               el.dispatchEvent(new Event('input', { bubbles: true }));
             }
-            return { success: true, method: 'type_ax_contenteditable', ref_id, rect: typeRect };
-          }
-          if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
+            method = 'type_ax_contenteditable';
+          } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
             if (el.tagName === 'INPUT') {
               const inputType = (el.type || 'text').toLowerCase();
               const nonTypeable = new Set(['checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image', 'color', 'range', 'hidden']);
@@ -3095,22 +3345,71 @@
               if (selSetter) selSetter.call(el, match.value); else el.value = match.value;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-              return { success: true, method: 'type_ax_select', ref_id, value: el.value, rect: typeRect };
+              selectExpected = match.value;
+              method = 'type_ax_select';
+            } else {
+              dispatched = true;
+              previous = el.value || '';
+              if (clear) el.value = '';
+              const proto = el.tagName === 'TEXTAREA'
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+              const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+              const setter = descriptor && descriptor.set;
+              const newVal = (clear ? '' : previous) + text;
+              if (setter) setter.call(el, newVal); else el.value = newVal;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              method = 'type_ax_input';
             }
-            dispatched = true;
-            if (clear) el.value = '';
-            const proto = el.tagName === 'TEXTAREA'
-              ? window.HTMLTextAreaElement.prototype
-              : window.HTMLInputElement.prototype;
-            const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-            const setter = descriptor && descriptor.set;
-            const newVal = (clear ? '' : (el.value || '')) + text;
-            if (setter) setter.call(el, newVal); else el.value = newVal;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return { success: true, method: 'type_ax_input', ref_id, rect: typeRect };
+          } else {
+            return failure(`ref_id ${ref_id} is not a typeable element (tag=${el.tagName}). Use click_ax then type_text.`);
           }
-          return failure(`ref_id ${ref_id} is not a typeable element (tag=${el.tagName}). Use click_ax then type_text.`);
+
+          await new Promise(resolve => setTimeout(resolve, SET_FIELD_VERIFY_DELAY_MS));
+          if (!el.isConnected) {
+            return failure(
+              `ref_id ${ref_id} was replaced while the value was being typed. Re-read the accessibility tree and retry with the current field ref_id.`,
+              { ref_id, verified: false, recoveryRequired: 'fresh_tree', failureScope: `field-value:${ref_id}`, retryable: false, fieldMeta },
+            );
+          }
+          let actual = el.isContentEditable ? _editableTextValue(el) : (el.value || '');
+          let verified = selectExpected !== null
+            ? actual === selectExpected
+            : _setFieldValueMatches(actual, previous, text, !!clear, el.isContentEditable);
+          let fallbackAttempted = false;
+          if (!verified && selectExpected === null) {
+            fallbackAttempted = await _retryFieldWithExecCommand(el, clear ? text : previous + text);
+            actual = el.isContentEditable ? _editableTextValue(el) : (el.value || '');
+            verified = _setFieldValueMatches(actual, previous, text, !!clear, el.isContentEditable);
+          }
+          if (!verified) {
+            return failure(
+              'The field value did not exactly match the requested text after the page settled. Re-read the field and retry with a fresh ref_id.',
+              {
+                method,
+                ref_id,
+                rect: typeRect,
+                verified: false,
+                actual: actual.slice(0, 200),
+                fieldMeta,
+                fallbackAttempted,
+                recoveryRequired: 'fresh_tree',
+                failureScope: `field-value:${ref_id}`,
+                retryable: false,
+              },
+            );
+          }
+          return {
+            success: true,
+            verified: true,
+            method: fallbackAttempted ? 'type_ax_execcommand_fallback' : method,
+            ref_id,
+            rect: typeRect,
+            ...(selectExpected !== null ? { value: actual } : {}),
+            fieldMeta,
+            fallbackAttempted,
+          };
         } catch (e) {
           return failure(e && e.message || String(e));
         }
@@ -3201,44 +3500,25 @@
           if (!el.isConnected) {
             return failure(
               `ref_id ${ref_id} was replaced while the value was being set. Re-read the accessibility tree and retry with the current field ref_id.`,
-              { ref_id },
+              {
+                ref_id,
+                verified: false,
+                recoveryRequired: 'fresh_tree',
+                failureScope: `field-value:${ref_id}`,
+                retryable: false,
+              },
             );
           }
-          const actual = el.isContentEditable ? _editableTextValue(el) : (el.value || '');
-          const verified = _setFieldValueMatches(actual, prevValue, text, clear, el.isContentEditable);
-
-          // Collect field attributes for credential-field detection. The
-          // detector itself lives in src/agent/credential-fields.js (pure
-          // ESM, runs background-side) so the regex has one home and is
-          // node-testable. We just ship the facts.
-          const fieldMeta = (() => {
-            try {
-              const tag = el.tagName ? el.tagName.toLowerCase() : '';
-              const fieldType = el.tagName === 'INPUT' ? (el.type || 'text').toLowerCase() : tag;
-              const elId = el.id || null;
-              let labelText = null;
-              try {
-                if (elId) {
-                  const lbl = document.querySelector('label[for="' + (window.CSS && CSS.escape ? CSS.escape(elId) : elId.replace(/"/g, '\\"')) + '"]');
-                  if (lbl) labelText = (lbl.textContent || '').trim().slice(0, 120);
-                }
-                if (!labelText && el.closest) {
-                  const wrap = el.closest('label');
-                  if (wrap) labelText = (wrap.textContent || '').trim().slice(0, 120);
-                }
-              } catch {}
-              return {
-                tag,
-                type: fieldType,
-                name: el.getAttribute ? el.getAttribute('name') : null,
-                id: elId,
-                autocomplete: el.getAttribute ? el.getAttribute('autocomplete') : null,
-                ariaLabel: el.getAttribute ? el.getAttribute('aria-label') : null,
-                placeholder: el.getAttribute ? el.getAttribute('placeholder') : null,
-                labelText,
-              };
-            } catch { return null; }
-          })();
+          const fieldMeta = _fieldMeta(el);
+          let actual = el.isContentEditable ? _editableTextValue(el) : (el.value || '');
+          let verified = _setFieldValueMatches(actual, prevValue, text, clear, el.isContentEditable);
+          let fallbackAttempted = false;
+          if (!verified) {
+            fallbackAttempted = true;
+            await _retryFieldWithExecCommand(el, (clear ? '' : prevValue) + text);
+            actual = el.isContentEditable ? _editableTextValue(el) : (el.value || '');
+            verified = _setFieldValueMatches(actual, prevValue, text, clear, el.isContentEditable);
+          }
 
           if (submit && verified) {
             try {
@@ -3287,6 +3567,10 @@
                 verified: false,
                 actual: actual.slice(0, 200),
                 fieldMeta,
+                fallbackAttempted,
+                recoveryRequired: 'fresh_tree',
+                failureScope: `field-value:${ref_id}`,
+                retryable: false,
               },
             );
           }
@@ -3297,6 +3581,7 @@
             rect,
             verified: true,
             fieldMeta,
+            fallbackAttempted,
           };
         } catch (e) {
           return failure(e && e.message || String(e));
