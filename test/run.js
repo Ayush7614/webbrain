@@ -206,6 +206,12 @@ const { tracesToMarkdown } = await import(
 const { tracesToMarkdown: tracesToMarkdownFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/trace-export.js').replace(/\\/g, '/')
 );
+const SavedWorkflowsCh = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/workflows.js').replace(/\\/g, '/')
+);
+const SavedWorkflowsFx = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/workflows.js').replace(/\\/g, '/')
+);
 
 // config-transfer.js is the pure schema/allowlist boundary used by the
 // /export --config and /import slash-command handlers.
@@ -43566,6 +43572,124 @@ test('profile sync reset replaces atomically without deleting the old vault firs
   assert.deepEqual(methods, ['PUT']);
   assert.equal(manager.revision, 7);
   assert.equal(manager.envelope.vaultId, 'old-vault');
+});
+
+test('saved workflow compiler removes historical refs and parameterizes every typed value', () => {
+  const run = {
+    runId: 'run_1',
+    status: 'done',
+    tabUrl: 'https://example.com/accounts/12345?token=do-not-store#secret',
+    webbrainVersion: '25.4.2',
+  };
+  const events = [
+    {
+      seq: 1,
+      kind: 'tool',
+      data: {
+        name: 'get_accessibility_tree',
+        args: { filter: 'visible' },
+        result: { pageContent: 'form "Login" [ref_1]\n textbox "Password" [ref_2] type="password" placeholder="Password"' },
+      },
+    },
+    {
+      seq: 2,
+      kind: 'tool',
+      data: {
+        name: 'set_field',
+        args: { ref_id: 'ref_2', text: 'correct horse battery staple', clear: true, submit: false },
+        result: { success: true, verified: true, fieldMeta: { type: 'password', name: 'password', labelText: 'Password' } },
+      },
+    },
+  ];
+  for (const module of [SavedWorkflowsCh, SavedWorkflowsFx]) {
+    const result = module.compileWorkflowFromTrace(run, events, { name: 'Sign in', now: 1000 });
+    assert.equal(result.reason, '');
+    assert.equal(result.workflow.start.origin, 'https://example.com');
+    assert.equal(result.workflow.start.pathFamily, '/accounts/:id');
+    assert.equal(result.workflow.parameters.length, 1);
+    assert.equal(result.workflow.parameters[0].sensitive, true);
+    assert.deepEqual(result.workflow.steps[0].args.text, { [module.WORKFLOW_PARAM_REF_KEY]: 'password' });
+    const serialized = JSON.stringify(result.workflow);
+    assert.doesNotMatch(serialized, /correct horse|ref_2|do-not-store|#secret/);
+  }
+});
+
+test('saved workflow compiler skips unsafe coordinates, failed calls, and unsupported tools', () => {
+  const run = { runId: 'run_2', status: 'done', tabUrl: 'https://example.com/dashboard' };
+  const events = [
+    { seq: 1, kind: 'tool', data: { name: 'click', args: { x: 10, y: 20 }, result: { success: true } } },
+    { seq: 2, kind: 'tool', data: { name: 'execute_js', args: { code: 'alert(1)' }, result: { success: true } } },
+    { seq: 3, kind: 'tool', data: { name: 'navigate', args: { url: 'https://example.com/next?code=secret' }, result: { success: false, error: 'blocked' } } },
+    { seq: 4, kind: 'tool', data: { name: 'navigate', args: { url: 'https://example.com/next?query=public' }, result: { success: true } } },
+  ];
+  const { workflow, warnings } = SavedWorkflowsCh.compileWorkflowFromTrace(run, events, { name: 'Safe flow', now: 2000 });
+  assert.equal(workflow.steps.length, 1);
+  assert.deepEqual(workflow.steps[0].args, { url: 'https://example.com/next' });
+  assert.ok(warnings.some((warning) => /query or fragment/.test(warning)));
+  assert.doesNotMatch(JSON.stringify(workflow), /alert|code=|query=|x.*10|y.*20/);
+});
+
+test('saved workflow normalization rejects imported raw refs and undeclared parameter markers', () => {
+  const base = {
+    schema: SavedWorkflowsCh.SAVED_WORKFLOW_SCHEMA,
+    id: 'workflow_1',
+    name: 'Imported',
+    start: { origin: 'https://example.com', pathFamily: '/' },
+    parameters: [],
+  };
+  assert.equal(SavedWorkflowsCh.normalizeSavedWorkflow({
+    ...base,
+    steps: [{ tool: 'click_ax', args: { ref_id: 'ref_99' }, target: { role: 'button', name: 'Save' } }],
+  }), null);
+  assert.equal(SavedWorkflowsCh.normalizeSavedWorkflow({
+    ...base,
+    steps: [{ tool: 'set_field', args: { text: { [SavedWorkflowsCh.WORKFLOW_PARAM_REF_KEY]: 'missing' } }, target: { role: 'textbox', name: 'Email' } }],
+  }), null);
+});
+
+test('saved workflow target matching fails closed on ambiguity', () => {
+  const target = { role: 'button', name: 'Save' };
+  const ambiguous = SavedWorkflowsCh.findWorkflowTarget(target, [
+    { refId: 'ref_1', role: 'button', name: 'Save' },
+    { refId: 'ref_2', role: 'button', name: 'Save' },
+  ]);
+  assert.equal(ambiguous.status, 'ambiguous');
+  const matched = SavedWorkflowsCh.findWorkflowTarget(
+    { role: 'textbox', fieldName: 'email', label: 'Email' },
+    [
+      { refId: 'ref_3', role: 'textbox', fieldName: 'email', label: 'Email' },
+      { refId: 'ref_4', role: 'textbox', fieldName: 'search', label: 'Search' },
+    ],
+  );
+  assert.equal(matched.status, 'matched');
+  assert.equal(matched.candidate.refId, 'ref_3');
+});
+
+test('saved workflow store normalizes writes and resolves runtime parameters without persisting values', async () => {
+  const memory = {};
+  const storage = {
+    async get(key) { return { [key]: structuredClone(memory[key]) }; },
+    async set(values) { Object.assign(memory, structuredClone(values)); },
+  };
+  const store = SavedWorkflowsCh.createSavedWorkflowStore(storage, { now: () => 3000 });
+  const compiled = SavedWorkflowsCh.compileWorkflowFromTrace(
+    { runId: 'run_3', status: 'done', tabUrl: 'https://example.com/form' },
+    [
+      { seq: 1, kind: 'tool', data: { name: 'get_accessibility_tree', result: { pageContent: 'textbox "Email" [ref_5] type="email"' } } },
+      { seq: 2, kind: 'tool', data: { name: 'type_ax', args: { ref_id: 'ref_5', text: 'person@example.com' }, result: { success: true, verified: true } } },
+    ],
+    { name: 'Fill email', now: 3000 },
+  ).workflow;
+  const put = await store.put(compiled);
+  assert.equal(put.changed, true);
+  assert.equal((await store.list()).length, 1);
+  assert.deepEqual(
+    SavedWorkflowsCh.resolveWorkflowArgs(compiled.steps[0].args, { email: 'new@example.com' }),
+    { text: 'new@example.com' },
+  );
+  assert.doesNotMatch(JSON.stringify(memory), /person@example\.com|new@example\.com|ref_5/);
+  assert.equal((await store.delete(compiled.id)).changed, true);
+  assert.equal((await store.list()).length, 0);
 });
 
 test('profile sync reset does not re-unlock after an in-flight lock', async () => {
