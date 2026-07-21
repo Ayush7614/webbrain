@@ -16,6 +16,11 @@ const LIVE_SCHEDULED_STATUSES = new Set(['pending', 'queued', 'running', 'needs_
 const DUPLICATE_COALESCED_ERROR = 'Duplicate scheduled job coalesced into an existing live job.';
 const DONE_OUTCOMES = new Set(['success', 'partial', 'failed']);
 
+function hasLiveScheduledAgentRun(job) {
+  return job?.status === 'running'
+    || (job?.status === 'needs_user_input' && job?.clarificationRequired !== true);
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -432,6 +437,7 @@ export function summarizeScheduledJob(job) {
     lastOutcome: job.lastOutcome || null,
     lastError: job.lastError || null,
     needsUserInput: job.status === 'needs_user_input',
+    clarificationRequired: job.clarificationRequired === true,
     pendingClarify: job.pendingClarify || null,
     completedAt: job.completedAt || null,
     createdAt: job.createdAt,
@@ -590,6 +596,10 @@ export class ScheduledJobManager {
         let job = normalizedTarget.job;
         changed = changed || normalizedTarget.changed;
         if (!['running', 'needs_user_input'].includes(job.status)) return job;
+        // A terminal authorization stop is intentionally durable. Unlike a
+        // live clarification interrupted by worker eviction, it must not be
+        // retried unattended after restart.
+        if (job.status === 'needs_user_input' && job.clarificationRequired === true) return job;
         changed = true;
         this._waitingForInput.delete(job.id);
         return {
@@ -764,7 +774,7 @@ export class ScheduledJobManager {
     }
     await this._clearAlarm(jobId);
     this._waitingForInput.delete(jobId);
-    if (existing && ['running', 'needs_user_input'].includes(existing.status)) {
+    if (hasLiveScheduledAgentRun(existing)) {
       const tabId = existing.tabId || existing.target?.tabId;
       if (tabId != null) {
         try { this.agent.abort(tabId); } catch {}
@@ -787,7 +797,7 @@ export class ScheduledJobManager {
       if (next.length !== jobs.length) await this._setJobs(next);
       return { existing, removed: next.length !== jobs.length };
     });
-    if (existing && ['running', 'needs_user_input'].includes(existing.status)) {
+    if (hasLiveScheduledAgentRun(existing)) {
       const tabId = existing.tabId || existing.target?.tabId;
       if (tabId != null) {
         try { this.agent.abort(tabId); } catch {}
@@ -806,7 +816,9 @@ export class ScheduledJobManager {
       const existing = jobs[idx];
       if (!['pending', 'queued', 'running', 'needs_user_input'].includes(existing.status)) return null;
       if (['running', 'needs_user_input'].includes(existing.status)) {
-        liveTabId = existing.tabId || existing.target?.tabId || null;
+        if (hasLiveScheduledAgentRun(existing)) {
+          liveTabId = existing.tabId || existing.target?.tabId || null;
+        }
         this._waitingForInput.delete(jobId);
       }
       const updated = {
@@ -846,10 +858,17 @@ export class ScheduledJobManager {
         error: 'Scheduled run is waiting for your answer. Reply to the prompt or cancel the run.',
       };
     }
-    const job = await this._updateJobIf(jobId, (prev) => ['pending', 'queued'].includes(prev.status), () => ({
+    const job = await this._updateJobIf(jobId, (prev) => (
+      ['pending', 'queued'].includes(prev.status)
+      || (prev.status === 'needs_user_input' && prev.clarificationRequired === true)
+    ), (prev) => ({
       status: 'pending',
       nextRunAt: iso(this.now() + 1000),
       queueDeferrals: 0,
+      clarificationAuthorizationRequired: prev.clarificationRequired === true
+        || prev.clarificationAuthorizationRequired === true,
+      clarificationRequired: false,
+      pendingClarify: null,
     }));
     if (job) await this._setAlarm(job);
     return { ok: !!job, job: summarizeScheduledJob(job) };
@@ -866,6 +885,20 @@ export class ScheduledJobManager {
         const matches = job.tabId === tabId || job.target?.tabId === tabId;
         const isUrlTarget = job.kind === 'task' && job.target?.type === 'url';
         if (matches && isUrlTarget && ['pending', 'queued', 'paused'].includes(job.status)) {
+          next.push({
+            ...job,
+            tabId: null,
+            target: { ...job.target, tabId: null },
+            updatedAt: iso(this.now()),
+          });
+          continue;
+        }
+        if (matches && isUrlTarget && job.status === 'needs_user_input' && job.clarificationRequired === true) {
+          // This run already ended at a durable authorization boundary. Drop
+          // only the closed helper-tab reference; never turn the stop into an
+          // unattended retry or abort a run that is no longer active.
+          alarmsToClear.push(job.id);
+          this._waitingForInput.delete(job.id);
           next.push({
             ...job,
             tabId: null,
@@ -1072,6 +1105,8 @@ export class ScheduledJobManager {
           lastResult: String(result || '').slice(0, 2000),
           lastOutcome,
           lastError: null,
+          clarificationAuthorizationRequired: false,
+          clarificationRequired: false,
           pendingClarify: null,
         };
       });
@@ -1091,9 +1126,26 @@ export class ScheduledJobManager {
       lastResult: String(result || '').slice(0, 2000),
       lastOutcome,
       lastError: null,
+      clarificationAuthorizationRequired: false,
+      clarificationRequired: false,
       pendingClarify: null,
     }));
     if (completed) this._emit(completed, 'completed');
+  }
+
+  async _markClarificationRequired(job, result) {
+    const waiting = await this._updateJobIf(job.id, (prev) => (
+      ['running', 'needs_user_input'].includes(prev.status)
+    ), () => ({
+      status: 'needs_user_input',
+      clarificationAuthorizationRequired: true,
+      clarificationRequired: true,
+      lastResult: String(result || '').slice(0, 2000),
+      lastOutcome: null,
+      lastError: 'Scheduled run stopped because user input or authorization is required.',
+      pendingClarify: null,
+    }));
+    if (waiting) this._emit(waiting, 'clarification_required');
   }
 
   async _runJob(jobId) {
@@ -1132,6 +1184,7 @@ export class ScheduledJobManager {
       startedAt: iso(this.now()),
       lastError: null,
       lastOutcome: null,
+      clarificationRequired: false,
       pendingClarify: null,
     }));
     if (!running) {
@@ -1141,9 +1194,11 @@ export class ScheduledJobManager {
     this._emit(running, 'running');
 
     let runOutcome = null;
+    let runStatus = null;
     const onUpdate = (type, data) => {
       const doneOutcome = doneOutcomeFromUpdate(type, data);
       if (doneOutcome) runOutcome = doneOutcome;
+      if (type === 'run_status') runStatus = String(data?.status || '').trim() || null;
       if (type === 'clarify') {
         const pendingClarify = normalizePendingClarify(data, this.now());
         this._waitingForInput.add(job.id);
@@ -1190,9 +1245,16 @@ export class ScheduledJobManager {
     });
     try {
       await this.loadProviders();
+      if (running.clarificationAuthorizationRequired === true) {
+        await this.agent.requireExplicitClarificationAuthorization(tabId);
+      }
       const result = await this.agent.processMessage(tabId, this._messageForJob(running), onUpdate, running.mode || 'act');
       this._waitingForInput.delete(job.id);
-      await this._complete(running, result, runOutcome);
+      if (runStatus === 'clarification_required') {
+        await this._markClarificationRequired(running, result);
+      } else {
+        await this._complete(running, result, runOutcome);
+      }
     } catch (e) {
       this._waitingForInput.delete(job.id);
       if (isActiveRunError(e)) {
