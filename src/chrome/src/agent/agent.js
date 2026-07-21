@@ -4100,24 +4100,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       (() => {
         const needle = ${JSON.stringify(needle)};
         const lc = needle.toLowerCase();
-        // Yield to the normal text-click path when a genuinely clickable
-        // element matches the text — otherwise click({text:"X"}) would
-        // silently mutate an unrelated <select> that merely has an option
-        // labeled X instead of clicking the button/link the model saw.
-        // Form controls are excluded: matching them by placeholder/value
-        // is the text path's business, and a native <select> element's own
-        // text must not suppress the option rescue this function exists for.
+        // Yield to the normal text-click path only for an exact-tier match.
+        // An exact <option> label must beat a prefix/contains clickable: for
+        // example, "OK" selects the OK option instead of clicking "Book".
+        // Keep <select> out of this list because this rescue is its click path.
         const clickables = document.querySelectorAll(
-          'a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="treeitem"], summary, [onclick], [data-action]'
+          'a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="treeitem"], input:not([type="hidden"]), textarea, input[type="button"], input[type="submit"], summary, label, [onclick], [data-action]'
         );
+        const _valIsLabel = (el) => {
+          if (el.tagName === 'TEXTAREA') return false;
+          if (el.tagName !== 'INPUT') return true;
+          const type = (el.getAttribute('type') || 'text').toLowerCase();
+          return type === 'button' || type === 'submit' || type === 'reset';
+        };
         for (const el of clickables) {
           const r = el.getBoundingClientRect();
           if (r.width < 2 || r.height < 2) continue;
           const cs = getComputedStyle(el);
           if (cs.visibility === 'hidden' || cs.display === 'none') continue;
-          const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-          if (txt && txt.includes(lc)) return { found: false, suppressedByClickable: true };
+          const txt = (el.innerText || (_valIsLabel(el) ? el.value : '') || el.placeholder || el.ariaLabel || '').trim().toLowerCase();
+          if (txt && txt === lc) return { found: false, suppressedByClickable: true };
         }
+        const matchingSelects = [];
         const sels = document.querySelectorAll('select');
         for (const sel of sels) {
           const opts = Array.from(sel.options);
@@ -4125,22 +4129,26 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             || opts.find(o => o.text.trim().toLowerCase() === lc)
             || opts.find(o => o.value === needle)
             || opts.find(o => o.value.toLowerCase() === lc);
-          if (match) {
-            sel.focus();
-            const cur = sel.selectedIndex;
-            return {
-              found: true,
-              alreadySelected: cur === match.index,
-              currentIndex: cur,
-              targetIndex: match.index,
-              targetText: match.text.trim(),
-              targetValue: match.value,
-              currentText: sel.options[cur]?.text?.trim() || '',
-              allOptions: opts.map(o => o.text.trim()),
-            };
-          }
+          if (match) matchingSelects.push({ sel, match, opts });
         }
-        return { found: false };
+        // Never mutate the first of several dropdowns that offer the same
+        // option. The normal resolver can surface the ambiguity instead.
+        if (matchingSelects.length !== 1) {
+          return { found: false, matchingSelectCount: matchingSelects.length };
+        }
+        const { sel, match, opts } = matchingSelects[0];
+        sel.focus();
+        const cur = sel.selectedIndex;
+        return {
+          found: true,
+          alreadySelected: cur === match.index,
+          currentIndex: cur,
+          targetIndex: match.index,
+          targetText: match.text.trim(),
+          targetValue: match.value,
+          currentText: sel.options[cur]?.text?.trim() || '',
+          allOptions: opts.map(o => o.text.trim()),
+        };
       })()
     `);
     const scan = scanResult?.result?.value;

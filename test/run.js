@@ -28806,6 +28806,28 @@ test('submit controls bypass native select guards in click paths', () => {
   assert.match(chromeContent, /el\.tagName === 'INPUT' && !\['button', 'checkbox'[\s\S]*?'submit'\]\.includes\(inputType\)/, 'chrome: checkbox/radio focus must not receive the text-editable stale-click exemption');
 });
 
+test('native select rescue yields only to exact clickables and refuses ambiguous dropdowns', () => {
+  const chromeAgent = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const autoSelectStart = chromeAgent.indexOf('async _autoSelectOption(');
+  const autoSelectEnd = chromeAgent.indexOf('\n  async ', autoSelectStart + 10);
+  const autoSelectBody = chromeAgent.slice(autoSelectStart, autoSelectEnd);
+  assert.ok(autoSelectStart >= 0 && autoSelectEnd > autoSelectStart, 'chrome: auto-select helper should be independently inspectable');
+  assert.match(autoSelectBody, /if \(txt && txt === lc\) return \{ found: false, suppressedByClickable: true \};/, 'chrome: only exact clickable text should suppress select rescue');
+  assert.doesNotMatch(autoSelectBody, /txt\.includes\(lc\)[^\n]*suppressedByClickable/, 'chrome: substring clickables must not suppress select rescue');
+  assert.match(autoSelectBody, /if \(matchingSelects\.length !== 1\)/, 'chrome: auto-select must not pick the first of several matching dropdowns');
+
+  const firefoxContent = fs.readFileSync(path.join(ROOT, 'src/firefox/src/content/content.js'), 'utf8');
+  const clickStart = firefoxContent.indexOf('function clickElement(params) {');
+  const clickEnd = firefoxContent.indexOf('\n  function ', clickStart + 10);
+  const clickBody = firefoxContent.slice(clickStart, clickEnd);
+  assert.ok(clickStart >= 0 && clickEnd > clickStart, 'firefox: click helper should be independently inspectable');
+  assert.match(clickBody, /let textResolvedExact = false;/, 'firefox: click resolution should track the winning text tier');
+  assert.match(clickBody, /textResolvedExact = \(usedMode === 'exact'\);/, 'firefox: direct matches should record exact-tier resolution');
+  assert.match(clickBody, /!el \|\| el instanceof HTMLSelectElement \|\| !textResolvedExact/, 'firefox: prefix and contains matches should keep select rescue enabled');
+  assert.match(clickBody, /matchingSelects\.length > 1/, 'firefox: select rescue must reject ambiguous dropdown matches');
+  assert.match(clickBody, /method: 'select-already-set'/, 'firefox: an already-selected exact option must not fall through to an unrelated click');
+});
+
 test('accessibility ref lookup rejects disconnected elements', () => {
   for (const [label, rel] of [
     ['chrome', 'src/chrome/src/content/accessibility-tree.js'],
