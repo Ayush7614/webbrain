@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gradeScenario, inferStuckAt, renderSummary } from './lib/grader.mjs';
 import { buildSessionSettings, resolveCloudRunId, suiteShouldFail } from './lib/suite.mjs';
+import { GnippetsE2EClient } from './lib/webbrain-client.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const scenarios = JSON.parse(await fs.readFile(path.join(root, 'catalog', 'scenarios.json'), 'utf8'));
@@ -27,6 +28,41 @@ assert.deepEqual(
     key: buildSessionSettings('captcha-key').capsolverApiKey,
   },
   { enabled: true, key: 'captcha-key' },
+);
+
+const diagnosticSecret = 'diagnostic-secret-that-must-not-leak';
+const diagnosticClient = new GnippetsE2EClient({
+  baseUrl: 'https://gnippets.example',
+  controlToken: diagnosticSecret,
+  fetchImpl: async () => ({
+    ok: false,
+    status: 403,
+    headers: {
+      get(name) {
+        return {
+          server: 'cloudflare',
+          'cf-ray': 'fixture-ray-IST',
+          'cf-mitigated': 'challenge',
+          'content-type': 'text/html',
+        }[name.toLowerCase()] || null;
+      },
+    },
+    async text() {
+      return `<html><title>Attention Required</title><body>Bearer ${diagnosticSecret}</body></html>`;
+    },
+  }),
+});
+await assert.rejects(
+  diagnosticClient.createRun('fixture'),
+  (error) => {
+    assert.equal(error.status, 403);
+    assert.equal(error.body.server, 'cloudflare');
+    assert.equal(error.body.cf_mitigated, 'challenge');
+    assert.match(error.message, /fixture-ray-IST/);
+    assert.match(error.message, /Attention Required/);
+    assert.doesNotMatch(error.message, new RegExp(diagnosticSecret));
+    return true;
+  },
 );
 
 const mountainScenario = scenarios.find((scenario) => scenario.id === 'wikipedia-table-extraction');
