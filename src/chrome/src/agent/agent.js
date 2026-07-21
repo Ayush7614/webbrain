@@ -2629,6 +2629,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _browserActionFreshTurnReason(tier, toolName, toolResult) {
+    if (toolName === 'done' && toolResult?.completionPageBlock === true) {
+      return 'completion_page_block';
+    }
     if (!this._isBrowserMutationTool(toolName)) return '';
     if (
       toolResult?.success === false
@@ -12334,6 +12337,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               return {
                 success: false,
                 blockedDone: true,
+                completionPageBlock: true,
                 error: verification.completionWarning + ` (block attempt ${blocks}/2 — if you genuinely believe the task is complete and the visible form/dialog is unrelated, re-call done with summary explicitly acknowledging this, e.g. "already-existing product, no submit needed".)`,
                 pageUrl: verification.pageUrl,
                 pageState: verification.pageState,

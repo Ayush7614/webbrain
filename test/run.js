@@ -30628,6 +30628,67 @@ test('blocked completion skips stale calls that follow in the same batch', async
   }
 });
 
+test('page-warning completion skips stale calls while preserving its verification screenshot', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({
+      getActive: () => ({ contextWindow: 128000, supportsVision: false }),
+      getVisionProvider: async () => null,
+    });
+    const tabId = 24817;
+    const messages = [];
+    agent.conversationModes.set(tabId, 'act');
+    agent._skipPermissionGate = true;
+    agent._ensureGateSetting = async () => false;
+    agent._persist = () => {};
+    const token = agent._beginCompletionInvariant(tabId);
+    let staleClicks = 0;
+    agent.executeTool = async (_toolTabId, name) => {
+      if (name === 'done') {
+        return {
+          success: false,
+          blockedDone: true,
+          completionPageBlock: true,
+          error: 'Completion verification found a still-open form.',
+          pageUrl: 'https://example.test/form',
+          pageState: { url: 'https://example.test/form', visibleFormCount: 1 },
+          _attachImage: 'data:image/png;base64,AAAA',
+        };
+      }
+      if (name === 'click_ax') staleClicks++;
+      return { success: true, verified: true };
+    };
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'page_blocked_done', function: { name: 'done', arguments: JSON.stringify({ summary: 'Done.', outcome: 'success' }) } },
+        { id: 'stale_page_click', function: { name: 'click_ax', arguments: JSON.stringify({ ref_id: 'must_not_run' }) } },
+      ],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['done', 'click_ax']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${AgentClass.name}: page warning did not request a fresh turn`);
+    assert.equal(staleClicks, 0, `${AgentClass.name}: stale call after page warning was executed`);
+    const doneResult = messages.find(message => message.tool_call_id === 'page_blocked_done');
+    assert.match(String(doneResult?.content || ''), /"completionPageBlock":true/,
+      `${AgentClass.name}: page-warning result lost its interruption marker`);
+    const verificationImage = messages.find(message => message.transientCompletionVerification === true);
+    assert.ok(verificationImage, `${AgentClass.name}: page-warning screenshot was not forwarded to the fresh turn`);
+    const staleResult = messages.find(message => message.tool_call_id === 'stale_page_click');
+    assert.match(String(staleResult?.content || ''), /"skipped":true/,
+      `${AgentClass.name}: stale call did not receive a synthetic result`);
+    assert.match(String(staleResult?.content || ''), /"reason":"completion_page_block"/,
+      `${AgentClass.name}: stale skip did not identify the page-warning block`);
+
+    agent._clearCompletionInvariant(tabId, token);
+  }
+});
+
 test('done_json is blocked before schema handling while verification debt is open', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({
