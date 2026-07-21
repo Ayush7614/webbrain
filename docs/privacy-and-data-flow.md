@@ -183,8 +183,10 @@ the URL + method to the active LLM conversation.
 
 ### Experimental WebMCP
 
-On supporting Chrome pages, WebBrain can enable the experimental CDP `WebMCP`
-domain. Chrome reports the structured tools registered by the current page,
+WebMCP is off by default. A user must enable **Experimental WebMCP** under
+Settings → General → Advanced before WebBrain sends its tool schemas or prompt
+guidance to the configured LLM. On supporting Chrome pages, WebBrain can then
+enable the experimental CDP `WebMCP` domain. Chrome reports the structured tools registered by the current page,
 including their page-supplied name, description, input schema, annotations, and
 registration frame. WebBrain keeps a bounded in-memory per-tab catalog, assigns
 opaque `wmcp_*` IDs, and removes it when the conversation/tab CDP session is
@@ -192,7 +194,8 @@ cleaned up. The catalog is not uploaded separately, but catalog fields and tool
 results enter the ordinary conversation context when the model calls
 `list_webmcp_tools` or `execute_webmcp_tool`, so they are sent to the configured
 LLM provider like other page content. They are always wrapped as untrusted page
-data. Firefox does not support this path.
+data. Turning the setting off closes active WebMCP sessions. Firefox does not
+support this path.
 
 ---
 

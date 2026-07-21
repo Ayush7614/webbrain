@@ -507,7 +507,10 @@ Wraps `chrome.debugger` API for:
   `WebMCP.invokeTool` executes a page-registered structured capability. WebBrain
   exposes opaque `wmcp_*` IDs rather than page-controlled names as call handles.
 
-WebMCP is an experimental Chrome-only fast path. `list_webmcp_tools` is
+WebMCP is an experimental Chrome-only fast path that is off by default. The
+user must enable **Experimental WebMCP** under Settings → General → Advanced;
+until then, neither WebMCP tool schemas nor WebMCP prompt guidance enter model
+requests. When enabled, `list_webmcp_tools` is
 available in Ask, Act, and Dev; `execute_webmcp_tool` is restricted to Act/Dev
 and every invocation requires fresh confirmation plus permission against the
 registration frame's actual origin. Page-authored annotations such as
@@ -518,7 +521,8 @@ and effective HTTP(S) security origin are revalidated immediately before
 dispatch, so navigation, opaque sandbox origins, or stale permission metadata
 fail closed. Tool discovery is bounded to 200 registrations and returned in
 pages of at most 25 entries; invocations time out and issue
-`WebMCP.cancelInvocation` when stopped.
+`WebMCP.cancelInvocation` when stopped. Turning the setting off removes the
+tools from subsequent model steps and closes every active WebMCP CDP session.
 
 Without CDP (Firefox), all events are synthetic (`el.click()`, `new KeyboardEvent()`).
 

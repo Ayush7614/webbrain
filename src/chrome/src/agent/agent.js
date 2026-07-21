@@ -1,4 +1,4 @@
-import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID, SYSTEM_PROMPT_DEV_APPENDIX } from './tools.js';
+import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID, SYSTEM_PROMPT_DEV_APPENDIX, SYSTEM_PROMPT_WEBMCP_ASK, SYSTEM_PROMPT_WEBMCP_ACT } from './tools.js';
 import { handleDoneJson } from './cloud-output.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT, STRICT_SECRET_SYSTEM_NOTE } from './credential-fields.js';
@@ -154,6 +154,11 @@ export class Agent {
     // me my recovery codes", "what's my API key on this page"). Toggle
     // lives in Settings → "Strict secret handling". Loaded in background.js.
     this.strictSecretMode = false;
+
+    // Experimental Chrome WebMCP integration. Off by default so ordinary
+    // runs do not pay for unused tool schemas or prompt guidance. Users can
+    // opt in from Settings → General → Advanced.
+    this.webMcpEnabled = false;
 
     // Profile auto-fill: when enabled, the user's profile text (name,
     // email, throwaway password, etc.) is appended to the system prompt
@@ -2299,6 +2304,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   async _prepareWebMCPToolCall(tabId, name, args = {}) {
     if (name !== 'execute_webmcp_tool') return { args };
+    if (!this.webMcpEnabled) {
+      return {
+        error: {
+          success: false,
+          denied: true,
+          noDispatch: true,
+          featureDisabled: true,
+          error: 'Experimental WebMCP is disabled. Enable it in Settings → General → Advanced before using WebMCP tools.',
+        },
+      };
+    }
     if ((this.conversationModes.get(tabId) || 'ask') === 'ask') {
       return {
         error: {
@@ -6685,6 +6701,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return SYSTEM_PROMPT_ACT;
   }
 
+  setWebMCPEnabled(enabled) {
+    const next = enabled === true;
+    const changed = this.webMcpEnabled !== next;
+    this.webMcpEnabled = next;
+    if (changed && !next) void cdpClient.disableAllWebMCP();
+    if (changed) this._refreshSystemPrompts();
+  }
+
   /**
    * Resolve the active provider's prompt tier ('compact' | 'mid' | 'full').
    * The provider getter already forces 'full' for cloud providers and applies
@@ -6718,9 +6742,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * and on settings changes via _refreshSystemPrompts().
    */
   _buildSystemPrompt(mode, tabId = null) {
+    const tier = this._resolvePromptTier();
     let prompt = this._isActionMode(mode) ? this._getActPrompt() : SYSTEM_PROMPT_ASK;
     if (mode === 'dev') {
       prompt += `\n\n${SYSTEM_PROMPT_DEV_APPENDIX.trim()}`;
+    }
+    if (this.webMcpEnabled && (!this._isActionMode(mode) || tier !== 'compact')) {
+      const webMcpPrompt = this._isActionMode(mode) ? SYSTEM_PROMPT_WEBMCP_ACT : SYSTEM_PROMPT_WEBMCP_ASK;
+      prompt += `\n\n${webMcpPrompt}`;
     }
 
     // Universal cookie/paywall guidance. Always relevant for http(s)
@@ -6730,7 +6759,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       prompt += `\n\n${UNIVERSAL_PREAMBLE.trim()}`;
     }
 
-    const tier = this._resolvePromptTier();
     const skillsPrompt = buildCustomSkillsPrompt(this.customSkills, {
       mode,
       tier,
@@ -10525,6 +10553,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return handleDoneJson(this.cloudRunContexts.get(tabId), args);
     }
     if (name === 'list_webmcp_tools') {
+      if (!this.webMcpEnabled) {
+        return {
+          success: false,
+          denied: true,
+          noDispatch: true,
+          featureDisabled: true,
+          error: 'Experimental WebMCP is disabled. Enable it in Settings → General → Advanced before using WebMCP tools.',
+        };
+      }
       try {
         return await cdpClient.listWebMCPTools(tabId, args || {});
       } catch (error) {
@@ -10538,6 +10575,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
     if (name === 'execute_webmcp_tool') {
+      if (!this.webMcpEnabled) {
+        return {
+          success: false,
+          denied: true,
+          dispatched: false,
+          noDispatch: true,
+          featureDisabled: true,
+          error: 'Experimental WebMCP is disabled. Enable it in Settings → General → Advanced before using WebMCP tools.',
+        };
+      }
       try {
         if ((this.conversationModes.get(tabId) || 'ask') === 'ask') {
           return {
@@ -15433,7 +15480,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let tools = getToolsForMode(mode, {
       strictSecretMode: this.strictSecretMode,
       tier,
-      webMcpAvailable: true,
+      webMcpAvailable: this.webMcpEnabled === true,
       skillLoaderTool: this._skillLoaderDefinition(mode, tier),
       skillTools,
       cloudRun: !!cloudRunContext,
@@ -15486,7 +15533,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       tools = getToolsForMode(mode, {
         strictSecretMode: this.strictSecretMode,
         tier,
-        webMcpAvailable: true,
+        webMcpAvailable: this.webMcpEnabled === true,
         skillLoaderTool: this._skillLoaderDefinition(mode, tier),
         skillTools,
         cloudRun: !!cloudRunContext,
@@ -15897,7 +15944,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let tools = getToolsForMode(mode, {
       strictSecretMode: this.strictSecretMode,
       tier,
-      webMcpAvailable: true,
+      webMcpAvailable: this.webMcpEnabled === true,
       skillLoaderTool: this._skillLoaderDefinition(mode, tier),
       skillTools,
       cloudRun: !!cloudRunContext,
@@ -15934,7 +15981,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       tools = getToolsForMode(mode, {
         strictSecretMode: this.strictSecretMode,
         tier,
-        webMcpAvailable: true,
+        webMcpAvailable: this.webMcpEnabled === true,
         skillLoaderTool: this._skillLoaderDefinition(mode, tier),
         skillTools,
         cloudRun: !!cloudRunContext,

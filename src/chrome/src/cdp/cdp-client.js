@@ -341,6 +341,12 @@ export class CDPClient {
     return true;
   }
 
+  async disableAllWebMCP() {
+    const tabIds = Array.from(this.webMcpSessions.keys());
+    await Promise.all(tabIds.map(tabId => this.disableWebMCP(tabId).catch(() => false)));
+    return tabIds.length;
+  }
+
   async _webMCPFrameUrls(tabId) {
     const frames = await this.getAllFrames(tabId).catch(() => []);
     return new Map(frames.map(frame => {
