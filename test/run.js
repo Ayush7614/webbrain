@@ -14514,6 +14514,11 @@ test('waited clarify timeout guard persists across restart and ordinary user tur
       restarted._prepareClarificationAuthorizationForRun(tabId, {});
       assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: ordinary user turn cleared the unresolved guard`);
 
+      restarted.abort(tabId);
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: Stop cleared the unresolved timeout guard`);
+      assert.equal(restarted._checkAbort(tabId), true, `${AgentClass.name}: Stop did not still cancel the active run`);
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: consuming Stop also cleared the unresolved guard`);
+
       restarted.conversationIds.set(tabId, `different_conv_${tabId}`);
       restarted._prepareClarificationAuthorizationForRun(tabId, {});
       assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: conversation-scoped guard leaked into a replacement conversation`);
@@ -17634,6 +17639,51 @@ test('ScheduledJobManager preserves URL-target schedules when helper tabs close'
     assert.equal(runCount, 2, `${label}: schedule should run again in a fresh helper tab`);
     assert.notEqual(job.target.tabId, helperTabId, `${label}: fresh helper tab should be recorded`);
     assert.equal(h.tabs.get(job.target.tabId).url, targetUrl, `${label}: fresh helper tab should use target URL`);
+  }
+});
+
+test('ScheduledJobManager keeps terminal URL authorization stops durable when helper tabs close', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    let abortCalls = 0;
+    const stoppedMessage = '[Scheduled run stopped for explicit clarification.]';
+    const h = makeSchedulerHarness(SchedulerMod, {
+      now,
+      abort: () => { abortCalls += 1; },
+      processMessage: async (_tabId, _message, onUpdate) => {
+        onUpdate('run_status', { status: 'clarification_required', message: stoppedMessage });
+        return stoppedMessage;
+      },
+    });
+    const created = await h.manager.createTaskJob({
+      args: {
+        title: 'Review inbox',
+        prompt: 'Review the inbox after clarification.',
+        schedule: { type: 'once', after_seconds: 60 },
+        target: { type: 'url', url: 'https://example.com/inbox' },
+      },
+      source: 'user',
+    });
+
+    await h.manager.handleAlarm(h.alarmName(created.jobId));
+    let job = h.jobs()[0];
+    const helperTabId = job.target.tabId;
+    assert.equal(job.status, 'needs_user_input', `${label}: URL run should stop for clarification`);
+    assert.equal(job.clarificationRequired, true, `${label}: URL run should persist the terminal marker`);
+
+    // Browser alarms are one-shot; mirror their removal before simulating the
+    // helper tab closing after the terminal run has already returned.
+    h.alarms.delete(h.alarmName(created.jobId));
+    h.tabs.delete(helperTabId);
+    await h.manager.cancelForTab(helperTabId, 'tab closed');
+
+    job = h.jobs()[0];
+    assert.equal(job.status, 'needs_user_input', `${label}: helper-tab close must not queue the terminal stop`);
+    assert.equal(job.clarificationRequired, true, `${label}: helper-tab close should preserve the terminal marker`);
+    assert.equal(job.tabId, null, `${label}: helper-tab close should drop the stale top-level tab id`);
+    assert.equal(job.target.tabId, null, `${label}: helper-tab close should drop the stale target tab id`);
+    assert.equal(h.alarms.has(h.alarmName(created.jobId)), false, `${label}: helper-tab close must not arm a retry`);
+    assert.equal(abortCalls, 0, `${label}: helper-tab close must not abort an already-terminal run`);
   }
 });
 

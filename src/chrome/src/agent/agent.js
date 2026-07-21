@@ -5402,9 +5402,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.abortFlags.set(tabId, true);
     this._cancelClarifications(tabId, 'aborted by user');
     this._cancelPendingPlans(tabId, 'aborted by user');
-    if (this._clarificationAuthorizationGuards.delete(tabId) && this.conversations.has(tabId)) {
-      this._persist(tabId);
-    }
+    // Stop cancels the current run; it is not an answer to a prior timed-out
+    // clarification. Keep that authorization guard until an explicit clarify
+    // response or conversation/tab cleanup resolves its scope.
   }
 
   /**

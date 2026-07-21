@@ -865,6 +865,20 @@ export class ScheduledJobManager {
           });
           continue;
         }
+        if (matches && isUrlTarget && job.status === 'needs_user_input' && job.clarificationRequired === true) {
+          // This run already ended at a durable authorization boundary. Drop
+          // only the closed helper-tab reference; never turn the stop into an
+          // unattended retry or abort a run that is no longer active.
+          alarmsToClear.push(job.id);
+          this._waitingForInput.delete(job.id);
+          next.push({
+            ...job,
+            tabId: null,
+            target: { ...job.target, tabId: null },
+            updatedAt: iso(this.now()),
+          });
+          continue;
+        }
         if (matches && isUrlTarget && job.status === 'needs_user_input') {
           this._waitingForInput.delete(job.id);
           const liveTabId = job.tabId || job.target?.tabId;
