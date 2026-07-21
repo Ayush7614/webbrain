@@ -24031,10 +24031,16 @@ test('_defaultConfigs: OpenAI defaults to GPT-5.6 Terra and safely migrates the 
     assert.equal(defaults.openai.model, 'gpt-5.6-terra');
     assert.equal(defaults.openai.inputCostPerMillionUsd, 2.5);
     assert.equal(defaults.openai.cacheReadCostPerMillionUsd, 0.25);
+    assert.equal(defaults.openai.cacheWriteCostPerMillionUsd, 3.125);
     assert.equal(defaults.openai.outputCostPerMillionUsd, 15);
     assert.equal(defaults.anthropic.cacheReadCostPerMillionUsd, 0.3);
     assert.equal(defaults.anthropic.cacheWriteCostPerMillionUsd, 3.75);
     assert.equal(defaults.anthropic.cacheWrite1hCostPerMillionUsd, 6);
+    assert.equal(defaults.aws_bedrock.inputCostPerMillionUsd, 3);
+    assert.equal(defaults.aws_bedrock.cacheReadCostPerMillionUsd, 0.3);
+    assert.equal(defaults.aws_bedrock.cacheWriteCostPerMillionUsd, 3.75);
+    assert.equal(defaults.aws_bedrock.cacheWrite1hCostPerMillionUsd, 6);
+    assert.equal(defaults.aws_bedrock.outputCostPerMillionUsd, 15);
 
     const migrated = mgr._migrateStoredProviderConfigs({
       openai: {
@@ -24048,6 +24054,7 @@ test('_defaultConfigs: OpenAI defaults to GPT-5.6 Terra and safely migrates the 
     assert.equal(migrated.openai.model, 'gpt-5.6-terra');
     assert.equal(migrated.openai.inputCostPerMillionUsd, 2.5);
     assert.equal(migrated.openai.cacheReadCostPerMillionUsd, 0.25);
+    assert.equal(migrated.openai.cacheWriteCostPerMillionUsd, 3.125);
     assert.equal(migrated.openai.outputCostPerMillionUsd, 15);
     assert.equal(migrated.openai.configured, false);
 
@@ -24112,6 +24119,11 @@ test('provider settings expose cache pricing with zero-cost support', () => {
       source,
       /anthropic:\s*\{[\s\S]*?\.\.\.CACHE_AWARE_COST_ESTIMATE_FIELDS/,
       `${prefix}: Anthropic should expose cache read and write rates`,
+    );
+    assert.match(
+      source,
+      /openai:\s*\{[\s\S]*?\.\.\.OPENAI_COST_ESTIMATE_FIELDS/,
+      `${prefix}: OpenAI should expose cache read and write rates`,
     );
   }
 });
@@ -25515,6 +25527,41 @@ test('Agent cost estimation discounts OpenAI cached input included in the input 
   }
 });
 
+test('Agent cost estimation prices OpenAI included cache writes from nested usage details', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = {
+      config: {
+        inputCostPerMillionUsd: 100,
+        cacheReadCostPerMillionUsd: 10,
+        cacheWriteCostPerMillionUsd: 125,
+        outputCostPerMillionUsd: 200,
+      },
+    };
+    // uncached 200@100 + read 600@10 + write 200@125 + out 100@200 = 0.071
+    const chatCompletionsUsage = {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 200 },
+    };
+    const responsesUsage = {
+      input_tokens: 1000,
+      output_tokens: 100,
+      input_tokens_details: { cached_tokens: 600, cache_write_tokens: 200 },
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, chatCompletionsUsage), 0.071);
+    assert.equal(agent._estimateUsageCostUsd(provider, responsesUsage), 0.071);
+
+    const clamped = {
+      prompt_tokens: 100,
+      completion_tokens: 0,
+      prompt_tokens_details: { cached_tokens: 80, cache_write_tokens: 50 },
+    };
+    // Clamp write so read+write <= input: uncached 0 + read 80@10 + write 20@125 = 0.0033
+    assert.equal(agent._estimateUsageCostUsd(provider, clamped), 0.0033);
+  }
+});
+
 test('Agent cost estimation handles Anthropic and Bedrock cache tokens as separate input', () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({});
@@ -25619,7 +25666,7 @@ test('provider docs describe cache-aware cost semantics and configuration', () =
       assert.match(doc, new RegExp(`\\b${key}\\b`));
     }
   }
-  assert.match(docs[0], /OpenAI reports cached tokens inside the input-token total/);
+  assert.match(docs[0], /OpenAI reports cache reads and writes inside the input-token total/);
   assert.match(docs[0], /Anthropic and Bedrock report regular input, cache reads, and cache writes separately/);
   assert.match(docs[0], /final cumulative usage snapshot/);
 });

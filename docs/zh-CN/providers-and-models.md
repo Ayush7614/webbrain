@@ -142,7 +142,7 @@ await pm.testProvider('openai');    // 测试连接
 - `cacheWrite1hCostPerMillionUsd`
 - `outputCostPerMillionUsd`
 
-OpenAI 将缓存令牌包含在输入令牌总数中，因此 WebBrain 会先减去缓存部分，再对剩余令牌应用常规输入费率。Anthropic 和 Bedrock 分别报告常规输入、缓存读取和缓存写入，因此这些计数会作为独立的计费类别相加；它们还可以区分 5 分钟和 1 小时缓存写入。
+OpenAI 将缓存读取与写入令牌都包含在输入令牌总数中（`prompt_tokens_details.cached_tokens` / `cache_write_tokens`，或 Responses API 的 `input_tokens_details` 等价字段），因此 WebBrain 会先减去这两部分，再对剩余令牌应用常规输入费率，并用 `cacheWriteCostPerMillionUsd` 为写入计价。Anthropic 和 Bedrock 分别报告常规输入、缓存读取和缓存写入，因此这些计数会作为独立的计费类别相加；它们还可以区分 5 分钟和 1 小时缓存写入。
 
 这些费率在提供商卡片中可编辑，因此无需修改代码即可调整自定义模型定价。未配置缓存专用费率时，它会回退到常规输入费率；未配置 1 小时写入费率时，会回退到通用缓存写入费率。如果计费的远程提供商有令牌使用量但未配置输入/输出费率，智能体会使用保守默认值（每百万令牌输入 `$3` / 输出 `$15`）。流式提供商每次请求只计入最终累计使用量快照。本地提供商不计费。
 

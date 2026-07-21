@@ -1655,6 +1655,8 @@ const INPUT_COST_ESTIMATE_FIELD =
   { key: 'inputCostPerMillionUsd', labelKey: 'st.provider.field.input_cost_per_million', type: 'number', placeholder: '3.00' };
 const CACHE_READ_COST_ESTIMATE_FIELD =
   { key: 'cacheReadCostPerMillionUsd', labelKey: 'st.provider.field.cache_read_cost_per_million', type: 'number', placeholder: '0.30' };
+const CACHE_WRITE_COST_ESTIMATE_FIELD =
+  { key: 'cacheWriteCostPerMillionUsd', labelKey: 'st.provider.field.cache_write_cost_per_million', type: 'number', placeholder: '3.75' };
 const OUTPUT_COST_ESTIMATE_FIELD =
   { key: 'outputCostPerMillionUsd', labelKey: 'st.provider.field.output_cost_per_million', type: 'number', placeholder: '15.00' };
 const COST_ESTIMATE_FIELDS = [
@@ -1662,10 +1664,18 @@ const COST_ESTIMATE_FIELDS = [
   CACHE_READ_COST_ESTIMATE_FIELD,
   OUTPUT_COST_ESTIMATE_FIELD,
 ];
+// OpenAI nested usage reports included cache writes (1.25× input for GPT-5.6),
+// but not Anthropic/Bedrock-style 1-hour TTL write buckets.
+const OPENAI_COST_ESTIMATE_FIELDS = [
+  INPUT_COST_ESTIMATE_FIELD,
+  CACHE_READ_COST_ESTIMATE_FIELD,
+  { ...CACHE_WRITE_COST_ESTIMATE_FIELD, placeholder: '3.13' },
+  OUTPUT_COST_ESTIMATE_FIELD,
+];
 const CACHE_AWARE_COST_ESTIMATE_FIELDS = [
   INPUT_COST_ESTIMATE_FIELD,
   CACHE_READ_COST_ESTIMATE_FIELD,
-  { key: 'cacheWriteCostPerMillionUsd', labelKey: 'st.provider.field.cache_write_cost_per_million', type: 'number', placeholder: '3.75' },
+  CACHE_WRITE_COST_ESTIMATE_FIELD,
   { key: 'cacheWrite1hCostPerMillionUsd', labelKey: 'st.provider.field.cache_write_1h_cost_per_million', type: 'number', placeholder: '6.00' },
   OUTPUT_COST_ESTIMATE_FIELD,
 ];
@@ -2003,7 +2013,7 @@ function renderProviders() {
         { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gpt-5.6-terra',
           suggestions: ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2', 'gpt-5.3-codex'] },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.openai.com/v1' },
-        ...COST_ESTIMATE_FIELDS,
+        ...OPENAI_COST_ESTIMATE_FIELDS,
       ],
     },
     openrouter: {

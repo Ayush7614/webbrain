@@ -876,14 +876,27 @@ export class Agent {
       usage?.outputTokens ??
       0
     );
-    // OpenAI includes cached tokens in its input total. Anthropic and Bedrock
-    // report cache reads and writes separately from their regular input count.
-    const includedCacheReadTokens = positiveNumber(
+    // OpenAI includes cache reads and writes in its input total. Anthropic and
+    // Bedrock report cache reads and writes separately from regular input.
+    let includedCacheReadTokens = positiveNumber(
       usage?.prompt_tokens_details?.cached_tokens ??
       usage?.input_tokens_details?.cached_tokens ??
       usage?.promptTokensDetails?.cachedTokens ??
       usage?.inputTokensDetails?.cachedTokens ??
       0
+    );
+    let includedCacheWriteTokens = positiveNumber(
+      usage?.prompt_tokens_details?.cache_write_tokens ??
+      usage?.input_tokens_details?.cache_write_tokens ??
+      usage?.promptTokensDetails?.cacheWriteTokens ??
+      usage?.inputTokensDetails?.cacheWriteTokens ??
+      0
+    );
+    // Nested OpenAI detail counts are subsets of the input total.
+    includedCacheReadTokens = Math.min(includedCacheReadTokens, inputTokens);
+    includedCacheWriteTokens = Math.min(
+      includedCacheWriteTokens,
+      Math.max(0, inputTokens - includedCacheReadTokens)
     );
     const cacheReadTokens = positiveNumber(
       usage?.cache_read_input_tokens ??
@@ -917,7 +930,8 @@ export class Agent {
     return {
       inputTokens,
       outputTokens,
-      includedCacheReadTokens: Math.min(includedCacheReadTokens, inputTokens),
+      includedCacheReadTokens,
+      includedCacheWriteTokens,
       cacheReadTokens,
       cacheWriteTokens: Math.max(reportedCacheWriteTokens, cacheWrite5mTokens + cacheWrite1hTokens),
       cacheWrite5mTokens,
@@ -936,18 +950,26 @@ export class Agent {
       inputTokens,
       outputTokens,
       includedCacheReadTokens,
+      includedCacheWriteTokens,
       cacheReadTokens,
       cacheWriteTokens,
       cacheWrite5mTokens,
       cacheWrite1hTokens,
     } = this._usageTokenCounts(usage);
-    const uncachedInputTokens = inputTokens - includedCacheReadTokens;
+    const uncachedInputTokens = inputTokens - includedCacheReadTokens - includedCacheWriteTokens;
     const unspecifiedCacheWriteTokens = Math.max(0, cacheWriteTokens - cacheWrite5mTokens - cacheWrite1hTokens);
-    if (!uncachedInputTokens && !outputTokens && !includedCacheReadTokens && !cacheReadTokens && !cacheWriteTokens) return 0;
+    if (
+      !uncachedInputTokens &&
+      !outputTokens &&
+      !includedCacheReadTokens &&
+      !includedCacheWriteTokens &&
+      !cacheReadTokens &&
+      !cacheWriteTokens
+    ) return 0;
     return (
       (uncachedInputTokens * inputRate) +
       ((includedCacheReadTokens + cacheReadTokens) * cacheReadRate) +
-      ((unspecifiedCacheWriteTokens + cacheWrite5mTokens) * cacheWriteRate) +
+      ((unspecifiedCacheWriteTokens + cacheWrite5mTokens + includedCacheWriteTokens) * cacheWriteRate) +
       (cacheWrite1hTokens * cacheWrite1hRate) +
       (outputTokens * outputRate)
     ) / TOKENS_PER_MILLION;

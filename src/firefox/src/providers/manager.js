@@ -263,6 +263,12 @@ export class ProviderManager {
         secretAccessKey: '',
         sessionToken: '',
         supportsVision: false,
+        // Seed Claude-class rates; users should adjust for other Bedrock models.
+        inputCostPerMillionUsd: 3,
+        cacheReadCostPerMillionUsd: 0.3,
+        cacheWriteCostPerMillionUsd: 3.75,
+        cacheWrite1hCostPerMillionUsd: 6,
+        outputCostPerMillionUsd: 15,
         enabled: false,
       },
       openai: {
@@ -274,6 +280,8 @@ export class ProviderManager {
         model: OPENAI_DEFAULT_MODEL,
         inputCostPerMillionUsd: 2.5,
         cacheReadCostPerMillionUsd: 0.25,
+        // GPT-5.6 family bills included cache writes at 1.25× input.
+        cacheWriteCostPerMillionUsd: 3.125,
         outputCostPerMillionUsd: 15,
         supportsStreamUsageOptions: true,
         apiKey: '',
@@ -491,6 +499,7 @@ export class ProviderManager {
         model: OPENAI_DEFAULT_MODEL,
         inputCostPerMillionUsd: 2.5,
         cacheReadCostPerMillionUsd: 0.25,
+        cacheWriteCostPerMillionUsd: 3.125,
         outputCostPerMillionUsd: 15,
       };
     }
