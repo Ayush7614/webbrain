@@ -347,12 +347,13 @@ export class Agent {
     this.completionInvariants.delete(tabId);
   }
 
-  _completionTextSignalsSuccess(value) {
+  _completionTextSignalsSuccess(value, { allowBare = false } = {}) {
     const text = String(value || '').slice(0, 4000);
     if (!text) return false;
     const positive = /\b(?:success(?:ful|fully)?|saved|submitted|created|sent|published|completed|updated|added|approved|received|confirmed|thank you)\b/i;
+    const barePositive = /\b(?:complete|done)\b/i;
     const negative = /\b(?:not|never|failed|failure|error|unable|cannot|can't|could not|couldn't|did not|didn't|was not|wasn't|were not|weren't|invalid|denied|rejected|unsuccessful)\b/i;
-    return positive.test(text) && !negative.test(text);
+    return (positive.test(text) || (allowBare && barePositive.test(text))) && !negative.test(text);
   }
 
   _recordCompletionToolResult(tabId, name, args, result) {
@@ -385,6 +386,7 @@ export class Agent {
         result?.pageTitle,
         result?.title,
         result?.page?.title,
+      ].some(value => this._completionTextSignalsSuccess(value, { allowBare: true })) || [
         result?.content,
         result?.text,
         result?.pageContent,
@@ -478,7 +480,7 @@ export class Agent {
     const dialogs = Number(pageState.openDialogCount || 0);
     const relevantForms = Number(pageState.relevantFormCount || 0);
     const liveSignals = Array.isArray(pageState.successMessages)
-      ? pageState.successMessages.filter(text => this._completionTextSignalsSuccess(text))
+      ? pageState.successMessages.filter(text => this._completionTextSignalsSuccess(text, { allowBare: true }))
       : [];
     const submit = this._completionSubmitStates.get(tabId);
     const executionGuard = this._planExecutionGuards.get(tabId);

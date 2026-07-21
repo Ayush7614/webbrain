@@ -30355,6 +30355,10 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
       { role: 'system', content: 'sys' },
       { role: 'user', content: 'Submit this extension version.' },
     ]);
+    assert.equal(agent._completionTextSignalsSuccess('Done'), false,
+      `${AgentClass.name}: bare completion word was trusted in arbitrary page content`);
+    assert.equal(agent._completionTextSignalsSuccess('Done', { allowBare: true }), true,
+      `${AgentClass.name}: bare completion word was rejected for a trusted toast/title context`);
     let classifierCalls = 0;
     agent._classifyProgressIntentWithProvider = async () => {
       classifierCalls++;
@@ -30621,6 +30625,19 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
       }, submitUrl),
       null,
       `${AgentClass.name}: same-page success live-region signal was rejected`,
+    );
+
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Saved.', 'success', {
+        ...finishState,
+        url: submitUrl,
+        visibleFormCount: 1,
+        relevantFormCount: 1,
+        liveRegionMessages: ['Done'],
+        successMessages: ['Done'],
+      }, submitUrl),
+      null,
+      `${AgentClass.name}: short same-page success toast was rejected`,
     );
 
     assert.match(
