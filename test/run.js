@@ -25604,6 +25604,26 @@ test('Agent cost estimation keeps normal input pricing when cache rates are abse
   }
 });
 
+test('provider docs describe cache-aware cost semantics and configuration', () => {
+  const docs = [
+    'docs/providers-and-models.md',
+    'docs/zh-CN/providers-and-models.md',
+    'docs/fr/providers-and-models.md',
+  ].map(relativePath => fs.readFileSync(path.join(ROOT, relativePath), 'utf8'));
+  for (const doc of docs) {
+    for (const key of [
+      'cacheReadCostPerMillionUsd',
+      'cacheWriteCostPerMillionUsd',
+      'cacheWrite1hCostPerMillionUsd',
+    ]) {
+      assert.match(doc, new RegExp(`\\b${key}\\b`));
+    }
+  }
+  assert.match(docs[0], /OpenAI reports cached tokens inside the input-token total/);
+  assert.match(docs[0], /Anthropic and Bedrock report regular input, cache reads, and cache writes separately/);
+  assert.match(docs[0], /final cumulative usage snapshot/);
+});
+
 console.log('\nsheets-tools: A1 parsing');
 
 test('parseA1: single cell A1', () => {
