@@ -341,11 +341,13 @@ export class CDPClient {
     }
   }
 
-  _removeWebMCPTools(state, tools) {
+  _removeWebMCPTools(state, tools, sessionId = '') {
+    const owningSessionId = String(sessionId || '');
     for (const rawTool of Array.isArray(tools) ? tools : []) {
       const key = this._webMCPToolKey(rawTool?.frameId, rawTool?.name);
       const toolId = state.idsByKey.get(key);
       if (!toolId) continue;
+      if (state.toolsById.get(toolId)?.sessionId !== owningSessionId) continue;
       state.idsByKey.delete(key);
       state.toolsById.delete(toolId);
     }
@@ -536,7 +538,9 @@ export class CDPClient {
     register('WebMCP.toolsAdded', (params, source) => {
       this._storeWebMCPTools(state, params?.tools, source?.sessionId);
     });
-    register('WebMCP.toolsRemoved', params => this._removeWebMCPTools(state, params?.tools));
+    register('WebMCP.toolsRemoved', (params, source) => (
+      this._removeWebMCPTools(state, params?.tools, source?.sessionId)
+    ));
     register('WebMCP.toolResponded', (params, source) => (
       this._handleWebMCPResponse(state, params, source?.sessionId)
     ));

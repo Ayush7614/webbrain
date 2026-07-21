@@ -21463,6 +21463,10 @@ test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', as
     nextChild?.frame_url,
     'https://embed.test/next',
   );
+  emit('WebMCP.toolsRemoved', {
+    tools: [{ name: 'next_child_tool', frameId: 'oopif-frame' }],
+  }, { tabId: 58, sessionId: 'stale-oopif-session' });
+  assert.equal((await cdp.listWebMCPTools(58)).total, 2);
   const detachedInvocation = cdp.invokeWebMCPTool(58, nextChild.tool_id, {});
   await new Promise(resolve => setTimeout(resolve, 0));
   emit('Target.detachedFromTarget', { sessionId: 'oopif-session' });
