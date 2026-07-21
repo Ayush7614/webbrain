@@ -24758,6 +24758,51 @@ test('OpenAI-compatible streams request usage metadata only for supporting provi
   }
 });
 
+test('OpenAI-compatible streams emit only the final cumulative usage snapshot', async () => {
+  const originalFetch = globalThis.fetch;
+  const snapshots = [
+    {
+      prompt_tokens: 100,
+      completion_tokens: 1,
+      prompt_tokens_details: { cached_tokens: 80 },
+    },
+    {
+      prompt_tokens: 100,
+      completion_tokens: 5,
+      prompt_tokens_details: { cached_tokens: 80 },
+    },
+  ];
+  const sse = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' } }], usage: snapshots[0] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [], usage: snapshots[1] })}\n\n`,
+    'data: [DONE]\n\n',
+  ].join('');
+  try {
+    globalThis.fetch = async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+    const cases = [
+      [OpenAIProviderCh, { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+      [OpenAIProviderFx, { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+      [AzureOpenAIProviderCh, { baseUrl: 'https://x.openai.azure.com', model: 'deployment', apiVersion: '2024-10-21' }],
+      [AzureOpenAIProviderFx, { baseUrl: 'https://x.openai.azure.com', model: 'deployment', apiVersion: '2024-10-21' }],
+    ];
+    for (const [Provider, config] of cases) {
+      const chunks = [];
+      for await (const chunk of new Provider(config).chatStream([{ role: 'user', content: 'hello' }])) {
+        chunks.push(chunk);
+      }
+      const usageChunks = chunks.filter(chunk => chunk.type === 'usage');
+      assert.equal(usageChunks.length, 1, `${Provider.name}: cumulative usage was counted more than once`);
+      assert.deepEqual(usageChunks[0].usage, snapshots[1], `${Provider.name}: final usage snapshot was not retained`);
+      assert.equal(chunks.at(-1)?.type, 'done');
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Azure OpenAI provider builds deployment URL, headers, and model getter', () => {
   for (const Provider of [AzureOpenAIProviderCh, AzureOpenAIProviderFx]) {
     const provider = new Provider({
