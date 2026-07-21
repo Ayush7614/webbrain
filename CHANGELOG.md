@@ -4,6 +4,18 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [25.2.0] - 2026-07-21
+
+### Added
+- Initial release of WebBrain, introducing an open-source AI-powered browser agent.
+
+### Changed
+
+### Fixed
+
+### Tests
+- Comprehensive test suite established for validating core functionality and browser compatibility.
+
 ## [25.0.0] - 2026-07-19
 
 ### Added
