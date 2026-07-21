@@ -21327,6 +21327,45 @@ test('CDP WebMCP reuses default execution contexts reported before discovery sta
   assert.ok(commands.some(command => command.method === 'Runtime.evaluate'));
 });
 
+test('CDP WebMCP bounds context discovery and detaches excess OOPIF sessions', async () => {
+  const cdp = new CDPClient();
+  const state = cdp._newWebMCPSession(60);
+  const commands = [];
+  cdp.webMcpSessions.set(60, state);
+  for (let index = 0; index < 505; index++) {
+    cdp._trackRuntimeContextEvent(60, {}, 'Runtime.executionContextCreated', {
+      context: {
+        id: 1000 + index,
+        auxData: { isDefault: true, frameId: `frame-${index}` },
+      },
+    });
+  }
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    commands.push({ tabId, method, params, sessionId });
+    if (method === 'Runtime.evaluate') return { result: { value: [] } };
+    return {};
+  };
+
+  await cdp._discoverExistingWebMCPFrameTools(60, state);
+  assert.equal(commands.filter(command => command.method === 'Runtime.evaluate').length, 500);
+  await cdp._discoverExistingWebMCPFrameTools(60, state);
+  assert.equal(commands.filter(command => command.method === 'Runtime.evaluate').length, 500);
+
+  for (let index = 0; index < 100; index++) {
+    state.childSessions.set(`child-${index}`, { frameIds: new Set() });
+  }
+  cdp._enableWebMCPChildSession(60, state, {
+    sessionId: 'excess-child',
+    targetInfo: { type: 'iframe', targetId: 'excess-frame' },
+  }, { sessionId: 'parent-session' });
+  assert.equal(state.childSessions.has('excess-child'), false);
+  assert.ok(commands.some(command => (
+    command.method === 'Target.detachFromTarget'
+    && command.params.sessionId === 'excess-child'
+    && command.sessionId === 'parent-session'
+  )));
+});
+
 test('CDP WebMCP aggregates OOPIF sessions and removes their detached tools', async () => {
   const cdp = new CDPClient();
   const commands = [];

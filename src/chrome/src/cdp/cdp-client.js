@@ -20,6 +20,8 @@ const WEBMCP_MAX_INVOCATION_TIMEOUT_MS = 60000;
 const WEBMCP_MAX_VALUE_NODES = 500;
 const WEBMCP_MAX_VALUE_CHARS = 20000;
 const WEBMCP_CONTEXT_DISCOVERY_TIMEOUT_MS = 1000;
+const WEBMCP_MAX_DISCOVERY_CONTEXTS = 500;
+const WEBMCP_MAX_CHILD_SESSIONS = 100;
 const WEBMCP_MAX_TARGET_ATTACH_PASSES = 10;
 const WEBMCP_IFRAME_TARGET_FILTER = [
   { type: 'iframe', exclude: false },
@@ -275,6 +277,7 @@ export class CDPClient {
       completedResponses: new Map(),
       childSessions: new Map(),
       childEnablePromises: new Set(),
+      discoveryContextsUsed: 0,
       handlers: [],
     };
   }
@@ -435,8 +438,14 @@ export class CDPClient {
       this.off(tabId, 'Runtime.executionContextCreated', onContextCreated);
     }
 
+    const remainingContextBudget = Math.max(
+      0,
+      WEBMCP_MAX_DISCOVERY_CONTEXTS - state.discoveryContextsUsed,
+    );
+    const selectedContexts = [...contextsByFrame].slice(0, remainingContextBudget);
+    state.discoveryContextsUsed += selectedContexts.length;
     const discovered = await Promise.allSettled(
-      [...contextsByFrame].map(async ([frameId, contextId]) => {
+      selectedContexts.map(async ([frameId, contextId]) => {
         const evaluated = await this.sendCommand(tabId, 'Runtime.evaluate', {
           expression: WEBMCP_CONTEXT_DISCOVERY_EXPRESSION,
           contextId,
@@ -459,10 +468,19 @@ export class CDPClient {
     return count;
   }
 
-  _enableWebMCPChildSession(tabId, state, params = {}) {
+  _enableWebMCPChildSession(tabId, state, params = {}, source = {}) {
     const sessionId = String(params.sessionId || '');
     const targetInfo = params.targetInfo || {};
     if (!sessionId || targetInfo.type !== 'iframe' || state.childSessions.has(sessionId)) return;
+    if (state.childSessions.size >= WEBMCP_MAX_CHILD_SESSIONS) {
+      this.sendCommand(
+        tabId,
+        'Target.detachFromTarget',
+        { sessionId },
+        source.sessionId,
+      ).catch(() => {});
+      return;
+    }
     const child = {
       sessionId,
       targetId: String(targetInfo.targetId || ''),
@@ -544,7 +562,9 @@ export class CDPClient {
     register('WebMCP.toolResponded', (params, source) => (
       this._handleWebMCPResponse(state, params, source?.sessionId)
     ));
-    register('Target.attachedToTarget', params => this._enableWebMCPChildSession(tabId, state, params));
+    register('Target.attachedToTarget', (params, source) => (
+      this._enableWebMCPChildSession(tabId, state, params, source)
+    ));
     register('Target.detachedFromTarget', params => {
       const sessionId = String(params?.sessionId || '');
       const child = state.childSessions.get(sessionId);
