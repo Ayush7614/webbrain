@@ -1299,6 +1299,11 @@
    */
   function clickElement(params) {
     let el;
+    // Tracks whether text matching below resolved el via an EXACT-tier
+    // match. The auto-select rescue yields only to exact clickables — a
+    // contains-tier match (e.g. "Contact us" for needle "US") must not
+    // suppress selecting an exactly-matching <select> option.
+    let textResolvedExact = false;
     // Reject jQuery/Playwright selectors with a clear error.
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
       return {
@@ -1406,6 +1411,7 @@
             inp.scrollIntoView({ block: 'center', inline: 'center' });
             inp.focus();
             el = inp;
+            textResolvedExact = (needle === ltxt);
             break;
           }
         }
@@ -1446,6 +1452,7 @@
                 inp.scrollIntoView({ block: 'center', inline: 'center' });
                 inp.focus();
                 el = inp;
+                textResolvedExact = (needle === ltxt);
                 break;
               }
             }
@@ -1547,6 +1554,7 @@
       }
       if (!el) {
         let resolved = matches[0].e;
+        textResolvedExact = (usedMode === 'exact');
         // LABEL → associated input resolution
         if (resolved.tagName === 'LABEL') {
           let target = null;
@@ -1572,17 +1580,21 @@
     }
 
     // ── Auto-select: if click text matches a <select> option, select it ──
-    // Runs when text matching resolved NO element, or resolved the <select>
+    // Runs when text matching resolved NO element, resolved the <select>
     // itself (a select's innerText contains its options, so the contains
     // level routinely lands here for option clicks — skipping the rescue
-    // then would wrongly fall through to the CANNOT-CLICK intercept).
-    // It must NOT run when a genuine button/link labeled X resolved —
-    // otherwise that element would lose to an unrelated dropdown that
-    // merely has an option labeled X.
-    if (params.text && (!el || el instanceof HTMLSelectElement)) {
+    // then would wrongly fall through to the CANNOT-CLICK intercept), or
+    // resolved a clickable only via a NON-exact tier (option text matches
+    // exactly, so it beats a "Contact us"-style contains hit for "US").
+    // It must NOT run when a genuine button/link labeled X matched
+    // exactly — that element is what the model meant.
+    if (params.text && (!el || el instanceof HTMLSelectElement || !textResolvedExact)) {
       const needle = params.text.trim();
       const lc = needle.toLowerCase();
-      const allSels = document.querySelectorAll('select');
+      const selectScope = _findTopmostModal() || document;
+      const allSels = el instanceof HTMLSelectElement
+        ? [el]
+        : selectScope.querySelectorAll('select');
       for (const sel of allSels) {
         const opts = Array.from(sel.options);
         const match = opts.find(o => o.text.trim() === needle)

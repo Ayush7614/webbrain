@@ -258,11 +258,45 @@
     }
   }
 
+  function _composedParent(node) {
+    if (!node) return null;
+    const parent = node.parentNode;
+    if (parent) {
+      return (typeof ShadowRoot !== 'undefined' && parent instanceof ShadowRoot)
+        ? parent.host
+        : parent;
+    }
+    const root = node.getRootNode?.();
+    return (typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot)
+      ? root.host
+      : null;
+  }
+
+  function _isComposedAncestor(ancestor, node) {
+    let cur = node;
+    while (cur) {
+      if (cur === ancestor) return true;
+      cur = _composedParent(cur);
+    }
+    return false;
+  }
+
+  function _hasComposedClosest(el, selector) {
+    let cur = el;
+    while (cur) {
+      try {
+        if (cur.nodeType === Node.ELEMENT_NODE && cur.matches(selector)) return true;
+      } catch {}
+      cur = _composedParent(cur);
+    }
+    return false;
+  }
+
   function isVisiblyInteractive(el) {
     if (!el || el.tagName === 'BODY' || el.tagName === 'HTML') return false;
     // aria-hidden / inert subtrees are non-interactive for assistive tech
     // and should be for us too.
-    if (el.closest('[aria-hidden="true"], [inert]')) return false;
+    if (_hasComposedClosest(el, '[aria-hidden="true"], [inert]')) return false;
 
     const style = el.ownerDocument.defaultView.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
@@ -332,54 +366,103 @@
     }
   }
 
-  /**
-   * Detect the topmost modal/overlay/dialog on the page. If one is found,
-   * only elements inside it (and the backdrop) are "reachable" — everything
-   * behind the overlay is visually blocked even though it passes visibility
-   * checks. Returns the modal container element, or null if no overlay is
-   * detected.
-   *
-   * Detection heuristics (ordered by reliability):
-   *   1. <dialog[open]> — native HTML dialog
-   *   2. [role="dialog"][aria-modal="true"] — ARIA modal pattern
-   *   3. [role="dialog"] that is visible
-   *   4. Common overlay class/attribute patterns (Stripe, Material, Radix,
-   *      Chakra, etc.): data-overlay, data-state="open", .modal.show, etc.
-   */
-  function _findTopmostModal() {
-    // 1. Native <dialog open>
-    const dialogs = document.querySelectorAll('dialog[open]');
-    if (dialogs.length > 0) return dialogs[dialogs.length - 1]; // last = topmost
+  function _isNativeBlockingDialog(dialog) {
+    if (!dialog) return false;
+    try {
+      if (dialog.matches(':modal')) return true;
+    } catch {}
+    return dialog.getAttribute('aria-modal') === 'true';
+  }
 
-    // 2. ARIA modal
+  function _hasVisibleBox(el, minWidth = 1, minHeight = 1) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width < minWidth || r.height < minHeight) return false;
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity) === 0) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function _findDialogContentForOverlay(overlay) {
+    const selector = '[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog[open],[data-state="open"][role="dialog"],[class*="DialogContent"],[class*="ModalContent"],.modal.show';
+    const pick = (node) => {
+      if (!node || node === overlay) return null;
+      try {
+        if (node.matches?.(selector) && _hasVisibleBox(node, 20, 20)) return node;
+        const match = node.querySelector?.(selector);
+        if (match && _hasVisibleBox(match, 20, 20)) return match;
+      } catch {}
+      return null;
+    };
+
+    const siblings = overlay?.parentElement ? Array.from(overlay.parentElement.children) : [];
+    const idx = siblings.indexOf(overlay);
+    if (idx >= 0) {
+      for (let i = idx + 1; i < siblings.length; i++) {
+        const found = pick(siblings[i]);
+        if (found) return found;
+      }
+      for (let i = idx - 1; i >= 0; i--) {
+        const found = pick(siblings[i]);
+        if (found) return found;
+      }
+    }
+
+    return pick(overlay);
+  }
+
+  /**
+   * Detect the topmost modal/overlay/dialog on the page. Returns the modal
+   * container element, or null if no overlay is detected.
+   */
+  function _findTopmostModal(opts = {}) {
+    const includeNonModalDialogs = opts.includeNonModalDialogs !== false;
+    const dialogs = document.querySelectorAll('dialog[open]');
+    for (let i = dialogs.length - 1; i >= 0; i--) {
+      if (includeNonModalDialogs || _isNativeBlockingDialog(dialogs[i])) return dialogs[i];
+    }
+
     const ariaModals = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
     for (let i = ariaModals.length - 1; i >= 0; i--) {
       const r = ariaModals[i].getBoundingClientRect();
       if (r.width > 0 && r.height > 0) return ariaModals[i];
     }
 
-    // 3. Visible role="dialog"
-    const roleDialogs = document.querySelectorAll('[role="dialog"]');
-    for (let i = roleDialogs.length - 1; i >= 0; i--) {
-      const r = roleDialogs[i].getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) return roleDialogs[i];
+    if (includeNonModalDialogs) {
+      const roleDialogs = document.querySelectorAll('[role="dialog"]');
+      for (let i = roleDialogs.length - 1; i >= 0; i--) {
+        const r = roleDialogs[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return roleDialogs[i];
+      }
     }
 
-    // 4. Common overlay patterns — look for large, high-z-index containers
-    // that cover most of the viewport. These often contain forms/modals on
-    // sites like Stripe, GitHub, AWS, etc.
     const candidates = document.querySelectorAll(
-      '[data-overlay], [data-state="open"][role="dialog"], ' +
+      '[data-overlay], ' +
+      (includeNonModalDialogs ? '[data-state="open"][role="dialog"], ' : '') +
       '.modal.show, .modal-overlay, .overlay, [class*="modal"][class*="open"], ' +
       '[class*="overlay"][class*="active"], [class*="DialogOverlay"], ' +
       '[class*="ModalOverlay"]'
     );
     for (let i = candidates.length - 1; i >= 0; i--) {
       const r = candidates[i].getBoundingClientRect();
-      if (r.width > 100 && r.height > 100) return candidates[i];
+      if (r.width > 100 && r.height > 100) {
+        if (!includeNonModalDialogs) {
+          const dialogContent = _findDialogContentForOverlay(candidates[i]);
+          if (dialogContent) return dialogContent;
+        }
+        return candidates[i];
+      }
     }
 
     return null;
+  }
+
+  function _findTopmostBlockingModal() {
+    return _findTopmostModal({ includeNonModalDialogs: false });
   }
 
   function queryInteractive() {
@@ -392,7 +475,7 @@
       // This prevents the agent from seeing (and accidentally clicking)
       // elements behind the overlay — the #1 cause of "clicked Export
       // instead of filling the form" on sites like Stripe.
-      if (modal && !modal.contains(el)) continue;
+      if (modal && !_isComposedAncestor(modal, el)) continue;
       out.push(el);
     }
     return out;
@@ -1109,6 +1192,11 @@
    */
   function clickElement(params) {
     let el;
+    // Tracks whether text matching below resolved el via an EXACT-tier
+    // match. The auto-select rescue yields only to exact clickables — a
+    // contains-tier match (e.g. "Contact us" for needle "US") must not
+    // suppress selecting an exactly-matching <select> option.
+    let textResolvedExact = false;
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
       return {
         success: false,
@@ -1179,6 +1267,7 @@
             inp.scrollIntoView({ block: 'center', inline: 'center' });
             inp.focus();
             el = inp;
+            textResolvedExact = (needle === ltxt);
             break;
           }
         }
@@ -1219,6 +1308,7 @@
                 inp.scrollIntoView({ block: 'center', inline: 'center' });
                 inp.focus();
                 el = inp;
+                textResolvedExact = (needle === ltxt);
                 break;
               }
             }
@@ -1289,6 +1379,7 @@
       }
       if (!el) {
         let resolved = matches[0].e;
+        textResolvedExact = (usedMode === 'exact');
         // LABEL → associated input resolution
         if (resolved.tagName === 'LABEL') {
           let target = null;
@@ -1316,17 +1407,21 @@
     }
 
     // ── Auto-select: if click text matches a <select> option, select it ──
-    // Runs when text matching resolved NO element, or resolved the <select>
+    // Runs when text matching resolved NO element, resolved the <select>
     // itself (a select's innerText contains its options, so the contains
     // level routinely lands here for option clicks — skipping the rescue
-    // then would wrongly fall through to the CANNOT-CLICK intercept).
-    // It must NOT run when a genuine button/link labeled X resolved —
-    // otherwise that element would lose to an unrelated dropdown that
-    // merely has an option labeled X.
-    if (params.text && (!el || el instanceof HTMLSelectElement)) {
+    // then would wrongly fall through to the CANNOT-CLICK intercept), or
+    // resolved a clickable only via a NON-exact tier (option text matches
+    // exactly, so it beats a "Contact us"-style contains hit for "US").
+    // It must NOT run when a genuine button/link labeled X matched
+    // exactly — that element is what the model meant.
+    if (params.text && (!el || el instanceof HTMLSelectElement || !textResolvedExact)) {
       const needle = params.text.trim();
       const lc = needle.toLowerCase();
-      const allSels = document.querySelectorAll('select');
+      const selectScope = _findTopmostModal() || document;
+      const allSels = el instanceof HTMLSelectElement
+        ? [el]
+        : selectScope.querySelectorAll('select');
       for (const sel of allSels) {
         const opts = Array.from(sel.options);
         const match = opts.find(o => o.text.trim() === needle)
@@ -2535,8 +2630,11 @@
   function queryInteractiveFull() {
     const collected = []; // {el, rect, inShadow}
     const seen = new Set(); // dedupe nested wrappers (button > span > svg etc.)
+    const modal = _findTopmostBlockingModal();
 
     const isUsable = (el, rect) => {
+      if (_hasComposedClosest(el, '[aria-hidden="true"], [inert]')) return false;
+      if (modal && !_isComposedAncestor(modal, el)) return false;
       // Visible and in viewport. Aggressive filtering on purpose: a global
       // header link scrolled offscreen creates noise indices that shift
       // every page and confuse models that trust index across turns.

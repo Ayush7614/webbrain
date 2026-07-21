@@ -178,15 +178,25 @@ async function _fetchViaOffscreenProxy(url, fetchOptions, timeoutMs) {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutId);
+        const responseInit = {
+          status: msg.status,
+          statusText: msg.ok ? 'OK' : 'Error',
+          headers: { 'Content-Type': msg.contentType || 'application/json' },
+        };
+        // The Response constructor rejects a non-null body for 204, 205,
+        // and 304. HEAD responses can also have status 200 with no body, so
+        // honor the explicit signal from the offscreen fetch as well.
+        if (msg.hasBody === false || [204, 205, 304].includes(msg.status)) {
+          streamController = null;
+          resolve(new Response(null, responseInit));
+          try { port.disconnect(); } catch {}
+          return;
+        }
         const stream = new ReadableStream({
           start(controller) { streamController = controller; },
           cancel() { try { port.disconnect(); } catch {} },
         });
-        resolve(new Response(stream, {
-          status: msg.status,
-          statusText: msg.ok ? 'OK' : 'Error',
-          headers: { 'Content-Type': msg.contentType || 'application/json' },
-        }));
+        resolve(new Response(stream, responseInit));
         return;
       }
       if (msg?.type === 'error') {

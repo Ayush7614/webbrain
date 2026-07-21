@@ -173,6 +173,14 @@ async function setupFirefoxHtml(page, html) {
   await page.waitForFunction(() => typeof window.__wb_handler === 'function');
 }
 
+async function setupChromeHtml(page, html) {
+  await page.setContent(html, { waitUntil: 'domcontentloaded' });
+  await page.addScriptTag({ content: stubChrome });
+  const src = await readFile(contentJsPath, 'utf-8');
+  await page.addScriptTag({ content: src });
+  await page.waitForFunction(() => typeof window.__wb_handler === 'function');
+}
+
 async function setupAccessibilityTreeHtml(page, html, sourcePath) {
   await page.setContent(html, { waitUntil: 'domcontentloaded' });
   const src = await readFile(sourcePath, 'utf-8');
@@ -794,6 +802,111 @@ test('modal scoping: click({text:"Publish"}) returns no-match (scoped out)', asy
   if (resp?.dispatched !== false) throw new Error(`no-match must report dispatched:false, got: ${JSON.stringify(resp)}`);
   if (!/scoped to the open modal/i.test(resp?.error || '')) {
     throw new Error(`expected modal-scope note in error, got: ${resp?.error}`);
+  }
+});
+
+async function assertModalAutoSelectTargetsResolvedSelect(page, browserKind) {
+  const label = browserKind === 'chrome' ? 'Chrome' : 'Firefox';
+  const setupHtml = browserKind === 'chrome' ? setupChromeHtml : setupFirefoxHtml;
+  await setupHtml(page, `<!doctype html>
+    <style>
+      select { width: 180px; height: 40px; }
+      #dialog { position: fixed; left: 40px; top: 100px; padding: 20px; background: white; }
+    </style>
+    <select id="background-select">
+      <option value="monthly">Monthly</option>
+      <option value="yearly">Yearly</option>
+    </select>
+    <div id="dialog" role="dialog" aria-modal="true">
+      <select id="dialog-select">
+        <option value="monthly">Monthly</option>
+        <option value="yearly">Yearly</option>
+      </select>
+    </div>`);
+
+  const response = await call(page, 'click', { text: 'Yearly' });
+  if (!response?.success || response?.method !== 'auto-select') {
+    throw new Error(`${label}: expected modal select auto-selection, got: ${JSON.stringify(response)}`);
+  }
+  const values = await page.evaluate(() => ({
+    background: document.getElementById('background-select').value,
+    dialog: document.getElementById('dialog-select').value,
+  }));
+  if (values.background !== 'monthly' || values.dialog !== 'yearly') {
+    throw new Error(`${label}: auto-select mutated the wrong dropdown: ${JSON.stringify(values)}`);
+  }
+}
+
+test('Chrome: modal auto-select changes the resolved select, not a background select', async (page) => {
+  await assertModalAutoSelectTargetsResolvedSelect(page, 'chrome');
+});
+
+test('Firefox: modal auto-select changes the resolved select, not a background select', async (page) => {
+  await assertModalAutoSelectTargetsResolvedSelect(page, 'firefox');
+});
+
+test('Chrome Agent: modal auto-select keeps the exact target after Escape blurs it', async (page) => {
+  await page.setContent(`<!doctype html>
+    <style>
+      select { width: 180px; height: 40px; }
+      #dialog { position: fixed; left: 40px; top: 100px; padding: 20px; background: white; }
+    </style>
+    <select id="background-select">
+      <option value="monthly">Monthly</option>
+      <option value="yearly">Yearly</option>
+    </select>
+    <div id="dialog" role="dialog" aria-modal="true">
+      <select id="dialog-select">
+        <option value="monthly">Monthly</option>
+        <option value="yearly">Yearly</option>
+      </select>
+    </div>
+    <script>
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && document.activeElement?.id === 'dialog-select') {
+          document.activeElement.blur();
+        }
+      }, true);
+    </script>`);
+
+  const session = await page.context().newCDPSession(page);
+  const client = {
+    async evaluate(_tabId, expression) {
+      return { result: { value: await page.evaluate(expression) } };
+    },
+    async sendCommand(_tabId, method, params) {
+      // Headless Chromium does not apply the native <select> default action
+      // for this raw CDP key sequence consistently. Model that one browser
+      // action on whichever exact control the production code focused; the
+      // Escape event itself still goes through CDP and triggers the blur above.
+      if (method === 'Input.dispatchKeyEvent' && params?.type === 'keyDown' && /^(ArrowDown|ArrowUp)$/.test(params.key || '')) {
+        await page.evaluate((key) => {
+          const target = document.activeElement;
+          if (!(target instanceof HTMLSelectElement)) return;
+          const delta = key === 'ArrowDown' ? 1 : -1;
+          target.selectedIndex = Math.max(0, Math.min(target.options.length - 1, target.selectedIndex + delta));
+        }, params.key);
+        return {};
+      }
+      return session.send(method, params);
+    },
+  };
+  const agent = new Agent({});
+  const result = await agent._autoSelectOption(42, client, 'Yearly');
+  const values = await page.evaluate(() => ({
+    background: document.getElementById('background-select').value,
+    dialog: document.getElementById('dialog-select').value,
+    leakedTargetSlots: Object.keys(globalThis).filter((key) => key.startsWith('__webbrainAutoSelectTarget_')),
+  }));
+
+  if (!result?.success || result.method !== 'auto-select-keyboard') {
+    throw new Error(`expected exact-target auto-selection, got: ${JSON.stringify(result)}`);
+  }
+  if (values.background !== 'monthly' || values.dialog !== 'yearly') {
+    throw new Error(`auto-select changed the wrong dropdown after refocus: ${JSON.stringify(values)}`);
+  }
+  if (values.leakedTargetSlots.length) {
+    throw new Error(`auto-select target reference was not cleaned up: ${JSON.stringify(values.leakedTargetSlots)}`);
   }
 });
 
@@ -2247,8 +2360,10 @@ test('Firefox: type_text returns an error after focus moves to a noneditable ele
   if (value !== 'Ada') throw new Error(`expected stale fallback not to mutate input, got: ${value}`);
 });
 
-test('Firefox: full indexed elements exclude inert background controls', async (page) => {
-  await setupFirefoxHtml(page, `<!doctype html>
+async function assertFullIndexedElementsExcludeModalBackground(page, browserKind) {
+  const label = browserKind === 'chrome' ? 'Chrome' : 'Firefox';
+  const setupHtml = browserKind === 'chrome' ? setupChromeHtml : setupFirefoxHtml;
+  await setupHtml(page, `<!doctype html>
     <style>
       body { margin: 0; font: 16px sans-serif; }
       #background { position: absolute; left: 20px; top: 20px; }
@@ -2267,14 +2382,14 @@ test('Firefox: full indexed elements exclude inert background controls', async (
 
   const elements = await call(page, 'get_interactive_elements_cdp', {});
   if (elements.some(e => e.id === 'background-action' || e.id === 'inert-action')) {
-    throw new Error(`expected hidden/inert background controls to be filtered, got: ${JSON.stringify(elements)}`);
+    throw new Error(`${label}: expected hidden/inert background controls to be filtered, got: ${JSON.stringify(elements)}`);
   }
   if (elements?.[0]?.id !== 'dialog-action') {
-    throw new Error(`expected dialog action to be first actionable index, got: ${JSON.stringify(elements?.[0])}`);
+    throw new Error(`${label}: expected dialog action to be first actionable index, got: ${JSON.stringify(elements?.[0])}`);
   }
 
   const click = await call(page, 'click', { index: 0 });
-  if (!click?.success) throw new Error(`expected dialog click success, got: ${JSON.stringify(click)}`);
+  if (!click?.success) throw new Error(`${label}: expected dialog click success, got: ${JSON.stringify(click)}`);
 
   const state = await page.evaluate(() => ({
     dialog: window.__dialogClicked === true,
@@ -2282,8 +2397,16 @@ test('Firefox: full indexed elements exclude inert background controls', async (
     inert: window.__inertClicked === true,
   }));
   if (!state.dialog || state.background || state.inert) {
-    throw new Error(`expected only dialog action to run, got: ${JSON.stringify(state)}`);
+    throw new Error(`${label}: expected only dialog action to run, got: ${JSON.stringify(state)}`);
   }
+}
+
+test('Chrome: full indexed elements exclude inert background controls', async (page) => {
+  await assertFullIndexedElementsExcludeModalBackground(page, 'chrome');
+});
+
+test('Firefox: full indexed elements exclude inert background controls', async (page) => {
+  await assertFullIndexedElementsExcludeModalBackground(page, 'firefox');
 });
 
 test('Firefox: blocking overlay resolves sibling dialog content for indexed controls', async (page) => {
