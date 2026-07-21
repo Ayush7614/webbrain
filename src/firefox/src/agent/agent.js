@@ -310,6 +310,7 @@ export class Agent {
             result?.pageUrl,
             result?.url,
             result?.finalUrl,
+            result?.page?.url,
             observedAxScope?.pageUrl,
           ].find(value => typeof value === 'string' && value.trim()) || ''
         : '';

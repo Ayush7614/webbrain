@@ -30437,6 +30437,30 @@ test('submit-aware completion accepts the observed AMO finish document and rejec
       false,
       `${AgentClass.name}: unrelated network read was accepted as a document observation`,
     );
+    agent._recordCompletionToolResult(tabId, 'screenshot', {}, {
+      success: true,
+      page: { url: finishUrl, title: 'Version Submitted' },
+    });
+    const screenshotRecoveredSubmit = agent._completionSubmitStates.get(tabId);
+    assert.equal(screenshotRecoveredSubmit?.currentUrl, finishUrl,
+      `${AgentClass.name}: screenshot page URL did not reconcile the submit destination`);
+    assert.equal(screenshotRecoveredSubmit?.documentChanged, true,
+      `${AgentClass.name}: screenshot confirmation URL did not establish a document transition`);
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Version Submitted.', 'success', finishState, finishUrl),
+      null,
+      `${AgentClass.name}: slow submit navigation stayed blocked after screenshot verification`,
+    );
+
+    agent._recordCompletionSubmitAttempt(
+      tabId,
+      { isSubmit: true },
+      'click_ax',
+      { ref_id: 'submit-version' },
+      submitUrl,
+      submitUrl,
+      { success: false, dispatched: true, error: 'post-click inspection failed after dispatch' },
+    );
     agent._recordCompletionToolResult(tabId, 'read_page', {}, {
       success: true,
       url: finishUrl,
