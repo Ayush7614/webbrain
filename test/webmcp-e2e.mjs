@@ -17,6 +17,7 @@ import { chromium } from 'playwright';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'webmcp-page.html');
 const FIXTURE_ROUTE = '/test/fixtures/webmcp-page.html';
+const EXTENSION_PATH = path.resolve(__dirname, '..', 'src', 'chrome');
 const FEATURE_FLAGS = 'WebMCPTesting,DevToolsWebMCPSupport';
 const EXPECTED_TOOL_NAMES = ['fail_predictably', 'lookup_inventory'];
 
@@ -108,7 +109,9 @@ async function waitForToolNames(page, entries, expectedNames, label) {
   assert.fail(`Timed out waiting for ${label}; received: ${JSON.stringify(entries)}`);
 }
 
-async function runSmoke(browser, fixtureUrl) {
+async function runProtocolSmoke(context, fixtureUrl) {
+  const browser = context.browser();
+  assert.ok(browser, 'WebMCP smoke test lost its browser connection.');
   const chromeVersion = browser.version();
   const majorVersion = Number.parseInt(chromeVersion, 10);
   assert.ok(
@@ -116,9 +119,8 @@ async function runSmoke(browser, fixtureUrl) {
     `WebMCP smoke test requires Chrome 149 or newer; launched ${chromeVersion || 'an unknown version'}.`,
   );
 
-  const context = await browser.newContext();
+  const page = await context.newPage();
   try {
-    const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(String(error)));
     await page.goto(fixtureUrl, { waitUntil: 'networkidle' });
@@ -199,29 +201,162 @@ async function runSmoke(browser, fixtureUrl) {
       if (webMcpEnabled) await cdp.send('WebMCP.disable').catch(() => {});
     }
   } finally {
-    await context.close();
+    await page.close();
+  }
+}
+
+async function listToolsThroughExtension(harness, tabId) {
+  return harness.evaluate(async targetTabId => {
+    const { cdpClient } = await import(chrome.runtime.getURL('src/cdp/cdp-client.js'));
+    return cdpClient.listWebMCPTools(targetTabId, { page_size: 25 });
+  }, tabId);
+}
+
+async function invokeToolThroughExtension(harness, tabId, toolId, input) {
+  return harness.evaluate(async ({ targetTabId, targetToolId, targetInput }) => {
+    const { cdpClient } = await import(chrome.runtime.getURL('src/cdp/cdp-client.js'));
+    return cdpClient.invokeWebMCPTool(targetTabId, targetToolId, targetInput);
+  }, { targetTabId: tabId, targetToolId: toolId, targetInput: input });
+}
+
+async function waitForExtensionTabId(harness, targetUrl) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const tabId = await harness.evaluate(async url => {
+      const tabs = await chrome.tabs.query({});
+      return tabs.find(tab => tab.url === url)?.id || null;
+    }, targetUrl);
+    if (tabId) return tabId;
+    await harness.waitForTimeout(25);
+  }
+  assert.fail(`Timed out resolving the extension tab ID for ${targetUrl}.`);
+}
+
+async function waitForExtensionCatalog(harness, tabId, predicate, label) {
+  const deadline = Date.now() + 5_000;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await listToolsThroughExtension(harness, tabId);
+    if (predicate(latest)) return latest;
+    await harness.waitForTimeout(25);
+  }
+  assert.fail(`Timed out waiting for ${label}; latest catalog: ${JSON.stringify(latest)}`);
+}
+
+async function runExtensionClientSmoke(context, fixtureUrl) {
+  const browser = context.browser();
+  assert.ok(browser, 'WebMCP extension smoke test lost its browser connection.');
+  const browserCdp = await browser.newBrowserCDPSession();
+  let extensionId = '';
+  let harness = null;
+  let fixture = null;
+  let tabId = null;
+
+  try {
+    const loaded = await browserCdp.send('Extensions.loadUnpacked', { path: EXTENSION_PATH });
+    extensionId = String(loaded.id || '');
+    assert.match(extensionId, /^[a-p]{32}$/, 'Chrome did not return a valid unpacked extension ID.');
+    const installed = await browserCdp.send('Extensions.getExtensions');
+    const webBrain = installed.extensions.find(extension => extension.id === extensionId);
+    assert.equal(webBrain?.enabled, true, 'Chrome loaded the WebBrain extension in a disabled state.');
+    assert.equal(path.resolve(webBrain.path), EXTENSION_PATH);
+
+    harness = await context.newPage();
+    await harness.goto(`chrome-extension://${extensionId}/src/ui/settings.html`);
+    let worker = context.serviceWorkers().find(candidate => candidate.url().includes(extensionId));
+    if (!worker) {
+      worker = await context.waitForEvent('serviceworker', {
+        predicate: candidate => candidate.url().includes(extensionId),
+        timeout: 10_000,
+      });
+    }
+    assert.match(worker.url(), new RegExp(`^chrome-extension://${extensionId}/`));
+
+    fixture = await context.newPage();
+    await fixture.goto(fixtureUrl, { waitUntil: 'networkidle' });
+    await fixture.waitForFunction(() => window.webMCPFixture?.ready === true);
+    tabId = await waitForExtensionTabId(harness, fixtureUrl);
+
+    const catalog = await listToolsThroughExtension(harness, tabId);
+    assert.equal(catalog.success, true);
+    assert.equal(catalog.total, 2);
+    const inventory = catalog.tools.find(tool => tool.name === 'lookup_inventory');
+    assert.match(inventory.tool_id, /^wmcp_[a-z0-9]+$/);
+    assert.doesNotMatch(inventory.tool_id, /lookup|inventory/);
+    assert.deepEqual(inventory.input_schema.required, ['sku']);
+    assert.equal(inventory.frame_url, fixtureUrl);
+
+    const invoked = await invokeToolThroughExtension(
+      harness,
+      tabId,
+      inventory.tool_id,
+      { sku: 'EXT-42' },
+    );
+    assert.equal(invoked.success, true);
+    assert.equal(invoked.dispatched, true);
+    assert.deepEqual(invoked.output.structuredContent, { sku: 'EXT-42', available: 7 });
+    assert.equal(await fixture.locator('#status').innerText(), 'invoked');
+
+    const failing = catalog.tools.find(tool => tool.name === 'fail_predictably');
+    const rejected = await invokeToolThroughExtension(harness, tabId, failing.tool_id, {});
+    assert.equal(rejected.success, false);
+    assert.equal(rejected.dispatched, true);
+    assert.equal(rejected.outcomeUnknown, true);
+    assert.match(rejected.error, /fixture failure/);
+
+    await fixture.evaluate(() => window.webMCPFixture.unregister());
+    const emptyCatalog = await waitForExtensionCatalog(
+      harness,
+      tabId,
+      candidate => candidate.total === 0,
+      'the extension CDP client to remove every unregistered tool',
+    );
+    assert.deepEqual(emptyCatalog.tools, []);
+
+    console.log(
+      `PASS: WebBrain extension ${webBrain.version} discovered, invoked, rejected, and removed `
+      + 'WebMCP tools through its CDP client.',
+    );
+  } finally {
+    if (harness && tabId) {
+      await harness.evaluate(async targetTabId => {
+        const { cdpClient } = await import(chrome.runtime.getURL('src/cdp/cdp-client.js'));
+        await cdpClient.disableWebMCP(targetTabId);
+        await cdpClient.detach(targetTabId);
+      }, tabId).catch(() => {});
+    }
+    if (fixture) await fixture.close().catch(() => {});
+    if (harness) await harness.close().catch(() => {});
+    if (extensionId) await browserCdp.send('Extensions.uninstall', { id: extensionId }).catch(() => {});
   }
 }
 
 async function main() {
   const fixtureServer = await startFixtureServer();
-  let browser = null;
+  let context = null;
   try {
     const launchTarget = await chromeLaunchTarget();
     try {
-      browser = await chromium.launch({
+      context = await chromium.launchPersistentContext('', {
         ...launchTarget,
         headless: true,
-        args: [`--enable-features=${FEATURE_FLAGS}`],
+        // Playwright disables extensions by default. Keep them enabled so the
+        // browser-level Extensions.loadUnpacked command can load the real build.
+        ignoreDefaultArgs: ['--disable-extensions'],
+        args: [
+          `--enable-features=${FEATURE_FLAGS}`,
+          '--enable-unsafe-extension-debugging',
+        ],
       });
     } catch (error) {
       throw new Error(
         `Could not launch Google Chrome. Install Chrome 149+ or set WEBMCP_CHROME_PATH. ${error?.message || error}`,
       );
     }
-    await runSmoke(browser, fixtureServer.url);
+    await runProtocolSmoke(context, fixtureServer.url);
+    await runExtensionClientSmoke(context, fixtureServer.url);
   } finally {
-    if (browser) await browser.close();
+    if (context) await context.close();
     await fixtureServer.close();
   }
 }
