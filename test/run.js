@@ -21191,6 +21191,104 @@ test('CDP WebMCP discovery uses opaque IDs, tracks frames, and invokes asynchron
   assert.ok(commands.some(command => command.method === 'WebMCP.disable'));
 });
 
+test('CDP WebMCP recovers tools registered in child frames before enable', async () => {
+  const cdp = new CDPClient();
+  const commands = [];
+  const emit = (event, params) => {
+    for (const handler of cdp.eventHandlers.get(57)?.[event] || []) handler(params);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    commands.push({ tabId, method, params });
+    if (method === 'WebMCP.enable') {
+      emit('WebMCP.toolsAdded', {
+        tools: [{
+          name: 'parent_tool',
+          description: 'Top-level tool',
+          inputSchema: { type: 'object' },
+          frameId: 'main-frame',
+        }],
+      });
+      return {};
+    }
+    if (method === 'Runtime.enable') {
+      emit('Runtime.executionContextCreated', {
+        context: { id: 11, auxData: { isDefault: true, frameId: 'main-frame' } },
+      });
+      emit('Runtime.executionContextCreated', {
+        context: { id: 12, auxData: { isDefault: true, frameId: 'child-frame' } },
+      });
+      emit('Runtime.executionContextCreated', {
+        context: { id: 13, auxData: { isDefault: false, frameId: 'child-frame' } },
+      });
+      return {};
+    }
+    if (method === 'Runtime.evaluate') {
+      if (params.contextId === 11) {
+        return { result: { value: [{ name: 'parent_tool', description: 'Top-level tool' }] } };
+      }
+      assert.equal(params.contextId, 12);
+      assert.equal(params.awaitPromise, true);
+      assert.equal(params.returnByValue, true);
+      return {
+        result: {
+          value: [{
+            name: 'child_tool',
+            description: 'Pre-registered child tool',
+            inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+            annotations: { readOnly: true, untrustedContent: true, autosubmit: false },
+          }],
+        },
+      };
+    }
+    if (method === 'Page.enable') return {};
+    if (method === 'Page.getFrameTree') {
+      return {
+        frameTree: {
+          frame: { id: 'main-frame', url: 'https://example.com/app' },
+          childFrames: [{
+            frame: {
+              id: 'child-frame',
+              parentId: 'main-frame',
+              url: 'https://example.com/embed',
+            },
+          }],
+        },
+      };
+    }
+    if (method === 'WebMCP.invokeTool') {
+      assert.deepEqual(params, {
+        frameId: 'child-frame',
+        toolName: 'child_tool',
+        input: { value: 'ok' },
+      });
+      emit('WebMCP.toolResponded', {
+        invocationId: 'child-invocation',
+        status: 'Completed',
+        output: { frame: 'child' },
+      });
+      return { invocationId: 'child-invocation' };
+    }
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(57, { page_size: 10 });
+  assert.equal(catalog.total, 2);
+  assert.deepEqual(catalog.tools.map(tool => tool.name), ['parent_tool', 'child_tool']);
+  const child = catalog.tools.find(tool => tool.name === 'child_tool');
+  assert.equal(child.frame_url, 'https://example.com/embed');
+  assert.equal(child.annotations.readOnly, true);
+  assert.match(child.tool_id, /^wmcp_[a-z0-9]+$/);
+
+  const result = await cdp.invokeWebMCPTool(57, child.tool_id, { value: 'ok' });
+  assert.equal(result.success, true);
+  assert.deepEqual(result.output, { frame: 'child' });
+  assert.ok(commands.some(command => command.method === 'Runtime.evaluate' && command.params.contextId === 12));
+});
+
 test('CDP WebMCP bounds hostile catalogs and cleans up after unsupported-domain errors', async () => {
   const cdp = new CDPClient();
   const emit = (event, params) => {

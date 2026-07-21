@@ -19,6 +19,33 @@ const WEBMCP_DEFAULT_INVOCATION_TIMEOUT_MS = 30000;
 const WEBMCP_MAX_INVOCATION_TIMEOUT_MS = 60000;
 const WEBMCP_MAX_VALUE_NODES = 500;
 const WEBMCP_MAX_VALUE_CHARS = 20000;
+const WEBMCP_CONTEXT_DISCOVERY_TIMEOUT_MS = 1000;
+const WEBMCP_CONTEXT_DISCOVERY_EXPRESSION = `
+  (async () => {
+    const context = document.modelContext;
+    if (typeof context?.getTools !== 'function') return [];
+    const tools = await context.getTools();
+    return tools
+      .filter(tool => tool?.window === window)
+      .slice(0, ${WEBMCP_MAX_REGISTERED_TOOLS})
+      .map(tool => {
+        let inputSchema = tool.inputSchema;
+        if (typeof inputSchema === 'string') {
+          try { inputSchema = JSON.parse(inputSchema); } catch { inputSchema = null; }
+        }
+        return {
+          name: tool.name,
+          description: tool.description,
+          inputSchema,
+          annotations: {
+            readOnly: tool.annotations?.readOnlyHint === true,
+            untrustedContent: tool.annotations?.untrustedContentHint === true,
+            autosubmit: false,
+          },
+        };
+      });
+  })()
+`;
 
 export class CDPClient {
   constructor() {
@@ -278,6 +305,50 @@ export class CDPClient {
     }
   }
 
+  async _discoverExistingWebMCPFrameTools(tabId, state) {
+    const contextsByFrame = new Map();
+    const onContextCreated = (params = {}) => {
+      const context = params.context;
+      const frameId = String(context?.auxData?.frameId || '');
+      if (!context?.auxData?.isDefault || !frameId || context.id == null) return;
+      contextsByFrame.set(frameId, context.id);
+    };
+    this.on(tabId, 'Runtime.executionContextCreated', onContextCreated);
+    try {
+      await this.sendCommand(tabId, 'Runtime.enable');
+      // Runtime.enable reports existing contexts asynchronously. Keep this
+      // bounded: live registrations are still delivered by WebMCP.toolsAdded.
+      await new Promise(resolve => setTimeout(resolve, WEBMCP_DISCOVERY_SETTLE_MS));
+    } catch {
+      return 0;
+    } finally {
+      this.off(tabId, 'Runtime.executionContextCreated', onContextCreated);
+    }
+
+    const discovered = await Promise.allSettled(
+      [...contextsByFrame].map(async ([frameId, contextId]) => {
+        const evaluated = await this.sendCommand(tabId, 'Runtime.evaluate', {
+          expression: WEBMCP_CONTEXT_DISCOVERY_EXPRESSION,
+          contextId,
+          awaitPromise: true,
+          returnByValue: true,
+          timeout: WEBMCP_CONTEXT_DISCOVERY_TIMEOUT_MS,
+        });
+        if (evaluated?.exceptionDetails) return [];
+        return (Array.isArray(evaluated?.result?.value) ? evaluated.result.value : [])
+          .map(tool => ({ ...tool, frameId }));
+      }),
+    );
+    if (state.closed || this.webMcpSessions.get(tabId) !== state) return 0;
+    let count = 0;
+    for (const result of discovered) {
+      if (result.status !== 'fulfilled') continue;
+      this._storeWebMCPTools(state, result.value);
+      count += result.value.length;
+    }
+    return count;
+  }
+
   /**
    * Enable Chrome's experimental WebMCP CDP domain. Tool descriptions,
    * schemas, and outputs remain page-controlled; callers must keep them on an
@@ -314,6 +385,11 @@ export class CDPClient {
         // The protocol reports the initial catalog through toolsAdded rather
         // than the command result. Give that event one short task turn to land.
         await new Promise(resolve => setTimeout(resolve, WEBMCP_DISCOVERY_SETTLE_MS));
+        // Chrome currently enumerates only the root frame when WebMCP.enable
+        // runs. Query each already-live default execution context through the
+        // browser's ModelContext API so tools registered earlier in child
+        // frames enter the same opaque, untrusted CDP-backed registry.
+        await this._discoverExistingWebMCPFrameTools(tabId, state);
         return state;
       } catch (error) {
         this._removeWebMCPHandlers(tabId, state);
