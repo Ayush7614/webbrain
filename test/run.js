@@ -14358,6 +14358,9 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
     assert.match(agent, /onUpdate\('clarify_auto'/, `${label}: agent should emit clarify_auto for UI lock`);
     assert.match(agent, /timeoutSec >= 0/, `${label}: Instant (0) and positive waits should arm auto-select; Off (-1) waits forever`);
     assert.match(agent, /NOT a real user confirmation/, `${label}: timeout tool note should deny user-confirmation status`);
+    assert.match(agent, /_clarificationAuthorizationBlock/, `${label}: waited timeout should arm a structural authorization guard`);
+    assert.match(agent, /requiresExplicitConfirmation: !authorized/, `${label}: clarify results should expose machine-readable authorization state`);
+    assert.match(agent, /authorizationSource: 'timeout'/, `${label}: blocked actions should identify the timeout authorization source`);
     // Permission / form confirm prompts reuse clarify plumbing but must not
     // arm the auto-timeout (first option would grant access).
     const permMatch = agent.match(/async _promptPermission\([\s\S]*?\n  \}/);
@@ -14429,6 +14432,160 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
     assert.match(locale, /above 1200s/, `${label}: English locale should document Off above 1200s`);
     assert.match(locale, /sp\.clarify\.auto_timeout/, `${label}: English locale should include countdown string`);
     assert.match(idLocale, /\{seconds\} dtk/, `${label}: Indonesian countdown should use seconds unit, not bare d`);
+  }
+});
+
+test('clarify result distinguishes waited timeout from user and Instant authorization', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = AgentClass === AgentCh ? 4801 : 4802;
+    agent.clarifyTimeoutSec = 1205;
+
+    const waitedTimeout = await agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      (type, data) => {
+        if (type === 'clarify') agent.submitClarifyResponse(tabId, data.clarifyId, 'First', 'timeout');
+      },
+    );
+    assert.equal(waitedTimeout.source, 'timeout', `${AgentClass.name}: timeout source was lost`);
+    assert.equal(waitedTimeout.authorized, false, `${AgentClass.name}: waited timeout became authorization`);
+    assert.equal(waitedTimeout.requiresExplicitConfirmation, true, `${AgentClass.name}: timeout did not require an explicit answer`);
+    assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.authorized, false, `${AgentClass.name}: timeout guard was not armed`);
+
+    const userReply = await agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      (type, data) => {
+        if (type === 'clarify') agent.submitClarifyResponse(tabId, data.clarifyId, 'Second', 'user');
+      },
+    );
+    assert.equal(userReply.authorized, true, `${AgentClass.name}: direct user reply was not authorized`);
+    assert.equal(userReply.requiresExplicitConfirmation, false, `${AgentClass.name}: direct reply kept the timeout warning`);
+    assert.equal(agent._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: direct reply did not clear the timeout guard`);
+
+    agent.clarifyTimeoutSec = 0;
+    const instant = await agent.executeTool(
+      tabId,
+      'clarify',
+      { question: 'Which record?', options: ['First', 'Second'] },
+      () => {},
+    );
+    assert.equal(instant.source, 'auto', `${AgentClass.name}: Instant did not use source=auto`);
+    assert.equal(instant.authorized, true, `${AgentClass.name}: configured Instant mode was not authorized`);
+    assert.equal(agent._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: Instant unexpectedly armed the timeout guard`);
+  }
+});
+
+test('waited clarify timeout guard persists across restart and clears on a fresh user turn', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousBrowser = globalThis.browser;
+  try {
+    for (const [AgentClass, apiName, tabId] of [
+      [AgentCh, 'chrome', 4803],
+      [AgentFx, 'browser', 4804],
+    ]) {
+      const first = new AgentClass({});
+      first.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
+      first.conversationIds.set(tabId, `conv_${tabId}`);
+      first._persist = () => {};
+      first._recordClarificationAuthorization(tabId, 'timeout');
+      const storedEntry = first._conversationStorageEntry(tabId);
+      assert.equal(storedEntry.clarificationAuthorizationGuard?.authorized, false, `${AgentClass.name}: persisted entry lost timeout guard`);
+      assert.equal(storedEntry.clarificationAuthorizationGuard?.conversationId, `conv_${tabId}`, `${AgentClass.name}: guard was not scoped to its conversation`);
+
+      globalThis[apiName] = {
+        storage: {
+          session: {
+            get: async key => ({ [key]: storedEntry }),
+          },
+        },
+      };
+      const restarted = new AgentClass({});
+      restarted._persist = () => {};
+      await restarted._hydrate(tabId);
+      assert.equal(restarted._clarificationAuthorizationGuards.get(tabId)?.authorized, false, `${AgentClass.name}: worker restart lost timeout guard`);
+
+      restarted._prepareClarificationAuthorizationForRun(tabId, { trustedContinuation: true });
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), true, `${AgentClass.name}: trusted continuation cleared the guard`);
+      restarted._prepareClarificationAuthorizationForRun(tabId, {});
+      assert.equal(restarted._clarificationAuthorizationGuards.has(tabId), false, `${AgentClass.name}: fresh user turn did not clear the run-scoped guard`);
+    }
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
+  }
+});
+
+test('waited clarify timeout blocks consequential dispatch before permission gates', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    const tabId = AgentClass === AgentCh ? 4805 : 4806;
+    const executed = [];
+    let permissionGateCalls = 0;
+    agent._persist = () => {};
+    agent._ensureGateSetting = async () => { permissionGateCalls += 1; };
+    agent._skipPermissionGate = true;
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true };
+    };
+    agent._recordClarificationAuthorization(tabId, 'timeout');
+
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'read_page', {}, []), null, `${AgentClass.name}: read-only inspection was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'navigate', {}, [Capability.NAVIGATE]), null, `${AgentClass.name}: direct navigation was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'resize_window', {}, [Capability.WINDOW]), null, `${AgentClass.name}: window-only action was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'fetch_url', { method: 'GET' }, [Capability.NETWORK]), null, `${AgentClass.name}: read-only GET was blocked`);
+    assert.equal(agent._clarificationAuthorizationBlock(tabId, 'clarify', {}, []), null, `${AgentClass.name}: re-clarification was blocked`);
+
+    const firstMessages = [];
+    const firstResult = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'mutate_1', function: { name: 'click_ax', arguments: '{"ref_id":"ref_duplicate"}' } },
+        { id: 'read_after_block', function: { name: 'read_page', arguments: '{}' } },
+      ],
+      firstMessages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['click_ax', 'read_page']),
+      1,
+    );
+    assert.deepEqual(firstResult, { action: 'continue' }, `${AgentClass.name}: first blocked action should request a fresh model turn`);
+    assert.equal(executed.length, 0, `${AgentClass.name}: consequential tool dispatched despite timeout guard`);
+    assert.equal(permissionGateCalls, 0, `${AgentClass.name}: permission gate ran before timeout authorization guard`);
+    assert.equal(firstMessages.length, 2, `${AgentClass.name}: remaining batch call did not receive a synthetic result`);
+    const denied = JSON.parse(firstMessages[0].content);
+    const skipped = JSON.parse(firstMessages[1].content);
+    assert.equal(denied.clarificationAuthorizationRequired, true, `${AgentClass.name}: block result did not request explicit clarification`);
+    assert.equal(denied.dispatched, false, `${AgentClass.name}: block result did not prove pre-dispatch denial`);
+    assert.equal(skipped.skipped, true, `${AgentClass.name}: later batch call was not skipped`);
+
+    // The model may follow the recovery nudge and ask again. If that second
+    // clarification also times out, it must not reset the blocked-attempt
+    // counter and permit an endless timeout/retry loop.
+    agent._recordClarificationAuthorization(tabId, 'timeout');
+    assert.equal(agent._clarificationAuthorizationGuards.get(tabId)?.blockedAttempts, 1, `${AgentClass.name}: repeated timeout reset the blocked-attempt counter`);
+
+    const secondMessages = [];
+    const secondResult = await agent._executeToolBatch(
+      tabId,
+      [{ id: 'mutate_2', function: { name: 'fetch_url', arguments: '{"url":"https://example.com/duplicate","method":"POST"}' } }],
+      secondMessages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['fetch_url']),
+      2,
+    );
+    assert.equal(secondResult.action, 'return', `${AgentClass.name}: repeated blocked action did not stop the run`);
+    assert.equal(secondResult.status, 'clarification_required', `${AgentClass.name}: repeated block returned the wrong status`);
+    assert.equal(executed.length, 0, `${AgentClass.name}: second consequential tool dispatched`);
   }
 });
 
