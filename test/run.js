@@ -334,6 +334,7 @@ const {
   buildPlannerSystemPrompt: buildPlannerSystemPromptFx,
   buildPlannerMessages: buildPlannerMessagesFx,
   buildPlannerIntentMessages: buildPlannerIntentMessagesFx,
+  parsePlanFromContent: parsePlanFromContentFx,
 } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/planner.js').replace(/\\/g, '/')
 );
@@ -1314,8 +1315,10 @@ test('remaining model-facing screenshot fallbacks apply redaction', () => {
   const firefoxEnd = firefoxSource.indexOf("if (name === 'get_shadow_dom')", firefoxStart);
   const firefoxBody = firefoxSource.slice(firefoxStart, firefoxEnd);
   assert.match(firefoxBody,
-    /let dataUrl = plannerCanSeeImages[\s\S]*?if \(dataUrl && this\.screenshotRedaction\) \{[\s\S]*?_redactScreenshotDataUrl\(tabId, dataUrl, \{ coordinateSpace: 'viewport' \}\);[\s\S]*?screenshot: dataUrl/,
-    'Firefox done verification should redact before storing the screenshot');
+    /let dataUrl = plannerCanSeeImages[\s\S]*?if \(dataUrl && this\.screenshotRedaction\) \{[\s\S]*?_redactScreenshotDataUrl\(tabId, dataUrl, \{ coordinateSpace: 'viewport' \}\);[\s\S]*?trace\.recordScreenshot\(runId, null, dataUrl, 'done verification'\)/,
+    'Firefox done verification should redact before tracing the screenshot');
+  assert.doesNotMatch(firefoxBody, /screenshot:\s*dataUrl/,
+    'Firefox done verification should not embed base64 in the done result');
 });
 
 test('firefox auto and media screenshot helpers redact model-facing data URLs', () => {
@@ -27826,6 +27829,78 @@ test('progress intent classifier accepts multilingual structured intent and fail
   }
 });
 
+test('planner progress-ledger policy disables fallback or enables the canonical action', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false, chat: async () => ({ content: '{}' }) }) });
+    const tabId = 761;
+    const taskText = 'Submit this extension version.';
+    const pageScope = 'https://addons.mozilla.org/developers/addon/example/versions/submit/';
+    agent._persist = () => {};
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: taskText },
+    ]);
+    const stale = agent._setProgressSession(tabId, {
+      mode: 'active',
+      allowedActions: ['follow'],
+      confidence: 0.9,
+    }, { taskText, pageScope, source: 'classifier' });
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'stale-row', label: 'stale-row', action: 'follow', status: 'pending' }],
+    }, { sessionId: stale.sessionId });
+
+    let classifierCalls = 0;
+    agent._classifyProgressIntentWithProvider = async () => {
+      classifierCalls++;
+      return {
+        mode: 'active',
+        allowedActions: ['follow'],
+        forbiddenActions: [],
+        targets: ['package-a', 'package-b'],
+        confidence: 0.91,
+      };
+    };
+
+    const disabled = await agent._ensureProgressSessionForCurrentTask(tabId, {
+      taskText,
+      pageScope,
+      progressLedgerPolicy: 'disabled',
+    });
+    assert.equal(classifierCalls, 0, `${AgentClass.name}: explicit false still ran the fallback classifier`);
+    assert.equal(disabled.mode, 'inactive', `${AgentClass.name}: explicit false did not create an inactive session`);
+    assert.equal(disabled.source, 'planner', `${AgentClass.name}: disabled session did not retain planner authority`);
+    assert.notEqual(disabled.sessionId, stale.sessionId, `${AgentClass.name}: disabled policy reused the misclassified session`);
+    assert.deepEqual(agent._currentTaskLedgerRows(tabId), [], `${AgentClass.name}: historical rows still blocked the disabled session`);
+
+    const enabled = await agent._ensureProgressSessionForCurrentTask(tabId, {
+      taskText,
+      pageScope,
+      progressLedgerPolicy: 'enabled',
+      progressAction: 'submit',
+    });
+    assert.equal(classifierCalls, 1, `${AgentClass.name}: enabled policy did not use the classifier for targets`);
+    assert.deepEqual(enabled.allowedActions, ['submit'], `${AgentClass.name}: classifier overrode the planner's canonical action`);
+    assert.deepEqual(
+      agent._rowsForProgressSession(tabId, enabled.sessionId).map(row => [row.label, row.action]),
+      [['package-a', 'submit'], ['package-b', 'submit']],
+      `${AgentClass.name}: planner-enabled obligations were not seeded independently`,
+    );
+
+    const legacyTabId = 762;
+    agent.conversations.set(legacyTabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow each account.' },
+    ]);
+    await agent._ensureProgressSessionForCurrentTask(legacyTabId, {
+      taskText: 'Follow each account.',
+      pageScope: 'https://example.test/accounts',
+      progressLedgerPolicy: 'auto',
+    });
+    assert.equal(classifierCalls, 2, `${AgentClass.name}: legacy auto policy skipped the fallback classifier`);
+  }
+});
+
 test('classifier targets become isolated app-owned completion obligations', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({
@@ -29441,11 +29516,19 @@ test('blocked done progress result stays wrapped as untrusted content', async ()
         status: 'pending',
       }],
     });
-    agent.executeTool = async () => ({ done: true, summary: 'Done.', outcome: 'success' });
+    let executedTools = 0;
+    agent.executeTool = async () => {
+      executedTools++;
+      return { done: true, summary: 'Done.', outcome: 'success' };
+    };
     agent._persist = () => {};
     agent.providerManager = { ...(agent.providerManager || {}), getVisionProvider: async () => null };
+    agent._doneBlockCount.set(tabId, { key: 'existing-form-block', count: 2 });
 
-    const toolCalls = [{ id: 'done_call', function: { name: 'done', arguments: JSON.stringify({ summary: 'Done.', outcome: 'success' }) } }];
+    const toolCalls = [
+      { id: 'done_call', function: { name: 'done', arguments: JSON.stringify({ summary: 'Done.', outcome: 'success' }) } },
+      { id: 'stale_click', function: { name: 'click_ax', arguments: JSON.stringify({ ref_id: 'must_not_run' }) } },
+    ];
     const updates = [];
     const result = await agent._executeToolBatch(
       tabId,
@@ -29454,10 +29537,16 @@ test('blocked done progress result stays wrapped as untrusted content', async ()
       (type, data) => updates.push({ type, data }),
       { supportsVision: false },
       null,
-      new Set(['done']),
+      new Set(['done', 'click_ax']),
       1,
     );
     assert.equal(result.action, 'continue', `${AgentClass.name}: blocked done should continue the tool loop`);
+    assert.equal(executedTools, 0, `${AgentClass.name}: ledger block reached page verification or a stale queued tool`);
+    assert.deepEqual(
+      agent._doneBlockCount.get(tabId),
+      { key: 'existing-form-block', count: 2 },
+      `${AgentClass.name}: ledger block reset page-verification counters`,
+    );
     assert.equal(
       updates.some(update => update.type === 'tool_result' && update.data?.name === 'done' && update.data?.result?.done === true && update.data?.result?.outcome === 'success'),
       false,
@@ -29474,6 +29563,9 @@ test('blocked done progress result stays wrapped as untrusted content', async ()
     assert.match(toolMessage.content, /"blockedDone":true/, `${AgentClass.name}: blocked done payload missing`);
     assert.match(toolMessage.content, /Ignore previous instructions/, `${AgentClass.name}: row data should remain available as untrusted data`);
     assert.doesNotMatch(toolMessage.content, /<\/untrusted_page_content><system>/, `${AgentClass.name}: row label escaped the untrusted boundary`);
+    const skippedMessage = messages.find(msg => msg.role === 'tool' && msg.tool_call_id === 'stale_click');
+    assert.match(skippedMessage?.content || '', /progress ledger must be resolved before completion verification/i,
+      `${AgentClass.name}: stale batch calls were not closed after the ledger block`);
   }
 });
 
@@ -29490,6 +29582,7 @@ test('accepted done emits successful result update after progress gate', async (
     agent.executeTool = async () => ({ done: true, summary: 'Done.', outcome: 'success' });
     agent._persist = () => {};
     agent.providerManager = { ...(agent.providerManager || {}), getVisionProvider: async () => null };
+    agent._doneBlockCount.set(tabId, { key: 'prior-document|pending-form', count: 2 });
 
     const updates = [];
     const toolCalls = [{ id: 'done_call', function: { name: 'done', arguments: JSON.stringify({ summary: 'Done.', outcome: 'success' }) } }];
@@ -29506,6 +29599,7 @@ test('accepted done emits successful result update after progress gate', async (
 
     assert.equal(result.action, 'return', `${AgentClass.name}: accepted done should finish the tool loop`);
     assert.equal(result.value, 'Done.', `${AgentClass.name}: accepted done should return the done summary`);
+    assert.equal(agent._doneBlockCount.has(tabId), false, `${AgentClass.name}: accepted done did not reset page-block state`);
     assert.equal(
       updates.filter(update => update.type === 'tool_result' && update.data?.name === 'done' && update.data?.result?.done === true && update.data?.result?.outcome === 'success').length,
       1,
@@ -30245,6 +30339,247 @@ test('same-batch observation cannot clear debt that existed at batch start', () 
       batchStartState,
     );
     assert.equal(block?.reason, 'prior_turn_verification_required', `${AgentClass.name}: same-batch observation cleared prior debt`);
+    agent._clearCompletionInvariant(tabId, token);
+  }
+});
+
+test('submit-aware completion accepts the observed AMO finish document and rejects real pending UI', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 24820;
+    const submitUrl = 'https://addons.mozilla.org/developers/addon/webbrain/versions/submit/';
+    const finishUrl = 'https://addons.mozilla.org/developers/addon/webbrain/versions/finish';
+    agent._persist = () => {};
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Submit this extension version.' },
+    ]);
+    let classifierCalls = 0;
+    agent._classifyProgressIntentWithProvider = async () => {
+      classifierCalls++;
+      return null;
+    };
+    const disabled = await agent._ensureProgressSessionForCurrentTask(tabId, {
+      taskText: 'Submit this extension version.',
+      pageScope: submitUrl,
+      progressLedgerPolicy: 'disabled',
+    });
+    assert.equal(disabled.mode, 'inactive', `${AgentClass.name}: AMO task did not honor the planner's disabled ledger`);
+    assert.equal(classifierCalls, 0, `${AgentClass.name}: AMO task still ran the secondary progress classifier`);
+
+    const token = agent._beginCompletionInvariant(tabId);
+    agent._recordCompletionToolResult(tabId, 'click_ax', { ref_id: 'submit-version' }, { success: true, verified: true });
+    agent._recordCompletionSubmitAttempt(
+      tabId,
+      { isSubmit: true },
+      'click_ax',
+      { ref_id: 'submit-version' },
+      submitUrl,
+      finishUrl,
+      { success: true, verified: true, pageUrlChanged: true },
+    );
+    agent._recordCompletionToolResult(tabId, 'read_page', {}, {
+      success: true,
+      url: finishUrl,
+      content: 'Version Submitted',
+    });
+
+    const finishState = {
+      url: finishUrl,
+      openDialogCount: 0,
+      dialogTitles: [],
+      visibleFormCount: 21,
+      relevantFormCount: 12,
+      formDescriptors: [{ label: 'Manage version', relevant: true, utility: false, editableCount: 1, submitCount: 1 }],
+      liveRegionMessages: [],
+      successMessages: [],
+    };
+    assert.equal(
+      agent._completionDoneBlock(tabId, 'done', { summary: 'Version Submitted.', outcome: 'success' }),
+      null,
+      `${AgentClass.name}: explicit post-submit observation did not satisfy the invariant`,
+    );
+    assert.equal(agent._progressDoneBlock(tabId, 'success'), null,
+      `${AgentClass.name}: disabled ledger still blocked AMO completion`);
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Version Submitted.', 'success', finishState, finishUrl),
+      null,
+      `${AgentClass.name}: unrelated finish-page forms required approval or public-listing navigation`,
+    );
+
+    agent._recordCompletionToolResult(tabId, 'click_ax', { ref_id: 'submit-version' }, {
+      success: false,
+      dispatched: true,
+      error: 'post-click inspection failed after dispatch',
+    });
+    agent._recordCompletionSubmitAttempt(
+      tabId,
+      { isSubmit: true },
+      'click_ax',
+      { ref_id: 'submit-version' },
+      submitUrl,
+      submitUrl,
+      { success: false, dispatched: true, error: 'post-click inspection failed after dispatch' },
+    );
+    assert.equal(
+      agent._completionSubmitStates.get(tabId)?.dispatched,
+      true,
+      `${AgentClass.name}: explicit dispatch was discarded when post-click inspection failed`,
+    );
+    agent._recordCompletionToolResult(tabId, 'fetch_url', { url: finishUrl }, {
+      success: true,
+      url: finishUrl,
+      text: 'Version Submitted',
+    });
+    assert.equal(
+      agent._completionSubmitStates.get(tabId)?.observedAfterSubmit,
+      false,
+      `${AgentClass.name}: unrelated network read was accepted as a document observation`,
+    );
+    agent._recordCompletionToolResult(tabId, 'read_page', {}, {
+      success: true,
+      url: finishUrl,
+      content: 'Version Submitted',
+    });
+    const recoveredSubmit = agent._completionSubmitStates.get(tabId);
+    assert.equal(recoveredSubmit?.currentUrl, finishUrl,
+      `${AgentClass.name}: follow-up page observation did not reconcile the submit destination`);
+    assert.equal(recoveredSubmit?.documentChanged, true,
+      `${AgentClass.name}: follow-up confirmation URL did not establish a document transition`);
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Version Submitted.', 'success', finishState, finishUrl),
+      null,
+      `${AgentClass.name}: dispatched submit stayed blocked after explicit confirmation-page observation`,
+    );
+
+    agent._completionSubmitStates.delete(tabId);
+    assert.match(
+      agent._completionPageWarning(tabId, 'Submitted.', 'success', { ...finishState, visibleFormCount: 1, relevantFormCount: 1 }, submitUrl)?.warning || '',
+      /task-relevant form/i,
+      `${AgentClass.name}: unchanged unsubmitted form was accepted`,
+    );
+
+    agent._completionSubmitStates.set(tabId, {
+      currentUrl: submitUrl,
+      dispatched: true,
+      observedAfterSubmit: true,
+      documentChanged: false,
+      formValidationFailed: false,
+    });
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Saved.', 'success', {
+        ...finishState,
+        url: submitUrl,
+        visibleFormCount: 1,
+        relevantFormCount: 1,
+        successMessages: ['Changes saved successfully'],
+      }, submitUrl),
+      null,
+      `${AgentClass.name}: same-page success live-region signal was rejected`,
+    );
+
+    agent._completionSubmitStates.set(tabId, {
+      currentUrl: submitUrl,
+      dispatched: true,
+      observedAfterSubmit: true,
+      documentChanged: false,
+      formValidationFailed: true,
+    });
+    assert.match(
+      agent._completionPageWarning(tabId, 'Submitted.', 'success', {
+        ...finishState,
+        url: submitUrl,
+        visibleFormCount: 1,
+        relevantFormCount: 1,
+        successMessages: ['Saved'],
+      }, submitUrl)?.warning || '',
+      /failed validation/i,
+      `${AgentClass.name}: validation failure was hidden by a live region`,
+    );
+
+    assert.match(
+      agent._completionPageWarning(tabId, 'Done.', 'success', {
+        ...finishState,
+        openDialogCount: 1,
+        dialogTitles: ['Submit version'],
+        relevantFormCount: 0,
+      }, finishUrl)?.warning || '',
+      /modal\/dialog/i,
+      `${AgentClass.name}: open dialog did not block completion`,
+    );
+    assert.equal(
+      agent._completionPageWarning(tabId, 'Done.', 'success', {
+        ...finishState,
+        visibleFormCount: 3,
+        relevantFormCount: 0,
+        formDescriptors: [{ label: 'Search', relevant: false, utility: true, editableCount: 1, submitCount: 1 }],
+      }, finishUrl),
+      null,
+      `${AgentClass.name}: utility-only forms blocked completion`,
+    );
+
+    const verification = agent._doneVerificationPayload({
+      pageUrl: finishUrl,
+      pageTitle: 'Version Submitted',
+      pageState: finishState,
+      screenshotCaptured: true,
+    });
+    const serialized = JSON.stringify({ done: true, verification });
+    assert.equal(verification.screenshotCaptured, true, `${AgentClass.name}: screenshot metadata was not preserved`);
+    assert.doesNotMatch(serialized, /data:image|base64/i, `${AgentClass.name}: done payload retained screenshot bytes`);
+    assert.ok(serialized.length < 8192, `${AgentClass.name}: compact done payload exceeded the fixed size limit`);
+    const oversizedVerification = agent._doneVerificationPayload({
+      pageUrl: `https://example.test/finish?payload=${'u'.repeat(20_000)}`,
+      pageTitle: 't'.repeat(20_000),
+      page: {
+        url: `https://example.test/finish?probe=${'p'.repeat(20_000)}`,
+        title: 'p'.repeat(20_000),
+        readyState: 'complete',
+        visibility: 'visible',
+        domNodes: 50_000,
+      },
+      pageState: {
+        ...finishState,
+        url: `https://example.test/finish?state=${'s'.repeat(20_000)}`,
+        title: 's'.repeat(20_000),
+        dialogTitles: Array.from({ length: 100 }, (_, index) => `Dialog ${index} ${'d'.repeat(200)}`),
+        formDescriptors: Array.from({ length: 100 }, (_, index) => ({
+          label: `Form ${index} ${'f'.repeat(200)}`,
+          relevant: true,
+          utility: false,
+          editableCount: 10,
+          submitCount: 2,
+        })),
+        liveRegionMessages: Array.from({ length: 100 }, (_, index) => `Status ${index} ${'l'.repeat(200)}`),
+        successMessages: Array.from({ length: 100 }, (_, index) => `Success ${index} ${'x'.repeat(200)}`),
+      },
+      completionWarning: 'w'.repeat(20_000),
+      annotatedRect: { x: 1, y: 2, w: 3, h: 4, injected: 'z'.repeat(20_000) },
+      screenshotCaptured: true,
+    });
+    assert.ok(JSON.stringify({ done: true, verification: oversizedVerification }).length < 8192,
+      `${AgentClass.name}: adversarial page metadata exceeded the fixed done-result size limit`);
+    assert.equal(oversizedVerification.pageState.dialogTitles.length, 4,
+      `${AgentClass.name}: dialog diagnostics were not compacted`);
+    assert.equal(oversizedVerification.pageState.formDescriptors.length, 10,
+      `${AgentClass.name}: form diagnostics were not compacted`);
+    assert.equal(oversizedVerification.pageState.liveRegionMessages.length, 6,
+      `${AgentClass.name}: live-region diagnostics were not compacted`);
+    assert.deepEqual(oversizedVerification.annotatedRect, { x: 1, y: 2, w: 3, h: 4 },
+      `${AgentClass.name}: arbitrary annotation metadata leaked into the done payload`);
+    agent.conversations.get(tabId).push({
+      role: 'user',
+      transientCompletionVerification: true,
+      content: [
+        { type: 'text', text: 'blocked completion screenshot' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+      ],
+    });
+    const persisted = JSON.stringify(agent._conversationStorageEntry(tabId));
+    assert.doesNotMatch(persisted, /data:image|base64|AAAA/, `${AgentClass.name}: blocked done screenshot leaked into persisted history`);
+    assert.match(persisted, /screenshot omitted from persisted history/i,
+      `${AgentClass.name}: persisted history did not retain a compact screenshot marker`);
     agent._clearCompletionInvariant(tabId, token);
   }
 });
@@ -36497,6 +36832,7 @@ test('planner: parse and format structured plan', () => {
   assert.equal(plan.summary, 'Follow GitHub stargazers');
   assert.equal(plan.confidence, 0.92);
   assert.equal(plan.memory.use_progress_ledger, true);
+  assert.equal(plan.memory.progress_ledger_policy, 'enabled');
   assert.equal(plan.scheduling.tool, 'schedule_task');
   assert.equal(plan.requires_state_change, true, 'planned scheduling should always require a state change');
   assert.deepEqual(plan.skill_ids, ['freeskillz-xyz', 'otp-verification-code-helper']);
@@ -36553,6 +36889,12 @@ test('planner: parse JSON inside markdown fence', () => {
   const plan = parsePlanFromContent(fenced);
   assert.ok(plan);
   assert.equal(plan.summary, 'Go back');
+  assert.equal(plan.memory.progress_ledger_policy, 'disabled');
+
+  for (const parse of [parsePlanFromContent, parsePlanFromContentFx]) {
+    const legacy = parse(JSON.stringify({ summary: 'Legacy plan', steps: [], memory: {} }));
+    assert.equal(legacy.memory.progress_ledger_policy, 'auto', 'missing legacy metadata should retain classifier fallback');
+  }
 });
 
 test('planner: prompt treats page context as untrusted data', () => {
@@ -36573,11 +36915,14 @@ test('planner: prompt treats page context as untrusted data', () => {
   assert.match(PLANNER_SYSTEM_PROMPT, /Calendar\/cron recurrence.*not supported/i);
   assert.match(PLANNER_SYSTEM_PROMPT, /Never approximate calendar recurrence/i);
   assert.match(PLANNER_INTENT_SYSTEM_PROMPT, /"scheduling": null/);
+  assert.match(PLANNER_INTENT_SYSTEM_PROMPT, /"use_progress_ledger": boolean/);
+  assert.match(PLANNER_INTENT_SYSTEM_PROMPT, /sequential workflow stages, sites, apps, or destinations are not peer items/i);
   assert.match(PLANNER_INTENT_SYSTEM_PROMPT, /lacks usable timing or cadence.*clarify/i);
   assert.match(PLANNER_INTENT_SYSTEM_PROMPT, /Calendar\/cron recurrence.*unsupported/i);
   assert.match(PLANNER_INTENT_SYSTEM_PROMPT, /Never convert calendar recurrence/i);
   assert.match(PLANNER_SYSTEM_PROMPT_FX, /lacks usable timing or cadence.*clarify/i);
   assert.match(PLANNER_INTENT_SYSTEM_PROMPT_FX, /Calendar\/cron recurrence.*unsupported/i);
+  assert.match(PLANNER_INTENT_SYSTEM_PROMPT_FX, /"use_progress_ledger": boolean/);
   assert.match(PLANNER_SYSTEM_PROMPT, /"confidence": 0\.0/);
   assert.match(PLANNER_SYSTEM_PROMPT, /Set confidence from 0\.0 to 1\.0/);
   assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /read:[^\n]*\bscreenshot\b/);
@@ -36978,6 +37323,68 @@ test('reviewed plan edits preserve only explicitly approved scheduling metadata'
         text => text.replace(/-\s*schedule_task:/, '- schedule_resume:'),
       );
       assert.equal(changed.requiredSchedulingTool, 'schedule_resume', `${label}: edited schedule tool was not honored`);
+    }
+  });
+});
+
+test('reviewed plan edits preserve only explicitly approved progress-ledger metadata', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const runReviewedPlan = async (tabId, editPlan) => {
+        const provider = {
+          promptTier: 'full',
+          model: 'planner-progress-edit-test',
+          name: 'planner-progress-edit-test',
+        };
+        const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+        agent.setPlanReviewSettings({ mode: 'always' });
+        agent._chatWithCostAllowance = async () => ({
+          content: plannerFixtureJson({
+            confidence: 0.99,
+            memory: {
+              use_scratchpad: true,
+              scratchpad_notes: ['approved plan'],
+              use_progress_ledger: true,
+              progress_action: 'submit',
+            },
+          }),
+        });
+        agent._waitForPlanReview = async (_tabId, _planId, _plan, _compactMarkdown, _onUpdate, verboseMarkdown) => ({
+          action: 'approve',
+          editedText: editPlan(verboseMarkdown),
+          markdownMode: 'verbose',
+        });
+        return agent._runPlannerGate(
+          tabId,
+          { role: 'user', content: 'Submit each prepared package.' },
+          () => {},
+          null,
+          null,
+          '',
+          { tabUrl: 'https://example.test/packages', tabTitle: 'Packages' },
+          'try',
+          'act',
+          { locale: 'en' },
+        );
+      };
+
+      const unchanged = await runReviewedPlan(label === 'chrome' ? 9220 : 9221, text => text);
+      assert.equal(unchanged.progressLedgerPolicy, 'enabled', `${label}: unchanged ledger policy was not preserved`);
+      assert.equal(unchanged.progressAction, 'submit', `${label}: unchanged ledger action was not preserved`);
+
+      const removed = await runReviewedPlan(
+        label === 'chrome' ? 9222 : 9223,
+        text => text.replace(/(?:^|\n)\s*-\s*Progress ledger:.*(?=\n|$)/i, ''),
+      );
+      assert.equal(removed.progressLedgerPolicy, 'disabled', `${label}: removed ledger metadata stayed enabled`);
+      assert.equal(removed.progressAction, null, `${label}: removed ledger action stayed authorized`);
+
+      const changed = await runReviewedPlan(
+        label === 'chrome' ? 9224 : 9225,
+        text => text.replace(/Progress ledger:\s*yes\s*\(submit\)/i, 'Progress ledger: yes (add)'),
+      );
+      assert.equal(changed.progressLedgerPolicy, 'enabled', `${label}: edited ledger policy was not preserved`);
+      assert.equal(changed.progressAction, 'add', `${label}: edited ledger action was not honored`);
     }
   });
 });

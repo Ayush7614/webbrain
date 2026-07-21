@@ -86,6 +86,10 @@ export const PLANNER_INTENT_SYSTEM_PROMPT = `You are the intent and compact plan
   "allows_app_state_tool_evidence": boolean,
   "summary": "concise canonical English summary",
   "steps": [{ "id": "1", "action": "concise canonical English step" }],
+  "memory": {
+    "use_progress_ledger": boolean,
+    "progress_action": "canonical action or null"
+  },
   "scheduling": null | {
     "tool": "schedule_task" | "schedule_resume",
     "hint": "why scheduling applies"
@@ -109,6 +113,7 @@ Rules:
 - requires_state_change is true only when an execute request needs a mutation such as interacting with form/account state, modifying page data, downloading/uploading a file, a write-method network request, a Dev patch, or scheduling work. It is false for reads, analysis, summaries, navigation, scrolling, hovering, window/viewport changes, plan_only, and clarify.
 - allows_planner_shaped_result is true only when the user explicitly requests planner-like final data (summary/steps JSON or Plan/Steps/Workflow markdown). Never changes request_kind.
 - allows_app_state_tool_evidence is true only when the requested work itself is reading/updating WebBrain scratchpad or progress ledger (not incidental bookkeeping).
+- memory.use_progress_ledger is true only for repeated peer-item work that benefits from one row per item. Sequential workflow stages, sites, apps, or destinations are not peer items. Set progress_action to the canonical repeated action, otherwise null.
 - scheduling.tool = schedule_task for a user-requested reminder, monitor, or recurring future task. Use schedule_resume only when the CURRENT task must pause for an external event.
 - If requested future work lacks usable timing or cadence, classify it as clarify and ask one concise localized question. A precise fixed interval such as "every five minutes" is usable and may start now unless another first run is specified.
 - schedule_task supports one-shot times and fixed-minute intervals only. Calendar/cron recurrence such as monthly is unsupported: classify it as clarify, explain the limitation in localized.summary, and ask for a one-shot time or fixed interval. Never convert calendar recurrence into an approximate interval.
@@ -251,6 +256,7 @@ export function normalizePlan(obj, opts = {}) {
   confidence = Math.max(0, Math.min(1, confidence));
 
   const memory = obj.memory && typeof obj.memory === 'object' ? obj.memory : {};
+  const progressLedgerDeclared = Object.prototype.hasOwnProperty.call(memory, 'use_progress_ledger');
   const skillIds = [];
   const seenSkillIds = new Set();
   for (const value of Array.isArray(obj.skill_ids) ? obj.skill_ids : []) {
@@ -304,6 +310,9 @@ export function normalizePlan(obj, opts = {}) {
         : [],
       use_progress_ledger: !!memory.use_progress_ledger,
       progress_action: sanitizeText(memory.progress_action, 40) || null,
+      progress_ledger_policy: progressLedgerDeclared
+        ? (memory.use_progress_ledger === true ? 'enabled' : 'disabled')
+        : 'auto',
     },
     scheduling: executablePlan ? normalizedScheduling : null,
     risks: Array.isArray(obj.risks)
