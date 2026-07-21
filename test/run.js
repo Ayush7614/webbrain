@@ -21701,6 +21701,215 @@ test('CDP WebMCP fails closed when a registration frame changes origin before di
   assert.equal(opaqueContext.targetUrl, '', 'opaque frame origins must not borrow a URL-looking host grant');
 });
 
+test('CDP WebMCP does not authorize tools from TargetInfo URL when frame tree is unavailable', async () => {
+  const cdp = new CDPClient();
+  const emit = (event, params, source = { tabId: 62 }) => {
+    for (const handler of cdp.eventHandlers.get(62)?.[event] || []) handler(params, source);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}, sessionId = '') => {
+    if (method === 'WebMCP.enable' && !sessionId) return {};
+    if (method === 'Target.setAutoAttach' && !sessionId && params.autoAttach) {
+      emit('Target.attachedToTarget', {
+        sessionId: 'sandbox-oopif',
+        targetInfo: {
+          targetId: 'sandbox-frame',
+          type: 'iframe',
+          // Document URL looks trusted, but without a browser-reported
+          // securityOrigin this must not become a permission host.
+          url: 'https://trusted-pay.example/checkout',
+        },
+      });
+      return {};
+    }
+    if (method === 'WebMCP.enable' && sessionId === 'sandbox-oopif') {
+      emit('WebMCP.toolsAdded', {
+        tools: [{
+          name: 'charge_card',
+          description: 'Charge',
+          frameId: 'sandbox-frame',
+        }],
+      }, { tabId: 62, sessionId });
+      return {};
+    }
+    if (method === 'Page.enable') return {};
+    if (method === 'Target.setAutoAttach' && sessionId === 'sandbox-oopif') return {};
+    if (method === 'Runtime.enable') return {};
+    if (method === 'Page.getFrameTree') {
+      if (sessionId === 'sandbox-oopif') {
+        throw new Error('Page.getFrameTree failed for detached sandbox target');
+      }
+      return {
+        frameTree: {
+          frame: {
+            id: 'main-frame',
+            url: 'https://shop.example/',
+            securityOrigin: 'https://shop.example',
+          },
+        },
+      };
+    }
+    if (method === 'WebMCP.invokeTool') return { invocationId: 'must-not-dispatch' };
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(62);
+  const charge = catalog.tools.find(tool => tool.name === 'charge_card');
+  assert.ok(charge, 'OOPIF tool should still be listed');
+  assert.equal(
+    charge.frame_url,
+    '',
+    'TargetInfo URL must not fill frame_url when the frame tree is unavailable',
+  );
+  const context = await cdp.getWebMCPToolContext(62, charge.tool_id);
+  assert.equal(context.targetUrl, '', 'permission target must stay empty without a frame-tree origin');
+  const result = await cdp.invokeWebMCPTool(62, charge.tool_id, {}, {
+    expectedFrameId: 'sandbox-frame',
+    expectedTargetUrl: 'https://trusted-pay.example/checkout',
+  });
+  assert.equal(result.success, false);
+  assert.equal(result.noDispatch, true);
+  assert.equal(result.contextChanged, true);
+});
+
+test('CDP WebMCP discovery ignores tools removed while Runtime.evaluate is pending', async () => {
+  const cdp = new CDPClient();
+  const emit = (event, params) => {
+    for (const handler of cdp.eventHandlers.get(63)?.[event] || []) handler(params);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    if (method === 'WebMCP.enable') {
+      emit('WebMCP.toolsAdded', {
+        tools: [{
+          name: 'stale_tool',
+          description: 'registered before discovery',
+          frameId: 'child-frame',
+        }],
+      });
+      return {};
+    }
+    if (method === 'Runtime.enable') {
+      emit('Runtime.executionContextCreated', {
+        context: { id: 71, auxData: { isDefault: true, frameId: 'child-frame' } },
+      });
+      return {};
+    }
+    if (method === 'Runtime.evaluate') {
+      // Removal lands while evaluate is still outstanding; the returned
+      // snapshot must not resurrect the deleted registration.
+      emit('WebMCP.toolsRemoved', {
+        tools: [{ name: 'stale_tool', frameId: 'child-frame' }],
+      });
+      return {
+        result: {
+          value: [{
+            name: 'stale_tool',
+            description: 'stale snapshot from getTools()',
+            annotations: { readOnly: true },
+          }],
+        },
+      };
+    }
+    if (method === 'Page.getFrameTree') {
+      return {
+        frameTree: {
+          frame: { id: 'main-frame', url: 'https://example.com/' },
+          childFrames: [{
+            frame: {
+              id: 'child-frame',
+              parentId: 'main-frame',
+              url: 'https://example.com/embed',
+            },
+          }],
+        },
+      };
+    }
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(63);
+  assert.equal(catalog.total, 0, 'discovery must not resurrect a tool removed mid-evaluate');
+  assert.equal(await cdp.getWebMCPToolContext(63, 'wmcp_1'), null);
+});
+
+test('CDP WebMCP discovery does not overwrite a re-registration that raced evaluate', async () => {
+  const cdp = new CDPClient();
+  const emit = (event, params) => {
+    for (const handler of cdp.eventHandlers.get(64)?.[event] || []) handler(params);
+  };
+  cdp.attach = async tabId => {
+    cdp.sessions.set(tabId, { tabId, attached: true });
+    return cdp.sessions.get(tabId);
+  };
+  cdp.sendCommand = async (tabId, method, params = {}) => {
+    if (method === 'WebMCP.enable') {
+      emit('WebMCP.toolsAdded', {
+        tools: [{
+          name: 'live_tool',
+          description: 'original description',
+          frameId: 'child-frame',
+        }],
+      });
+      return {};
+    }
+    if (method === 'Runtime.enable') {
+      emit('Runtime.executionContextCreated', {
+        context: { id: 81, auxData: { isDefault: true, frameId: 'child-frame' } },
+      });
+      return {};
+    }
+    if (method === 'Runtime.evaluate') {
+      emit('WebMCP.toolsRemoved', {
+        tools: [{ name: 'live_tool', frameId: 'child-frame' }],
+      });
+      emit('WebMCP.toolsAdded', {
+        tools: [{
+          name: 'live_tool',
+          description: 'fresh re-registration',
+          frameId: 'child-frame',
+          annotations: { readOnly: true },
+        }],
+      });
+      return {
+        result: {
+          value: [{
+            name: 'live_tool',
+            description: 'stale snapshot should lose',
+            annotations: { readOnly: false },
+          }],
+        },
+      };
+    }
+    if (method === 'Page.getFrameTree') {
+      return {
+        frameTree: {
+          frame: { id: 'main-frame', url: 'https://example.com/' },
+          childFrames: [{
+            frame: {
+              id: 'child-frame',
+              parentId: 'main-frame',
+              url: 'https://example.com/embed',
+            },
+          }],
+        },
+      };
+    }
+    return {};
+  };
+
+  const catalog = await cdp.listWebMCPTools(64);
+  assert.equal(catalog.total, 1);
+  assert.equal(catalog.tools[0].description, 'fresh re-registration');
+  assert.equal(catalog.tools[0].annotations.readOnly, true);
+});
+
 test('WebMCP page annotations never bypass Act mode or frame-scoped permission', async () => {
   assert.equal(capabilityForCh('execute_webmcp_tool', { _webMcpDeclaredReadOnly: true }), CapabilityCh.CLICK);
   assert.equal(capabilityForCh('execute_webmcp_tool', { _webMcpDeclaredReadOnly: false }), CapabilityCh.CLICK);

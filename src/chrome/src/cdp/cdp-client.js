@@ -273,6 +273,10 @@ export class CDPClient {
       nextToolId: 1,
       toolsById: new Map(),
       idsByKey: new Map(),
+      // Per tool-key generation bumped on store and remove. Discovery snapshots
+      // this map so a stale Runtime.evaluate result cannot resurrect or
+      // overwrite a concurrent registration change.
+      toolMutationGens: new Map(),
       pendingInvocations: new Map(),
       completedResponses: new Map(),
       childSessions: new Map(),
@@ -280,6 +284,16 @@ export class CDPClient {
       discoveryContextsUsed: 0,
       handlers: [],
     };
+  }
+
+  _webMCPToolMutationGen(state, key) {
+    return state.toolMutationGens.get(key) || 0;
+  }
+
+  _bumpWebMCPToolMutation(state, key) {
+    const next = this._webMCPToolMutationGen(state, key) + 1;
+    state.toolMutationGens.set(key, next);
+    return next;
   }
 
   _dropWebMCPSession(tabId, reason = 'WebMCP session closed') {
@@ -305,13 +319,21 @@ export class CDPClient {
     if (state) state.handlers = [];
   }
 
-  _storeWebMCPTools(state, tools, sessionId = '') {
+  _storeWebMCPTools(state, tools, sessionId = '', options = {}) {
     const owningSessionId = String(sessionId || '');
+    const mutationGuard = options.mutationGuard instanceof Map ? options.mutationGuard : null;
     for (const rawTool of Array.isArray(tools) ? tools : []) {
       const name = String(rawTool?.name || '').trim().slice(0, 300);
       const frameId = String(rawTool?.frameId || '').trim().slice(0, 300);
       if (!name || !frameId) continue;
       const key = this._webMCPToolKey(frameId, name);
+      // Drop discovery results whose key was stored or removed while evaluate
+      // was pending; otherwise a stale snapshot can resurrect a deleted tool
+      // or overwrite a fresher re-registration.
+      if (mutationGuard) {
+        const expectedGen = mutationGuard.get(key) || 0;
+        if (this._webMCPToolMutationGen(state, key) !== expectedGen) continue;
+      }
       let toolId = state.idsByKey.get(key);
       if (!toolId) {
         if (state.toolsById.size >= WEBMCP_MAX_REGISTERED_TOOLS) continue;
@@ -329,6 +351,7 @@ export class CDPClient {
       const sanitizedSchema = this._sanitizeWebMCPValue(rawTool?.inputSchema || {
         type: 'object', properties: {}, required: [],
       });
+      this._bumpWebMCPToolMutation(state, key);
       state.toolsById.set(toolId, {
         toolId,
         name,
@@ -351,6 +374,7 @@ export class CDPClient {
       const toolId = state.idsByKey.get(key);
       if (!toolId) continue;
       if (state.toolsById.get(toolId)?.sessionId !== owningSessionId) continue;
+      this._bumpWebMCPToolMutation(state, key);
       state.idsByKey.delete(key);
       state.toolsById.delete(toolId);
     }
@@ -362,8 +386,10 @@ export class CDPClient {
     let removed = 0;
     for (const [toolId, tool] of state.toolsById) {
       if (tool.frameId !== targetFrameId) continue;
+      const key = this._webMCPToolKey(tool.frameId, tool.name);
+      this._bumpWebMCPToolMutation(state, key);
       state.toolsById.delete(toolId);
-      state.idsByKey.delete(this._webMCPToolKey(tool.frameId, tool.name));
+      state.idsByKey.delete(key);
       removed++;
     }
     return removed;
@@ -374,8 +400,10 @@ export class CDPClient {
     let removed = 0;
     for (const [toolId, tool] of state.toolsById) {
       if (tool.sessionId !== targetSessionId) continue;
+      const key = this._webMCPToolKey(tool.frameId, tool.name);
+      this._bumpWebMCPToolMutation(state, key);
       state.toolsById.delete(toolId);
-      state.idsByKey.delete(this._webMCPToolKey(tool.frameId, tool.name));
+      state.idsByKey.delete(key);
       removed++;
     }
     return removed;
@@ -445,6 +473,9 @@ export class CDPClient {
     );
     const selectedContexts = [...contextsByFrame].slice(0, remainingContextBudget);
     state.discoveryContextsUsed += selectedContexts.length;
+    // Capture generations before evaluate so concurrent toolsRemoved /
+    // toolsAdded / frame cleanup invalidate these results at merge time.
+    const mutationGuard = new Map(state.toolMutationGens);
     const discovered = await Promise.allSettled(
       selectedContexts.map(async ([frameId, contextId]) => {
         const evaluated = await this.sendCommand(tabId, 'Runtime.evaluate', {
@@ -463,7 +494,7 @@ export class CDPClient {
     let count = 0;
     for (const result of discovered) {
       if (result.status !== 'fulfilled') continue;
-      this._storeWebMCPTools(state, result.value, owningSessionId);
+      this._storeWebMCPTools(state, result.value, owningSessionId, { mutationGuard });
       count += result.value.length;
     }
     return count;
@@ -776,13 +807,10 @@ export class CDPClient {
         if (frameId) frameUrls.set(frameId, this._webMCPSafeFrameUrl(frame));
       }
     }
-    // TargetInfo is a trusted fallback for the OOPIF root only. Descendant
-    // frame IDs must come from Page.getFrameTree so a different-origin child
-    // can never inherit its target root's permission host.
-    for (const child of childSessions) {
-      if (!child.targetId || frameUrls.has(child.targetId)) continue;
-      frameUrls.set(child.targetId, this._webMCPSafeFrameUrl({ url: child.url }));
-    }
+    // Fail closed when Page.getFrameTree is unavailable. TargetInfo.url is only
+    // the document URL and carries no effective securityOrigin; a sandboxed
+    // opaque frame can still report an HTTPS URL and must not borrow that host
+    // for permission grants. Permission hosts come only from frame-tree records.
     return frameUrls;
   }
 
