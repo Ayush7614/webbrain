@@ -945,11 +945,14 @@ export class Agent {
       && next.pageUrl
       && this._normalizeUrl(previous.pageUrl) !== this._normalizeUrl(next.pageUrl)
     );
-    // Refs, text targets, and coordinates belong to the observed document and
-    // route. Once either changes, old failures cannot describe the new page.
-    // Revisits of a recently seen URL keep their state, or a navigation
-    // ping-pong would launder its loop counters through every tree read.
-    if ((documentChanged || routeChanged) && !this._isRecentNavUrl(tabId, next.pageUrl)) {
+    // A same-route document replacement always invalidates old failures, even
+    // when that URL was visited recently. URL recency only exempts route
+    // changes: a navigation ping-pong must keep its cross-route call buffer
+    // through tree reads so it cannot launder the loop counters on every hop.
+    if (
+      (documentChanged && !routeChanged)
+      || (routeChanged && !this._isRecentNavUrl(tabId, next.pageUrl))
+    ) {
       this._clearLoopState(tabId);
     }
     this._lastAxScopes.set(tabId, next);

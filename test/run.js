@@ -3781,15 +3781,18 @@ test('failed action counters reset on navigation and replacement-page evidence',
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({});
     const tab = label === 'chrome' ? 334 : 335;
-    agent._rememberAxScope(tab, 'doc-a', 'https://example.com/search');
+    const searchUrl = 'https://example.com/search';
+    agent._noteNavArrival(tab, searchUrl);
+    agent._rememberAxScope(tab, 'doc-a', searchUrl);
     assert.equal(agent._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'none');
     assert.equal(agent._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'nudge');
 
-    agent._rememberAxScope(tab, 'doc-b', 'https://example.com/search');
+    agent._rememberAxScope(tab, 'doc-b', searchUrl);
     assert.equal(agent.failedActionLoops.has(tab), false, `${label}: replacement document retained old failures`);
+    assert.equal(agent.recentCalls.has(tab), false, `${label}: recent URL suppressed replacement-document reset`);
     assert.equal(agent._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'none');
 
-    agent._rememberAxScope(tab, 'doc-b', 'https://example.com/search');
+    agent._rememberAxScope(tab, 'doc-b', searchUrl);
     assert.equal(agent._checkLoop(tab, 'click', { text: 'Search' }, failure).kind, 'nudge', `${label}: unchanged page scope reset failures`);
     agent._rememberAxScope(tab, 'doc-b', 'https://example.com/results#fresh');
     assert.equal(agent.failedActionLoops.has(tab), false, `${label}: fresh route retained old failures`);
