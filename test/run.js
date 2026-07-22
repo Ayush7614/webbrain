@@ -1418,7 +1418,7 @@ test('firefox auto and media screenshot helpers redact model-facing data URLs', 
   const autoBody = source.slice(autoStart, autoEnd);
   assert.match(
     autoBody,
-    /let dataUrl = shrunk\.dataUrl;[\s\S]*?if \(this\.screenshotRedaction\) \{[\s\S]*?dataUrl = await this\._redactScreenshotDataUrl\(tabId, dataUrl, \{ coordinateSpace: 'viewport' \}\);[\s\S]*?return \{ dataUrl, width: shrunk\.width, height: shrunk\.height \};/,
+    /let dataUrl = shrunk\.dataUrl;[\s\S]*?if \(this\.screenshotRedaction\) \{[\s\S]*?dataUrl = await this\._redactScreenshotDataUrl\(tabId, dataUrl, \{ coordinateSpace: 'viewport' \}\);[\s\S]*?return \{ dataUrl, width: shrunk\.width, height: shrunk\.height, cssWidth: w, cssHeight: h \};/,
     'firefox auto screenshots should redact before any model-facing use'
   );
 
@@ -5295,6 +5295,59 @@ test('image budget helpers: storage normalization rejects corrupt values', () =>
     assert.equal(agent.imageDetail, 'low');
     assert.equal(agent.maxImageDimension, 768);
     assert.equal(agent.maxScreenshotsPerTurn, 5, 'unspecified keys leave prior value');
+  }
+});
+
+test('screenshot click scale: registration + 1:1 clears stale entries', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 9;
+
+    // Downscaled capture registers factors.
+    agent._setScreenshotClickScale(tabId, 2560 / 1568, 1440 / 882);
+    assert.ok(agent.screenshotClickScale.has(tabId), `${AgentClass.name}: scale stored`);
+
+    // A later 1:1 capture clears the stale scale so it can't corrupt clicks.
+    agent._setScreenshotClickScale(tabId, 1, 1);
+    assert.equal(agent.screenshotClickScale.has(tabId), false, `${AgentClass.name}: 1:1 clears`);
+
+    // Corrupt values are ignored, not stored.
+    agent._setScreenshotClickScale(tabId, 0, 2);
+    agent._setScreenshotClickScale(tabId, NaN, 2);
+    agent._setScreenshotClickScale(tabId, -1, 2);
+    assert.equal(agent.screenshotClickScale.has(tabId), false, `${AgentClass.name}: corrupt ignored`);
+  }
+});
+
+test('screenshot click scale: from_screenshot converts image px to CSS px', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 9;
+    // 2560×1440 CSS viewport downscaled to 1568×882 (default cap).
+    agent._setScreenshotClickScale(tabId, 2560 / 1568, 1440 / 882);
+
+    // Model reads (784, 441) — the image center — off the screenshot.
+    const converted = agent._screenshotClickCoords(tabId, { x: 784, y: 441, from_screenshot: true });
+    assert.deepEqual(converted, { x: 1280, y: 720, converted: true }, `${AgentClass.name}: center maps to CSS center`);
+
+    // Without the flag, coords pass through untouched (CSS-sourced coords,
+    // e.g. from get_interactive_elements, must never be rescaled).
+    const passthrough = agent._screenshotClickCoords(tabId, { x: 784, y: 441 });
+    assert.deepEqual(passthrough, { x: 784, y: 441, converted: false }, `${AgentClass.name}: no flag, no conversion`);
+
+    // Flag set but no stored scale (last capture was 1:1): no conversion —
+    // image pixels already are CSS pixels, so the flag is harmless.
+    agent._setScreenshotClickScale(tabId, 1, 1);
+    const aligned = agent._screenshotClickCoords(tabId, { x: 784, y: 441, from_screenshot: true });
+    assert.deepEqual(aligned, { x: 784, y: 441, converted: false }, `${AgentClass.name}: aligned capture passes through`);
+
+    // Non-numeric coords resolve to null so callers skip conversion.
+    assert.equal(agent._screenshotClickCoords(tabId, { x: 'a', y: 1, from_screenshot: true }), null);
+
+    // Tab cleanup drops the entry.
+    agent._setScreenshotClickScale(tabId, 2, 2);
+    agent.screenshotClickScale.delete(tabId);
+    assert.equal(agent.screenshotClickScale.has(tabId), false);
   }
 });
 

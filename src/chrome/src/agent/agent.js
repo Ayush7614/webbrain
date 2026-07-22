@@ -191,6 +191,12 @@ export class Agent {
     // `maxScreenshotsPerTurn` for every automatic capture (initial viewport
     // AND post-action). Reset when a run starts and on tab cleanup.
     this.autoScreenshotCount = new Map();
+    // tabId -> {scaleX, scaleY} image-pixel→CSS-pixel factors for the most
+    // recent screenshot shown to the model. Set when maxImageDimension forced
+    // a downscale; cleared when the last capture was 1:1. Consumed by
+    // click({x, y, from_screenshot: true}) so the extension — not the model —
+    // does the coordinate conversion.
+    this.screenshotClickScale = new Map();
     this.costAllowanceSessionUsd = DEFAULT_CLOUD_COST_ALLOWANCE_USD;
     this.costAllowanceTotalUsd = DEFAULT_CLOUD_COST_ALLOWANCE_USD;
     this.cloudCostSpentUsd = 0;
@@ -5691,6 +5697,35 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
+   * Downscale a capture to exactly `cssW`×`cssH` so image pixel (X, Y) ==
+   * CSS pixel (X, Y). `tabs.captureVisibleTab` has no clip/scale control and
+   * snapshots at native devicePixelRatio, so on hi-DPI displays (e.g. Apple
+   * Retina, DPR 2) the raw image is DPR× larger than the CSS viewport —
+   * pixel coords read off it would be 2× off. Returns the input unchanged
+   * when it already matches (DPR 1) or on any decode failure.
+   */
+  async _normalizeDataUrlToCssPixels(dataUrl, cssW, cssH) {
+    try {
+      if (!dataUrl || !(cssW > 0) || !(cssH > 0)) return dataUrl;
+      const resp = await fetch(dataUrl);
+      const bmp = await createImageBitmap(await resp.blob());
+      if (bmp.width === cssW && bmp.height === cssH) return dataUrl;
+      const canvas = new OffscreenCanvas(cssW, cssH);
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, 0, 0, cssW, cssH);
+      const blob = await canvas.convertToBlob({
+        type: 'image/jpeg',
+        quality: Agent.IMAGE_BUDGET.initialJpegQuality,
+      });
+      return Agent._bufferToDataUrl(await blob.arrayBuffer(), 'image/jpeg');
+    } catch {
+      return dataUrl;
+    }
+  }
+
+  /**
    * End-to-end "shrink this screenshot to fit the vision budget" pass.
    * Decodes, resizes to the target dims picked by `_fitImageDimensions`,
    * and runs JPEG iterative-quality fallback if bytes are still too large.
@@ -5807,6 +5842,45 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       ...base,
       // Large enough that `_fitImageDimensions` is gated only by maxTargetPx.
       maxTargetTokens: Number.MAX_SAFE_INTEGER,
+    };
+  }
+
+  /**
+   * Record the image-pixel→CSS-pixel factors of the most recent screenshot
+   * shown to the model for `tabId`. Factors of 1 (a true 1:1 capture) clear
+   * the entry so a stale scale from an earlier downscaled capture can never
+   * corrupt clicks planned off a newer aligned one.
+   */
+  _setScreenshotClickScale(tabId, scaleX, scaleY) {
+    const sx = Number(scaleX);
+    const sy = Number(scaleY);
+    if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx <= 0 || sy <= 0) return;
+    if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) {
+      this.screenshotClickScale.delete(tabId);
+      return;
+    }
+    this.screenshotClickScale.set(tabId, { scaleX: sx, scaleY: sy });
+  }
+
+  /**
+   * Resolve click({x, y}) args to CSS pixels. When the model sets
+   * `from_screenshot: true` AND the last screenshot for this tab was
+   * downscaled, multiply by the stored factors — the extension does the
+   * conversion mechanically instead of trusting the model to do arithmetic
+   * from a prose note. Otherwise coords pass through unchanged (an aligned
+   * screenshot's image pixels already ARE CSS pixels).
+   */
+  _screenshotClickCoords(tabId, args = {}) {
+    const x = Number(args.x);
+    const y = Number(args.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (!args.from_screenshot) return { x, y, converted: false };
+    const scale = this.screenshotClickScale.get(tabId);
+    if (!scale) return { x, y, converted: false };
+    return {
+      x: Math.round(x * scale.scaleX),
+      y: Math.round(y * scale.scaleY),
+      converted: true,
     };
   }
 
@@ -9144,6 +9218,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this.mastodonStates.delete(tabId);
     this.lastAutoScreenshotTs.delete(tabId);
     this.autoScreenshotCount.delete(tabId);
+    this.screenshotClickScale.delete(tabId);
     this.lastSeenAdapter.delete(tabId);
     this.activeSkillIds.delete(tabId);
     this._runModeOverrides.delete(tabId);
@@ -13567,6 +13642,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         let description = '';
         let probe = null;
         let coordAligned = false;
+        // True when maxImageDimension forced a resize of a coord_aligned
+        // capture — the structured result must then report coordAligned:
+        // false so the model never trusts raw image pixels as CSS pixels.
+        let coordDownscaled = false;
         let blankFrameRetry = null;
         const wantSave = !!(args && args.save);
         try {
@@ -13596,14 +13675,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               const needsResize = cssW > budget.maxTargetPx || cssH > budget.maxTargetPx;
               if (needsResize) {
                 const shrunk = await this._shrinkImageForBudget(rawUrl, cssW, cssH, budget);
-                const scaleX = (cssW / Math.max(1, shrunk.width)).toFixed(4);
-                const scaleY = (cssH / Math.max(1, shrunk.height)).toFixed(4);
+                this._setScreenshotClickScale(
+                  tabId,
+                  cssW / Math.max(1, shrunk.width),
+                  cssH / Math.max(1, shrunk.height),
+                );
                 return {
                   dataUrl: shrunk.dataUrl,
                   saveDataUrl: rawUrl,
-                  description: `Screenshot captured via CDP (${screenshot.data.length} bytes). CSS viewport ${cssW}×${cssH} downscaled to ${shrunk.width}×${shrunk.height} for maxImageDimension — multiply image-pixel coords by (${scaleX}, ${scaleY}) to get CSS click coords.`,
+                  coordDownscaled: true,
+                  description: `Screenshot captured via CDP (${screenshot.data.length} bytes). CSS viewport ${cssW}×${cssH} downscaled to ${shrunk.width}×${shrunk.height} for maxImageDimension. To click something you located on this image, pass its image-pixel coords as click({x, y, from_screenshot: true}) — they are converted to CSS pixels automatically.`,
                 };
               }
+              this._setScreenshotClickScale(tabId, 1, 1);
               return {
                 dataUrl: await this._compressJpegToByteCeiling(rawUrl, budget),
                 saveDataUrl: rawUrl,
@@ -13661,6 +13745,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           dataUrl = captured.dataUrl;
           saveDataUrl = captured.saveDataUrl || null;
           description = captured.description || '';
+          coordDownscaled = !!captured.coordDownscaled;
           blankFrameRetry = captured.blankFrameRetry || null;
         } catch {
           const tab = await chrome.tabs.get(tabId);
@@ -13679,7 +13764,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const cssH = Math.max(1, Math.round(probe?.innerHeight || 768));
             const budget = this._budgetForCapture();
             if (!coordAligned) {
-              const shrunk = await this._shrinkImageForBudget(rawUrl, cssW, cssH, budget);
+              // captureVisibleTab snapshots at native DPR — pass 0,0 so the
+              // shrink decodes the real bitmap dims instead of trusting CSS
+              // dims (which would skip the resize entirely on hi-DPI and ship
+              // an oversized image while reporting CSS-sized dimensions).
+              const shrunk = await this._shrinkImageForBudget(rawUrl, 0, 0, budget);
               return {
                 dataUrl: shrunk.dataUrl,
                 saveDataUrl: rawUrl,
@@ -13690,16 +13779,25 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             const coordBudget = this._budgetForCoordAlignedCapture();
             const needsResize = cssW > coordBudget.maxTargetPx || cssH > coordBudget.maxTargetPx;
             if (needsResize) {
-              const shrunk = await this._shrinkImageForBudget(rawUrl, cssW, cssH, coordBudget);
-              const scaleX = (cssW / Math.max(1, shrunk.width)).toFixed(4);
-              const scaleY = (cssH / Math.max(1, shrunk.height)).toFixed(4);
+              const shrunk = await this._shrinkImageForBudget(rawUrl, 0, 0, coordBudget);
+              this._setScreenshotClickScale(
+                tabId,
+                cssW / Math.max(1, shrunk.width),
+                cssH / Math.max(1, shrunk.height),
+              );
               return {
                 dataUrl: shrunk.dataUrl,
                 saveDataUrl: rawUrl,
-                description: `Screenshot captured via tabs API (${shrunk.dataUrl.length} bytes base64). CSS viewport ${cssW}×${cssH} downscaled to ${shrunk.width}×${shrunk.height} for maxImageDimension — multiply image-pixel coords by (${scaleX}, ${scaleY}) to get CSS click coords.`,
+                coordDownscaled: true,
+                description: `Screenshot captured via tabs API (${shrunk.dataUrl.length} bytes base64). CSS viewport ${cssW}×${cssH} downscaled to ${shrunk.width}×${shrunk.height} for maxImageDimension. To click something you located on this image, pass its image-pixel coords as click({x, y, from_screenshot: true}) — they are converted to CSS pixels automatically.`,
               };
             }
-            const compressed = await this._compressJpegToByteCeiling(rawUrl, coordBudget);
+            // Native-DPR raw → exact CSS dims so "CSS-pixel aligned" is true
+            // on hi-DPI displays too (pre-#311 this shipped the DPR-scaled
+            // image while claiming alignment).
+            const aligned = await this._normalizeDataUrlToCssPixels(rawUrl, cssW, cssH);
+            const compressed = await this._compressJpegToByteCeiling(aligned, coordBudget);
+            this._setScreenshotClickScale(tabId, 1, 1);
             return {
               dataUrl: compressed,
               saveDataUrl: rawUrl,
@@ -13710,6 +13808,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           dataUrl = captured?.dataUrl || null;
           saveDataUrl = captured?.saveDataUrl || null;
           description = captured?.description || '';
+          coordDownscaled = !!captured?.coordDownscaled;
           blankFrameRetry = captured?.blankFrameRetry || null;
         }
         if (!dataUrl) {
@@ -13768,7 +13867,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               method: 'vision_describe',
               description: `[Screenshot described by vision model ${desc.model}]\n${desc.text}`,
               page: probe || undefined,
-              coordAligned,
+              coordAligned: coordAligned && !coordDownscaled,
               blankFrameRetry: blankFrameRetry || undefined,
               savedFile: savedFile || undefined,
             };
@@ -13787,7 +13886,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             method: 'image_attach',
             description,
             page: probe || undefined,
-            coordAligned,
+            coordAligned: coordAligned && !coordDownscaled,
             blankFrameRetry: blankFrameRetry || undefined,
             savedFile: savedFile || undefined,
             _attachImage: dataUrl,
@@ -13802,7 +13901,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             description: `Screenshot saved to ${savedFile.filename}. (The active model has no vision, so the image was not shown to the model.)`,
             savedFile,
             page: probe || undefined,
-            coordAligned,
+            coordAligned: coordAligned && !coordDownscaled,
             blankFrameRetry: blankFrameRetry || undefined,
           };
         }
@@ -15094,6 +15193,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               error: this._normalizedCoordinateRecoveryError(tabId, args),
             };
           }
+          // from_screenshot: coords were read off the most recent screenshot;
+          // when that capture was downscaled for maxImageDimension, convert
+          // image pixels → CSS pixels here so the model never does the math.
+          const mapped = this._screenshotClickCoords(tabId, args);
+          if (mapped?.converted) args = { ...args, x: mapped.x, y: mapped.y };
         }
 
         await cdpClient.attach(tabId);
