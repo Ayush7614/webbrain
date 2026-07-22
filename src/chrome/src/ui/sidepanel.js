@@ -3755,6 +3755,16 @@ function parsePlanMarkdownToDraft(text) {
   };
 }
 
+function resolveSavedPlanReviewEdit(card) {
+  if (card?.dataset?.planDirty !== 'true') return null;
+  const editedText = String(card.dataset.editedText || '').trim();
+  if (!editedText) return null;
+  return {
+    editedText,
+    markdownMode: looksLikeVerbosePlanMarkdown(editedText) ? 'verbose' : 'compact',
+  };
+}
+
 function autosizePlanReviewField(el) {
   if (!el || el.tagName !== 'TEXTAREA') return;
   el.style.height = 'auto';
@@ -4133,6 +4143,13 @@ function resolvePlanReviewApprovalText(card) {
   if (!draft.steps.length) {
     return { editedText: '', markdownMode: displayMode, emptySteps: true };
   }
+  // "Done" collapses raw mode after syncing its parsed fields into the
+  // structured editor. Keep the exact dirty buffer as the approval source so
+  // edits to verbose-only metadata (skills, scheduling, submission, etc.) are
+  // not replaced by the lossy structured serialization. A later structured
+  // edit overwrites dataset.editedText with compact markdown via syncPlanReviewDraft.
+  const savedEdit = resolveSavedPlanReviewEdit(card);
+  if (savedEdit) return savedEdit;
   const serialized = serializePlanDraftToMarkdown(draft);
   // Structured edits always approve as compact so the agent re-appends
   // execution metadata and keeps skill activation from the planner object.

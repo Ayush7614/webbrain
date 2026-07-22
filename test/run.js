@@ -41837,7 +41837,7 @@ function loadPlanReviewDraftHelpers(panelRel) {
   assert.notEqual(start, -1, `${panelRel}: plan draft helpers missing`);
   assert.notEqual(end, -1, `${panelRel}: plan draft helper boundary missing`);
   const block = source.slice(start, end);
-  return Function(`${block}\nreturn {\n  PLAN_STEP_TOOL_SUFFIX_RE,\n  stripVerbosePlanStepToolSuffix,\n  looksLikeVerbosePlanMarkdown,\n  parsePlanMarkdownToDraft,\n  serializePlanDraftToMarkdown,\n};`)();
+  return Function(`${block}\nreturn {\n  PLAN_STEP_TOOL_SUFFIX_RE,\n  stripVerbosePlanStepToolSuffix,\n  looksLikeVerbosePlanMarkdown,\n  parsePlanMarkdownToDraft,\n  serializePlanDraftToMarkdown,\n  resolveSavedPlanReviewEdit,\n};`)();
 }
 
 test('plan review: structured draft serialize/parse round-trips step edits', () => {
@@ -41850,6 +41850,7 @@ test('plan review: structured draft serialize/parse round-trips step edits', () 
       parsePlanMarkdownToDraft,
       looksLikeVerbosePlanMarkdown,
       stripVerbosePlanStepToolSuffix,
+      resolveSavedPlanReviewEdit,
     } = loadPlanReviewDraftHelpers(file);
 
     const original = {
@@ -41926,6 +41927,29 @@ test('plan review: structured draft serialize/parse round-trips step edits', () 
     assert.deepEqual(fromVerbose.risks, ['May require login'], file);
     assert.equal(fromVerbose.risks.some((r) => /download-invoices|Scratchpad|Submission/.test(r)), false, file);
 
+    const editedVerbose = verbose.replace('- download-invoices', '- file-operations');
+    assert.deepEqual(
+      resolveSavedPlanReviewEdit({
+        dataset: { planDirty: 'true', editedText: editedVerbose },
+      }),
+      { editedText: editedVerbose, markdownMode: 'verbose' },
+      `${file} should preserve verbose metadata edits after Done`,
+    );
+    assert.deepEqual(
+      resolveSavedPlanReviewEdit({
+        dataset: { planDirty: 'true', editedText: editedMd },
+      }),
+      { editedText: editedMd, markdownMode: 'compact' },
+      `${file} should preserve compact raw edits after Done`,
+    );
+    assert.equal(
+      resolveSavedPlanReviewEdit({
+        dataset: { planDirty: 'false', editedText: editedVerbose },
+      }),
+      null,
+      `${file} should ignore a clean saved buffer`,
+    );
+
     assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /function resolvePlanReviewApprovalText\(/, file);
     assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /function renderPlanReviewRisks\(/, file);
     assert.match(
@@ -41937,6 +41961,11 @@ test('plan review: structured draft serialize/parse round-trips step edits', () 
       fs.readFileSync(path.join(ROOT, file), 'utf8'),
       /looksLikeVerbosePlanMarkdown\(current\) \? 'verbose' : 'compact'/,
       `${file} should force compact approval for compact-shaped raw buffers`,
+    );
+    assert.match(
+      fs.readFileSync(path.join(ROOT, file), 'utf8'),
+      /const savedEdit = resolveSavedPlanReviewEdit\(card\);\s*if \(savedEdit\) return savedEdit;/,
+      `${file} should approve the exact dirty buffer after raw mode is collapsed`,
     );
   }
 });
