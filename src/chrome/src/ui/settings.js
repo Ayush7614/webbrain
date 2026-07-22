@@ -2219,6 +2219,15 @@ function renderProviders() {
         ...COST_ESTIMATE_FIELDS,
       ],
     },
+    z_ai: {
+      fields: [
+        { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'API key' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'glm-5.2',
+          suggestions: ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo'] },
+        { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.z.ai/api/paas/v4' },
+        ...COST_ESTIMATE_FIELDS,
+      ],
+    },
   };
 
   // Filter bar — sits above the list. Pill row, click-to-switch.
