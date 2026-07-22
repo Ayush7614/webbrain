@@ -33,6 +33,7 @@ export const PROVIDER_ICON_FILES = {
   openrouter: 'openrouter.svg',
   huggingface: 'huggingface.svg',
   fireworks: 'fireworks.svg',
+  z_ai: 'z_ai.svg',
 };
 
 export function providerIconUrl(id) {
@@ -95,6 +96,7 @@ export const PROVIDER_SHORT_LABELS = {
   openrouter: 'OpenRouter',
   huggingface: 'Hugging Face',
   fireworks: 'Fireworks',
+  z_ai: 'z.ai GLM',
 };
 
 /** Hostname equals domain or is a subdomain of it (avoids substring spoofing). */
@@ -155,5 +157,6 @@ export function sniffProviderIdFromBaseUrl(baseUrl) {
   if (hostMatchesDomain(host, 'minimax.chat') || hostMatchesDomain(host, 'minimax.io')
       || hostMatchesDomain(host, 'minimaxi.com')) return 'minimax';
   if (hostMatchesDomain(host, 'webbrain.one')) return 'webbrain_cloud';
+  if (hostMatchesDomain(host, 'z.ai') || hostMatchesDomain(host, 'chatglm.cn')) return 'z_ai';
   return '';
 }

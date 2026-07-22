@@ -480,6 +480,21 @@ export class ProviderManager {
         apiKeyUrl: 'https://fireworks.ai/account/api-keys',
         enabled: false,
       },
+      z_ai: {
+        type: 'openai',
+        category: 'cloud',
+        label: 'z.ai GLM',
+        providerName: 'z_ai',
+        baseUrl: 'https://api.z.ai/api/paas/v4',
+        model: 'glm-5.2',
+        contextWindow: 1000000,
+        inputCostPerMillionUsd: 1.4,
+        cacheReadCostPerMillionUsd: 0.26,
+        outputCostPerMillionUsd: 4.4,
+        apiKey: '',
+        apiKeyUrl: 'https://docs.z.ai/guides/overview/quick-start',
+        enabled: false,
+      },
     };
   }
 
