@@ -1,5 +1,8 @@
 // Turkish (tr).
+import chromeWebStoreLocale from './chrome-web-store.mjs';
+
 export default {
+  ...chromeWebStoreLocale,
   'sp.providers.no_setup_group': 'Kurulum gerektirmez',
   'sp.providers.no_setup': 'Kurulum yok',
   'sp.providers.active_group': 'Etkin sağlayıcılar',
@@ -834,4 +837,7 @@ export default {
   "sp.perm.insert_skip_command": "/dangerously-skip-permissions komutunu ekle",
   "sp.perm.skip_hint_draft": "Taslağınız değişmedi. Komutu eklemeden önce taslağı temizleyin.",
   "ob.act.permissions_tip": "İzin istemleri varsayılan olarak açıktır. İleri düzey kullanıcılar /dangerously-skip-permissions ile bunları tüm sitelerde kapatabilir ve Ayarlar → İzinler bölümünden yeniden açabilir.",
+  'st.provider.field.cache_read_cost_per_million': "Tahmini önbellek okuma maliyeti ($ / 1M token)",
+  'st.provider.field.cache_write_cost_per_million': "Tahmini 5 dakikalık önbellek yazma maliyeti ($ / 1M token)",
+  'st.provider.field.cache_write_1h_cost_per_million': "Tahmini 1 saatlik önbellek yazma maliyeti ($ / 1M token)",
 };

@@ -1,5 +1,8 @@
 // Indonesian (id).
+import chromeWebStoreLocale from './chrome-web-store.mjs';
+
 export default {
+  ...chromeWebStoreLocale,
   'sp.providers.no_setup_group': 'Tanpa penyiapan',
   'sp.providers.no_setup': 'Tidak perlu penyiapan',
   'sp.providers.active_group': 'Penyedia aktif',
@@ -831,4 +834,7 @@ export default {
   "sp.perm.insert_skip_command": "Sisipkan /dangerously-skip-permissions",
   "sp.perm.skip_hint_draft": "Draf Anda tidak berubah. Kosongkan sebelum menyisipkan perintah.",
   "ob.act.permissions_tip": "Permintaan izin aktif secara default. Pengguna tingkat lanjut dapat menonaktifkannya secara global dengan /dangerously-skip-permissions dan mengaktifkannya kembali di Pengaturan → Izin.",
+  'st.provider.field.cache_read_cost_per_million': "Perkiraan biaya baca cache ($ / 1 juta token)",
+  'st.provider.field.cache_write_cost_per_million': "Perkiraan biaya tulis cache 5 menit ($ / 1 juta token)",
+  'st.provider.field.cache_write_1h_cost_per_million': "Perkiraan biaya tulis cache 1 jam ($ / 1 juta token)",
 };

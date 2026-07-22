@@ -185,10 +185,18 @@ async function _fetchViaOffscreenProxy(url, fetchOptions, timeoutMs) {
         };
         // The Response constructor rejects a non-null body for 204, 205,
         // and 304. HEAD responses can also have status 200 with no body, so
-        // honor the explicit signal from the offscreen fetch as well.
+        // honor the explicit signal from the offscreen fetch as well. When
+        // headers already settled the connection phase, a constructor throw
+        // used to leave the caller hanging forever with no active timeout.
         if (msg.hasBody === false || [204, 205, 304].includes(msg.status)) {
           streamController = null;
-          resolve(new Response(null, responseInit));
+          try {
+            resolve(new Response(null, responseInit));
+          } catch (e) {
+            try { port.disconnect(); } catch {}
+            reject(new Error(`offscreen proxy returned invalid response headers: ${e.message}`));
+            return;
+          }
           try { port.disconnect(); } catch {}
           return;
         }
@@ -196,7 +204,17 @@ async function _fetchViaOffscreenProxy(url, fetchOptions, timeoutMs) {
           start(controller) { streamController = controller; },
           cancel() { try { port.disconnect(); } catch {} },
         });
-        resolve(new Response(stream, responseInit));
+        try {
+          resolve(new Response(stream, responseInit));
+        } catch (e) {
+          if (streamController) {
+            const sc = streamController;
+            streamController = null;
+            try { sc.error(e); } catch {}
+          }
+          try { port.disconnect(); } catch {}
+          reject(new Error(`offscreen proxy returned invalid response headers: ${e.message}`));
+        }
         return;
       }
       if (msg?.type === 'error') {

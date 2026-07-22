@@ -601,9 +601,9 @@
   function _findDialogContentForOverlay(overlay) {
     const selector = '[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog[open],[data-state="open"][role="dialog"],[class*="DialogContent"],[class*="ModalContent"],.modal.show';
     const pick = (node) => {
-      if (!node || node === overlay) return null;
+      if (!node) return null;
       try {
-        if (node.matches?.(selector) && _hasVisibleBox(node, 20, 20)) return node;
+        if (node !== overlay && node.matches?.(selector) && _hasVisibleBox(node, 20, 20)) return node;
         const match = node.querySelector?.(selector);
         if (match && _hasVisibleBox(match, 20, 20)) return match;
       } catch {}
@@ -664,6 +664,8 @@
         if (!includeNonModalDialogs) {
           const dialogContent = _findDialogContentForOverlay(candidates[i]);
           if (dialogContent) return dialogContent;
+          const interactive = candidates[i].querySelector?.(INTERACTIVE_SELECTORS.join(', '));
+          if (!interactive) continue;
         }
         return candidates[i];
       }
@@ -1486,6 +1488,7 @@
             if (found.length >= 1) {
               found[0].e.scrollIntoView({ block: 'center', inline: 'center' });
               el = found[0].e;
+              textResolvedExact = (m === 'exact');
               break;
             }
           }
@@ -2061,6 +2064,7 @@
         which: keyMeta.keyCode,
         bubbles: true,
         cancelable: true,
+        composed: true,
       });
       const up = new KeyboardEvent('keyup', {
         key,
@@ -2069,6 +2073,7 @@
         which: keyMeta.keyCode,
         bubbles: true,
         cancelable: true,
+        composed: true,
       });
       // Dispatch once on the target only. The events bubble, so listeners
       // attached at document/window level already receive them — dispatching

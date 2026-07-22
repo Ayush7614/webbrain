@@ -263,6 +263,12 @@ export class ProviderManager {
         secretAccessKey: '',
         sessionToken: '',
         supportsVision: false,
+        // Seed Claude-class rates; users should adjust for other Bedrock models.
+        inputCostPerMillionUsd: 3,
+        cacheReadCostPerMillionUsd: 0.3,
+        cacheWriteCostPerMillionUsd: 3.75,
+        cacheWrite1hCostPerMillionUsd: 6,
+        outputCostPerMillionUsd: 15,
         enabled: false,
       },
       openai: {
@@ -273,6 +279,9 @@ export class ProviderManager {
         baseUrl: 'https://api.openai.com/v1',
         model: OPENAI_DEFAULT_MODEL,
         inputCostPerMillionUsd: 2.5,
+        cacheReadCostPerMillionUsd: 0.25,
+        // GPT-5.6 family bills included cache writes at 1.25× input.
+        cacheWriteCostPerMillionUsd: 3.125,
         outputCostPerMillionUsd: 15,
         supportsStreamUsageOptions: true,
         apiKey: '',
@@ -286,6 +295,9 @@ export class ProviderManager {
         baseUrl: 'https://api.anthropic.com',
         model: 'claude-sonnet-4-6',
         inputCostPerMillionUsd: 3,
+        cacheReadCostPerMillionUsd: 0.3,
+        cacheWriteCostPerMillionUsd: 3.75,
+        cacheWrite1hCostPerMillionUsd: 6,
         outputCostPerMillionUsd: 15,
         apiKey: '',
         apiKeyUrl: 'https://console.anthropic.com/settings/keys',
@@ -468,6 +480,21 @@ export class ProviderManager {
         apiKeyUrl: 'https://fireworks.ai/account/api-keys',
         enabled: false,
       },
+      z_ai: {
+        type: 'openai',
+        category: 'cloud',
+        label: 'z.ai GLM',
+        providerName: 'z_ai',
+        baseUrl: 'https://api.z.ai/api/paas/v4',
+        model: 'glm-5.2',
+        contextWindow: 1000000,
+        inputCostPerMillionUsd: 1.4,
+        cacheReadCostPerMillionUsd: 0.26,
+        outputCostPerMillionUsd: 4.4,
+        apiKey: '',
+        apiKeyUrl: 'https://docs.z.ai/guides/overview/quick-start',
+        enabled: false,
+      },
     };
   }
 
@@ -486,6 +513,8 @@ export class ProviderManager {
         ...storedOpenAi,
         model: OPENAI_DEFAULT_MODEL,
         inputCostPerMillionUsd: 2.5,
+        cacheReadCostPerMillionUsd: 0.25,
+        cacheWriteCostPerMillionUsd: 3.125,
         outputCostPerMillionUsd: 15,
       };
     }

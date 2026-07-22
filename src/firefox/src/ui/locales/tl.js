@@ -1,5 +1,8 @@
 // Filipino / Tagalog (tl).
+import chromeWebStoreLocale from './chrome-web-store.mjs';
+
 export default {
+  ...chromeWebStoreLocale,
   'sp.providers.no_setup_group': 'Walang setup',
   'sp.providers.no_setup': 'Hindi kailangan ng setup',
   'sp.providers.active_group': 'Mga aktibong provider',
@@ -831,4 +834,7 @@ export default {
   "sp.perm.insert_skip_command": "Ilagay ang /dangerously-skip-permissions",
   "sp.perm.skip_hint_draft": "Hindi binago ang draft mo. I-clear ito bago ilagay ang command.",
   "ob.act.permissions_tip": "Naka-on bilang default ang mga permission prompt. Maaaring i-off ng advanced users ang mga ito sa lahat ng site gamit ang /dangerously-skip-permissions at i-on muli sa Settings → Permissions.",
+  'st.provider.field.cache_read_cost_per_million': "Tinatayang gastos sa pagbasa ng cache ($ / 1M token)",
+  'st.provider.field.cache_write_cost_per_million': "Tinatayang gastos sa 5 minutong pagsulat ng cache ($ / 1M token)",
+  'st.provider.field.cache_write_1h_cost_per_million': "Tinatayang gastos sa 1 oras na pagsulat ng cache ($ / 1M token)",
 };

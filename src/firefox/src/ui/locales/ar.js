@@ -1,5 +1,8 @@
 // Arabic (ar).
+import chromeWebStoreLocale from './chrome-web-store.mjs';
+
 export default {
+  ...chromeWebStoreLocale,
   'sp.providers.no_setup_group': 'لا يتطلب إعدادًا',
   'sp.providers.no_setup': 'بلا إعداد',
   'sp.providers.active_group': 'المزوّدون النشطون',
@@ -831,4 +834,7 @@ export default {
   "sp.perm.insert_skip_command": "إدراج /dangerously-skip-permissions",
   "sp.perm.skip_hint_draft": "لم تتغير مسودتك. امسحها قبل إدراج الأمر.",
   "ob.act.permissions_tip": "تكون مطالبات الأذونات مفعّلة افتراضيًا. يمكن للمستخدمين المتقدمين تعطيلها عالميًا باستخدام /dangerously-skip-permissions وإعادة تفعيلها من الإعدادات ← الأذونات.",
+  'st.provider.field.cache_read_cost_per_million': "تكلفة قراءة ذاكرة التخزين المؤقت المقدّرة ($ / مليون رمز)",
+  'st.provider.field.cache_write_cost_per_million': "تكلفة كتابة ذاكرة التخزين المؤقت لمدة 5 دقائق ($ / مليون رمز)",
+  'st.provider.field.cache_write_1h_cost_per_million': "تكلفة كتابة ذاكرة التخزين المؤقت لمدة ساعة واحدة ($ / مليون رمز)",
 };

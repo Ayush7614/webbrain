@@ -1,5 +1,8 @@
 // Korean (ko).
+import chromeWebStoreLocale from './chrome-web-store.mjs';
+
 export default {
+  ...chromeWebStoreLocale,
   'sp.providers.no_setup_group': '설정 필요 없음',
   'sp.providers.no_setup': '설정 없음',
   'sp.providers.active_group': '활성 공급자',
@@ -831,4 +834,7 @@ export default {
   "sp.perm.insert_skip_command": "/dangerously-skip-permissions 입력",
   "sp.perm.skip_hint_draft": "초안은 변경되지 않았습니다. 명령을 입력하기 전에 비워 주세요.",
   "ob.act.permissions_tip": "권한 확인은 기본적으로 켜져 있습니다. 고급 사용자는 /dangerously-skip-permissions로 모든 사이트의 확인을 끄고 설정 → 권한에서 다시 켤 수 있습니다.",
+  'st.provider.field.cache_read_cost_per_million': "캐시 읽기 예상 비용($ / 100만 토큰)",
+  'st.provider.field.cache_write_cost_per_million': "5분 캐시 쓰기 예상 비용($ / 100만 토큰)",
+  'st.provider.field.cache_write_1h_cost_per_million': "1시간 캐시 쓰기 예상 비용($ / 100만 토큰)",
 };

@@ -1284,7 +1284,7 @@ async function loadTabChat(tabId) {
 function persistTabChat(tabId, html) {
   if (tabId == null) return;
   return enqueueTabChatOperation(tabId, async (numericTabId) => {
-    // Keep the live transcript lossless. The persistence helper may compact
+    // Keep the live transcript lossless. persistTabChatToSession may compact
     // only the storage.session copy when the shared quota requires it.
     tabChats.set(numericTabId, html);
     const key = TAB_CHAT_PREFIX + numericTabId;

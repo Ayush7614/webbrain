@@ -416,11 +416,22 @@
   }
 
   /**
-   * Detect the topmost modal/overlay/dialog on the page. Returns the modal
-   * container element, or null if no overlay is detected.
+   * Detect the topmost modal/overlay/dialog on the page. If one is found,
+   * only elements inside it (and the backdrop) are "reachable" — everything
+   * behind the overlay is visually blocked even though it passes visibility
+   * checks. Returns the modal container element, or null if no overlay is
+   * detected.
+   *
+   * Detection heuristics (ordered by reliability):
+   *   1. <dialog[open]> — native HTML dialog
+   *   2. [role="dialog"][aria-modal="true"] — ARIA modal pattern
+   *   3. [role="dialog"] that is visible
+   *   4. Common overlay class/attribute patterns (Stripe, Material, Radix,
+   *      Chakra, etc.): data-overlay, data-state="open", .modal.show, etc.
    */
   function _findTopmostModal(opts = {}) {
     const includeNonModalDialogs = opts.includeNonModalDialogs !== false;
+    // 1. Native <dialog open>
     const dialogs = document.querySelectorAll('dialog[open]');
     for (let i = dialogs.length - 1; i >= 0; i--) {
       if (includeNonModalDialogs || _isNativeBlockingDialog(dialogs[i])) return dialogs[i];
@@ -432,6 +443,7 @@
       if (r.width > 0 && r.height > 0) return ariaModals[i];
     }
 
+    // 3. Visible role="dialog"
     if (includeNonModalDialogs) {
       const roleDialogs = document.querySelectorAll('[role="dialog"]');
       for (let i = roleDialogs.length - 1; i >= 0; i--) {
@@ -450,11 +462,10 @@
     for (let i = candidates.length - 1; i >= 0; i--) {
       const r = candidates[i].getBoundingClientRect();
       if (r.width > 100 && r.height > 100) {
-        if (!includeNonModalDialogs) {
-          const dialogContent = _findDialogContentForOverlay(candidates[i]);
-          if (dialogContent) return dialogContent;
-        }
-        return candidates[i];
+        const dialogContent = _findDialogContentForOverlay(candidates[i]);
+        if (dialogContent) return dialogContent;
+        const interactive = candidates[i].querySelector?.(INTERACTIVE_SELECTORS.join(', '));
+        if (interactive) return candidates[i];
       }
     }
 
@@ -467,7 +478,7 @@
 
   function queryInteractive() {
     const all = document.querySelectorAll([...INTERACTIVE_SELECTORS, ..._siteInteractiveSelectors()].join(', '));
-    const modal = _findTopmostModal();
+    const modal = _findTopmostBlockingModal();
     const out = [];
     for (const el of all) {
       if (!isVisiblyInteractive(el)) continue;
@@ -1876,6 +1887,7 @@
         which: keyMeta.keyCode,
         bubbles: true,
         cancelable: true,
+        composed: true,
       });
       const up = new KeyboardEvent('keyup', {
         key,
@@ -1884,6 +1896,7 @@
         which: keyMeta.keyCode,
         bubbles: true,
         cancelable: true,
+        composed: true,
       });
       // Dispatch once on the target only. The events bubble, so listeners
       // attached at document/window level already receive them — dispatching
@@ -2648,6 +2661,8 @@
 
     const isUsable = (el, rect) => {
       if (_hasComposedClosest(el, '[aria-hidden="true"], [inert]')) return false;
+      // Keep the agent-facing list and every indexed follow-up action inside
+      // the same topmost modal/dialog boundary as the legacy collector.
       if (modal && !_isComposedAncestor(modal, el)) return false;
       // Visible and in viewport. Aggressive filtering on purpose: a global
       // header link scrolled offscreen creates noise indices that shift

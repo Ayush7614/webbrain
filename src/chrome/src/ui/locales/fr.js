@@ -1,5 +1,8 @@
 // French (fr).
+import chromeWebStoreLocale from './chrome-web-store.mjs';
+
 export default {
+  ...chromeWebStoreLocale,
   'sp.providers.no_setup_group': 'Sans configuration',
   'sp.providers.no_setup': 'Aucune configuration requise',
   'sp.providers.active_group': 'Fournisseurs actifs',
@@ -835,4 +838,7 @@ export default {
   "sp.perm.insert_skip_command": "Insérer /dangerously-skip-permissions",
   "sp.perm.skip_hint_draft": "Votre brouillon reste inchangé. Effacez-le avant d’insérer la commande.",
   "ob.act.permissions_tip": "Les demandes d’autorisation sont activées par défaut. Les utilisateurs avancés peuvent les désactiver partout avec /dangerously-skip-permissions et les réactiver dans Paramètres → Autorisations.",
+  'st.provider.field.cache_read_cost_per_million': "Coût estimé de lecture du cache ($ / 1M tokens)",
+  'st.provider.field.cache_write_cost_per_million': "Coût estimé d’écriture du cache (5 min) ($ / 1M tokens)",
+  'st.provider.field.cache_write_1h_cost_per_million': "Coût estimé d’écriture du cache (1 h) ($ / 1M tokens)",
 };

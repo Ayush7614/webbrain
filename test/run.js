@@ -134,6 +134,17 @@ function packagedOpenLibraryRecord(prefix) {
   };
 }
 
+function packagedChromeWebStoreRecord(prefix) {
+  return {
+    id: 'chrome-web-store-release',
+    name: 'Chrome Web Store release',
+    sourceType: 'built-in',
+    sourceUrl: 'skills/chrome-web-store-release.md',
+    content: fs.readFileSync(path.join(ROOT, prefix, 'skills/chrome-web-store-release.md'), 'utf8'),
+    createdAt: 0,
+  };
+}
+
 function activateSkillForTest(agent, tabIds, skillId, mode = 'act') {
   for (const tabId of Array.isArray(tabIds) ? tabIds : [tabIds]) {
     agent.conversationModes.set(tabId, mode);
@@ -242,6 +253,15 @@ const TabChatPersistenceCh = await import(
 );
 const TabChatPersistenceFx = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/tab-chat-persistence.js').replace(/\\/g, '/')
+);
+const { chromeProtectedPageForUrl, chromeProtectedPageFailure, isChromeProtectedPageDomTool } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/chrome-protected-pages.js').replace(/\\/g, '/')
+);
+const ChromeWebStoreReleaseCh = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/chrome-web-store-release.js').replace(/\\/g, '/')
+);
+const ChromeWebStoreReleaseFx = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/chrome-web-store-release.js').replace(/\\/g, '/')
 );
 
 // markdown-link.js is pure JS with no DOM / chrome.* deps.
@@ -10756,6 +10776,7 @@ test('every bundled skill declares its canonical semantic intents', () => {
     'open-meteo-weather': ['current_weather', 'weather_forecast', 'location_forecast'],
     'open-library-books': ['book_search', 'book_metadata', 'isbn_lookup', 'author_lookup'],
     'temporary-file-share-litterbox': ['temporary_file_share', 'public_upload_link', 'expiring_file_upload'],
+    'chrome-web-store-release': ['chrome-web-store-release', 'extension-publish'],
   };
   for (const [label, prefix, sources, normalizeSkills] of [
     ['chrome', 'src/chrome', PACKAGED_SKILL_SOURCES_CH, normalizeCustomSkillsCh],
@@ -12533,10 +12554,12 @@ test('chrome fetch fallback clears offscreen proxy timeout after success', async
   }
 });
 
-test('chrome streaming offscreen proxy resolves bodyless HTTP responses without hanging', async () => {
+test('chrome fetch fallback resolves null-body proxy statuses without hanging', async () => {
   const previousChrome = globalThis.chrome;
   const previousFetch = globalThis.fetch;
   const previousWarn = console.warn;
+  let nextStatus = 204;
+  let disconnects = 0;
   console.warn = () => {};
   globalThis.fetch = async () => {
     throw new TypeError('Failed to fetch');
@@ -12557,32 +12580,41 @@ test('chrome streaming offscreen proxy resolves bodyless HTTP responses without 
             queueMicrotask(() => {
               messageListeners.forEach((fn) => fn({
                 type: 'headers',
-                ok: true,
-                status: 204,
-                contentType: '',
+                ok: nextStatus >= 200 && nextStatus < 300,
+                status: nextStatus,
+                contentType: 'application/json',
                 hasBody: false,
               }));
             });
           },
-          disconnect() {},
+          disconnect() {
+            disconnects++;
+          },
         };
       },
     },
   };
   try {
-    const fetchUrl = 'file://' + path.join(ROOT, 'src/chrome/src/providers/fetch-with-fallback.js').replace(/\\/g, '/') + `?bodyless=${Date.now()}`;
+    const fetchUrl = 'file://' + path.join(ROOT, 'src/chrome/src/providers/fetch-with-fallback.js').replace(/\\/g, '/') + `?test=${Date.now()}`;
     const { fetchWithFallback } = await import(fetchUrl);
-    const res = await Promise.race([
-      fetchWithFallback('http://127.0.0.1:11434/empty', { method: 'HEAD', timeoutMs: 250 }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('bodyless proxy response hung')), 500)),
-    ]);
-    assert.equal(res.status, 204);
-    assert.equal(await res.text(), '');
+    for (const status of [204, 205, 304]) {
+      nextStatus = status;
+      const res = await fetchWithFallback('http://127.0.0.1:11434/api/models', { timeoutMs: 12345 });
+      assert.equal(res.status, status, `chrome: proxied ${status} status should resolve`);
+      assert.equal(await res.text(), '', `chrome: proxied ${status} response must have no body`);
+    }
+    assert.equal(disconnects, 3, 'chrome: null-body responses should close their streaming ports immediately');
   } finally {
-    if (previousChrome === undefined) delete globalThis.chrome;
-    else globalThis.chrome = previousChrome;
-    if (previousFetch === undefined) delete globalThis.fetch;
-    else globalThis.fetch = previousFetch;
+    if (previousFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = previousFetch;
+    }
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
     console.warn = previousWarn;
   }
 });
@@ -24322,7 +24354,17 @@ test('_defaultConfigs: OpenAI defaults to GPT-5.6 Terra and safely migrates the 
     const defaults = mgr._defaultConfigs();
     assert.equal(defaults.openai.model, 'gpt-5.6-terra');
     assert.equal(defaults.openai.inputCostPerMillionUsd, 2.5);
+    assert.equal(defaults.openai.cacheReadCostPerMillionUsd, 0.25);
+    assert.equal(defaults.openai.cacheWriteCostPerMillionUsd, 3.125);
     assert.equal(defaults.openai.outputCostPerMillionUsd, 15);
+    assert.equal(defaults.anthropic.cacheReadCostPerMillionUsd, 0.3);
+    assert.equal(defaults.anthropic.cacheWriteCostPerMillionUsd, 3.75);
+    assert.equal(defaults.anthropic.cacheWrite1hCostPerMillionUsd, 6);
+    assert.equal(defaults.aws_bedrock.inputCostPerMillionUsd, 3);
+    assert.equal(defaults.aws_bedrock.cacheReadCostPerMillionUsd, 0.3);
+    assert.equal(defaults.aws_bedrock.cacheWriteCostPerMillionUsd, 3.75);
+    assert.equal(defaults.aws_bedrock.cacheWrite1hCostPerMillionUsd, 6);
+    assert.equal(defaults.aws_bedrock.outputCostPerMillionUsd, 15);
 
     const migrated = mgr._migrateStoredProviderConfigs({
       openai: {
@@ -24335,6 +24377,8 @@ test('_defaultConfigs: OpenAI defaults to GPT-5.6 Terra and safely migrates the 
     });
     assert.equal(migrated.openai.model, 'gpt-5.6-terra');
     assert.equal(migrated.openai.inputCostPerMillionUsd, 2.5);
+    assert.equal(migrated.openai.cacheReadCostPerMillionUsd, 0.25);
+    assert.equal(migrated.openai.cacheWriteCostPerMillionUsd, 3.125);
     assert.equal(migrated.openai.outputCostPerMillionUsd, 15);
     assert.equal(migrated.openai.configured, false);
 
@@ -24376,6 +24420,35 @@ test('OpenAI settings list every GPT-5.6 family model with Terra first', () => {
     const luna = source.indexOf("'gpt-5.6-luna'", terra);
     const alias = source.indexOf("'gpt-5.6'", terra);
     assert.ok(terra >= 0 && sol > terra && luna > sol && alias > luna, `${prefix}: GPT-5.6 suggestions should lead with Terra, Sol, Luna, and the Sol alias`);
+  }
+});
+
+test('provider settings expose cache pricing with zero-cost support', () => {
+  for (const prefix of ['src/chrome', 'src/firefox']) {
+    const source = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/settings.js'), 'utf8');
+    for (const key of [
+      'cacheReadCostPerMillionUsd',
+      'cacheWriteCostPerMillionUsd',
+      'cacheWrite1hCostPerMillionUsd',
+    ]) {
+      assert.match(source, new RegExp(`key: '${key}'`), `${prefix}: missing ${key} field`);
+      assert.match(source, new RegExp(`ZERO_ALLOWED_NUMBER_FIELDS[\\s\\S]*?'${key}'`), `${prefix}: ${key} should allow zero`);
+    }
+    assert.match(
+      source,
+      /aws_bedrock:\s*\{[\s\S]*?\.\.\.CACHE_AWARE_COST_ESTIMATE_FIELDS/,
+      `${prefix}: Bedrock should expose cache read and write rates`,
+    );
+    assert.match(
+      source,
+      /anthropic:\s*\{[\s\S]*?\.\.\.CACHE_AWARE_COST_ESTIMATE_FIELDS/,
+      `${prefix}: Anthropic should expose cache read and write rates`,
+    );
+    assert.match(
+      source,
+      /openai:\s*\{[\s\S]*?\.\.\.OPENAI_COST_ESTIMATE_FIELDS/,
+      `${prefix}: OpenAI should expose cache read and write rates`,
+    );
   }
 });
 
@@ -24553,7 +24626,12 @@ test('GPT-5.6 Responses results normalize text, calls, usage, and replay items',
     const provider = new Provider({ providerName: 'openai', model: 'gpt-5.6-terra' });
     const result = provider._responsesResult({
       output,
-      usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
+      usage: {
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14,
+        input_tokens_details: { cached_tokens: 8 },
+      },
     });
     assert.equal(result.content, 'Done.');
     assert.equal(result.reasoningContent, 'Checked. ');
@@ -24566,6 +24644,7 @@ test('GPT-5.6 Responses results normalize text, calls, usage, and replay items',
     assert.equal(result.usage.prompt_tokens, 10);
     assert.equal(result.usage.completion_tokens, 4);
     assert.equal(result.usage.total_tokens, 14);
+    assert.deepEqual(result.usage.input_tokens_details, { cached_tokens: 8 });
     assert.equal(result.responseItems, output);
   }
 });
@@ -25015,6 +25094,51 @@ test('OpenAI-compatible streams request usage metadata only for supporting provi
   }
 });
 
+test('OpenAI-compatible streams emit only the final cumulative usage snapshot', async () => {
+  const originalFetch = globalThis.fetch;
+  const snapshots = [
+    {
+      prompt_tokens: 100,
+      completion_tokens: 1,
+      prompt_tokens_details: { cached_tokens: 80 },
+    },
+    {
+      prompt_tokens: 100,
+      completion_tokens: 5,
+      prompt_tokens_details: { cached_tokens: 80 },
+    },
+  ];
+  const sse = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' } }], usage: snapshots[0] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [], usage: snapshots[1] })}\n\n`,
+    'data: [DONE]\n\n',
+  ].join('');
+  try {
+    globalThis.fetch = async () => new Response(sse, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+    const cases = [
+      [OpenAIProviderCh, { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+      [OpenAIProviderFx, { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+      [AzureOpenAIProviderCh, { baseUrl: 'https://x.openai.azure.com', model: 'deployment', apiVersion: '2024-10-21' }],
+      [AzureOpenAIProviderFx, { baseUrl: 'https://x.openai.azure.com', model: 'deployment', apiVersion: '2024-10-21' }],
+    ];
+    for (const [Provider, config] of cases) {
+      const chunks = [];
+      for await (const chunk of new Provider(config).chatStream([{ role: 'user', content: 'hello' }])) {
+        chunks.push(chunk);
+      }
+      const usageChunks = chunks.filter(chunk => chunk.type === 'usage');
+      assert.equal(usageChunks.length, 1, `${Provider.name}: cumulative usage was counted more than once`);
+      assert.deepEqual(usageChunks[0].usage, snapshots[1], `${Provider.name}: final usage snapshot was not retained`);
+      assert.equal(chunks.at(-1)?.type, 'done');
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Azure OpenAI provider builds deployment URL, headers, and model getter', () => {
   for (const Provider of [AzureOpenAIProviderCh, AzureOpenAIProviderFx]) {
     const provider = new Provider({
@@ -25088,12 +25212,28 @@ test('AWS Bedrock provider normalizes usage and indexes parallel tool calls', ()
           ],
         },
       },
-      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        cacheReadInputTokens: 80,
+        cacheWriteInputTokens: 30,
+        cacheDetails: [
+          { ttl: '1h', inputTokens: 20 },
+          { ttl: '5m', inputTokens: 10 },
+        ],
+      },
     });
     assert.deepEqual(parsed.usage, {
       prompt_tokens: 10,
       completion_tokens: 5,
       total_tokens: 15,
+      cacheReadInputTokens: 80,
+      cacheWriteInputTokens: 30,
+      cacheDetails: [
+        { ttl: '1h', inputTokens: 20 },
+        { ttl: '5m', inputTokens: 10 },
+      ],
     });
     assert.equal(parsed.toolCalls.length, 2);
     assert.equal(parsed.toolCalls[0].index, 0);
@@ -25684,6 +25824,175 @@ test('Agent cost extraction estimates only when reported cost is missing', () =>
     assert.equal(agent._extractUsageCostUsd(provider, usage), 0.2);
     assert.equal(agent._extractUsageCostUsd(provider, { ...usage, cost: '' }), 0.2);
   }
+});
+
+test('Agent cost estimation discounts OpenAI cached input included in the input total', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = {
+      config: {
+        inputCostPerMillionUsd: 100,
+        cacheReadCostPerMillionUsd: 10,
+        outputCostPerMillionUsd: 200,
+      },
+    };
+    const chatCompletionsUsage = {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 800 },
+    };
+    const responsesUsage = {
+      input_tokens: 1000,
+      output_tokens: 100,
+      input_tokens_details: { cached_tokens: 800 },
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, chatCompletionsUsage), 0.048);
+    assert.equal(agent._estimateUsageCostUsd(provider, responsesUsage), 0.048);
+  }
+});
+
+test('Agent cost estimation prices OpenAI included cache writes from nested usage details', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = {
+      config: {
+        inputCostPerMillionUsd: 100,
+        cacheReadCostPerMillionUsd: 10,
+        cacheWriteCostPerMillionUsd: 125,
+        outputCostPerMillionUsd: 200,
+      },
+    };
+    // uncached 200@100 + read 600@10 + write 200@125 + out 100@200 = 0.071
+    const chatCompletionsUsage = {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 200 },
+    };
+    const responsesUsage = {
+      input_tokens: 1000,
+      output_tokens: 100,
+      input_tokens_details: { cached_tokens: 600, cache_write_tokens: 200 },
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, chatCompletionsUsage), 0.071);
+    assert.equal(agent._estimateUsageCostUsd(provider, responsesUsage), 0.071);
+
+    const clamped = {
+      prompt_tokens: 100,
+      completion_tokens: 0,
+      prompt_tokens_details: { cached_tokens: 80, cache_write_tokens: 50 },
+    };
+    // Clamp write so read+write <= input: uncached 0 + read 80@10 + write 20@125 = 0.0033
+    assert.equal(agent._estimateUsageCostUsd(provider, clamped), 0.0033);
+  }
+});
+
+test('Agent cost estimation handles Anthropic and Bedrock cache tokens as separate input', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = {
+      config: {
+        inputCostPerMillionUsd: 100,
+        cacheReadCostPerMillionUsd: 10,
+        cacheWriteCostPerMillionUsd: 125,
+        outputCostPerMillionUsd: 200,
+      },
+    };
+    const anthropicUsage = {
+      input_tokens: 200,
+      output_tokens: 100,
+      cache_read_input_tokens: 800,
+      cache_creation_input_tokens: 400,
+    };
+    const bedrockUsage = {
+      inputTokens: 200,
+      outputTokens: 100,
+      cacheReadInputTokens: 800,
+      cacheWriteInputTokens: 400,
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, anthropicUsage), 0.098);
+    assert.equal(agent._estimateUsageCostUsd(provider, bedrockUsage), 0.098);
+  }
+});
+
+test('Agent cost estimation prices Anthropic one-hour cache writes separately', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = {
+      config: {
+        inputCostPerMillionUsd: 100,
+        cacheWriteCostPerMillionUsd: 125,
+        cacheWrite1hCostPerMillionUsd: 200,
+        outputCostPerMillionUsd: 200,
+      },
+    };
+    const usage = {
+      input_tokens: 100,
+      output_tokens: 100,
+      cache_creation_input_tokens: 300,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 100,
+        ephemeral_1h_input_tokens: 200,
+      },
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, usage), 0.0825);
+  }
+});
+
+test('Agent cost estimation prices Bedrock cache detail TTLs separately', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = {
+      config: {
+        inputCostPerMillionUsd: 100,
+        cacheWriteCostPerMillionUsd: 125,
+        cacheWrite1hCostPerMillionUsd: 200,
+        outputCostPerMillionUsd: 200,
+      },
+    };
+    const usage = {
+      prompt_tokens: 100,
+      completion_tokens: 100,
+      cacheWriteInputTokens: 300,
+      cacheDetails: [
+        { ttl: '1h', inputTokens: 200 },
+        { ttl: '5m', inputTokens: 100 },
+      ],
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, usage), 0.0825);
+  }
+});
+
+test('Agent cost estimation keeps normal input pricing when cache rates are absent', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = { config: { inputCostPerMillionUsd: 100, outputCostPerMillionUsd: 200 } };
+    const usage = {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 800 },
+    };
+    assert.equal(agent._estimateUsageCostUsd(provider, usage), 0.12);
+  }
+});
+
+test('provider docs describe cache-aware cost semantics and configuration', () => {
+  const docs = [
+    'docs/providers-and-models.md',
+    'docs/zh-CN/providers-and-models.md',
+    'docs/fr/providers-and-models.md',
+  ].map(relativePath => fs.readFileSync(path.join(ROOT, relativePath), 'utf8'));
+  for (const doc of docs) {
+    for (const key of [
+      'cacheReadCostPerMillionUsd',
+      'cacheWriteCostPerMillionUsd',
+      'cacheWrite1hCostPerMillionUsd',
+    ]) {
+      assert.match(doc, new RegExp(`\\b${key}\\b`));
+    }
+  }
+  assert.match(docs[0], /OpenAI reports cache reads and writes inside the input-token total/);
+  assert.match(docs[0], /Anthropic and Bedrock report regular input, cache reads, and cache writes separately/);
+  assert.match(docs[0], /final cumulative usage snapshot/);
 });
 
 console.log('\nsheets-tools: A1 parsing');
@@ -29088,6 +29397,28 @@ test('submit controls bypass native select guards in click paths', () => {
   assert.match(chromeContent, /el\.tagName === 'INPUT' && !\['button', 'checkbox'[\s\S]*?'submit'\]\.includes\(inputType\)/, 'chrome: checkbox/radio focus must not receive the text-editable stale-click exemption');
 });
 
+test('native select rescue yields only to exact clickables and refuses ambiguous dropdowns', () => {
+  const chromeAgent = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const autoSelectStart = chromeAgent.indexOf('async _autoSelectOption(');
+  const autoSelectEnd = chromeAgent.indexOf('\n  async ', autoSelectStart + 10);
+  const autoSelectBody = chromeAgent.slice(autoSelectStart, autoSelectEnd);
+  assert.ok(autoSelectStart >= 0 && autoSelectEnd > autoSelectStart, 'chrome: auto-select helper should be independently inspectable');
+  assert.match(autoSelectBody, /if \(txt && txt === lc\) return \{ found: false, suppressedByClickable: true \};/, 'chrome: only exact clickable text should suppress select rescue');
+  assert.doesNotMatch(autoSelectBody, /txt\.includes\(lc\)[^\n]*suppressedByClickable/, 'chrome: substring clickables must not suppress select rescue');
+  assert.match(autoSelectBody, /if \(matchingSelects\.length !== 1\)/, 'chrome: auto-select must not pick the first of several matching dropdowns');
+
+  const firefoxContent = fs.readFileSync(path.join(ROOT, 'src/firefox/src/content/content.js'), 'utf8');
+  const clickStart = firefoxContent.indexOf('function clickElement(params) {');
+  const clickEnd = firefoxContent.indexOf('\n  function ', clickStart + 10);
+  const clickBody = firefoxContent.slice(clickStart, clickEnd);
+  assert.ok(clickStart >= 0 && clickEnd > clickStart, 'firefox: click helper should be independently inspectable');
+  assert.match(clickBody, /let textResolvedExact = false;/, 'firefox: click resolution should track the winning text tier');
+  assert.match(clickBody, /textResolvedExact = \(usedMode === 'exact'\);/, 'firefox: direct matches should record exact-tier resolution');
+  assert.match(clickBody, /!el \|\| el instanceof HTMLSelectElement \|\| !textResolvedExact/, 'firefox: prefix and contains matches should keep select rescue enabled');
+  assert.match(clickBody, /matchingSelects\.length > 1/, 'firefox: select rescue must reject ambiguous dropdown matches');
+  assert.match(clickBody, /method: 'select-already-set'/, 'firefox: an already-selected exact option must not fall through to an unrelated click');
+});
+
 test('accessibility ref lookup rejects disconnected elements', () => {
   for (const [label, rel] of [
     ['chrome', 'src/chrome/src/content/accessibility-tree.js'],
@@ -29456,6 +29787,25 @@ test('chrome CDP auto-select scopes to blocking dialogs and refuses ambiguous dr
   assert.match(body, /const target = globalThis\[/, 'chrome: auto-select should refocus and verify the preserved select');
 });
 
+test('chrome full interactive indexes stay scoped to the topmost modal', () => {
+  const content = fs.readFileSync(path.join(ROOT, 'src/chrome/src/content/content.js'), 'utf8');
+  assert.match(content, /function _findDialogContentForOverlay\(overlay\)[\s\S]*?const siblings = overlay\?\.parentElement \? Array\.from\(overlay\.parentElement\.children\) : \[\];/, 'chrome: backdrop overlays should resolve an adjacent dialog container');
+  assert.match(content, /const dialogContent = _findDialogContentForOverlay\(candidates\[i\]\);\s*if \(dialogContent\) return dialogContent;/, 'chrome: modal scoping should prefer dialog content over a backdrop sibling');
+  assert.match(content, /const interactive = candidates\[i\]\.querySelector\?\.\(INTERACTIVE_SELECTORS\.join\(', '\)\);\s*if \(interactive\) return candidates\[i\];/, 'chrome: a backdrop without dialog or interactive descendants must not become the modal scope');
+  assert.match(content, /function _findTopmostBlockingModal\(\) \{\s*return _findTopmostModal\(\{ includeNonModalDialogs: false \}\);\s*\}/, 'chrome: interactive collectors should have a blocking-only modal resolver');
+  const fullStart = content.indexOf('function queryInteractiveFull() {');
+  const fullEnd = content.indexOf('\n  function queryInteractiveForToolIndex()', fullStart);
+  const fullBody = content.slice(fullStart, fullEnd);
+  assert.ok(fullStart >= 0 && fullEnd > fullStart, 'chrome: full interactive collector should be independently inspectable');
+  assert.match(fullBody, /const modal = _findTopmostBlockingModal\(\);/, 'chrome: full collector should ignore visible but non-modal dialogs');
+  assert.match(fullBody, /if \(modal && !_isComposedAncestor\(modal, el\)\) return false;/, 'chrome: full collector must exclude elements behind the modal, including across shadow roots');
+
+  const indexedStart = content.indexOf('function queryInteractiveForToolIndex() {', fullEnd);
+  const indexedEnd = content.indexOf('\n  function ', indexedStart + 10);
+  const indexedBody = content.slice(indexedStart, indexedEnd);
+  assert.match(indexedBody, /return queryInteractiveFull\(\)\.map\(c => c\.el\);/, 'chrome: indexed clicks and typing must use the modal-scoped full collector');
+});
+
 test('content auto-select refuses ambiguous option matches in both browser builds', () => {
   for (const [label, rel] of [
     ['chrome', 'src/chrome/src/content/content.js'],
@@ -29469,6 +29819,22 @@ test('content auto-select refuses ambiguous option matches in both browser build
     assert.match(body, /matchingSelects\.length > 1/, `${label}: native select rescue should reject ambiguous dropdowns`);
     assert.match(body, /failureScope: `ambiguous-select-option:\$\{lc\}`/, `${label}: ambiguous dropdown failures should be loop-scoped`);
     assert.match(body, /method: 'select-already-set'/, `${label}: already-selected options should not fall through to unrelated clickables`);
+  }
+});
+
+test('synthetic key events cross shadow boundaries without double dispatch', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/content/content.js'],
+    ['firefox', 'src/firefox/src/content/content.js'],
+  ]) {
+    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const start = content.indexOf("const down = new KeyboardEvent('keydown'");
+    const end = content.indexOf("return { success: true, dispatched: true, key, repeat, method: 'keyboardevent'", start);
+    const keyBody = content.slice(start, end);
+    assert.ok(start >= 0 && end > start, `${label}: synthetic key dispatch should be independently inspectable`);
+    assert.match(keyBody, /new KeyboardEvent\('keydown',[\s\S]*?composed: true,[\s\S]*?new KeyboardEvent\('keyup',[\s\S]*?composed: true,/, `${label}: keydown and keyup should escape open shadow roots`);
+    assert.match(keyBody, /target\.dispatchEvent\(down\);\s*target\.dispatchEvent\(up\);/, `${label}: key events should still dispatch exactly once on the focused target`);
+    assert.doesNotMatch(keyBody, /document\.dispatchEvent\((?:down|up)\)/, `${label}: shadow-safe key events must not restore duplicate document dispatch`);
   }
 });
 
@@ -39816,6 +40182,364 @@ test('plan before act: try is default while explicit off is preserved', () => {
   }
 });
 
+test('Chrome Web Store release uses an always-on protected-page guard and opt-in trusted skill tools', async () => {
+  const dashboard = 'https://chrome.google.com/webstore/devconsole/f4a5b26f-27fe-4bc4-ad37-203b236e337c';
+  assert.equal(chromeProtectedPageForUrl(dashboard), 'chrome-web-store-developer');
+  assert.equal(chromeProtectedPageForUrl('https://chrome.google.com/webstore/devconsole?hl=en'), 'chrome-web-store-developer');
+  assert.equal(chromeProtectedPageForUrl('https://chrome.google.com/webstore/devconsole#published'), 'chrome-web-store-developer');
+  assert.equal(chromeProtectedPageForUrl('https://example.com/?next=https://chrome.google.com/webstore/devconsole'), '');
+  const failure = chromeProtectedPageFailure(dashboard, 'get_accessibility_tree');
+  assert.equal(failure.errorCode, 'chrome_protected_page');
+  assert.equal(failure.nonRetryable, true);
+  assert.equal(failure.dispatched, false);
+  assert.equal(failure.recoverySkill, 'chrome-web-store-release');
+  assert.match(failure.error, /Do not retry/i);
+  for (const toolName of ['wait_for_stable', 'get_accessibility_tree', 'read_page', 'click_ax', 'upload_file', 'download_resource_from_page', 'execute_js', 'get_frames']) {
+    assert.equal(isChromeProtectedPageDomTool(toolName), true, `chrome: ${toolName} should be stopped before protected-page dispatch`);
+  }
+  assert.equal(isChromeProtectedPageDomTool('download_files'), false, 'chrome: direct URL downloads should remain available without page DOM');
+  assert.equal(isChromeProtectedPageDomTool('screenshot'), false, 'chrome: screenshots remain an optional read-only fallback');
+  assert.equal(isChromeProtectedPageDomTool('chrome_web_store_status'), false, 'chrome: trusted release tools must bypass the DOM guard');
+
+  for (const [label, prefix, normalize, buildDefinitions, buildRegistry, runtime] of [
+    ['chrome', 'src/chrome', normalizeCustomSkillsCh, buildSkillToolDefinitionsCh, buildSkillToolRegistryCh, ChromeWebStoreReleaseCh],
+    ['firefox', 'src/firefox', normalizeCustomSkillsFx, buildSkillToolDefinitionsFx, buildSkillToolRegistryFx, ChromeWebStoreReleaseFx],
+  ]) {
+    const record = packagedChromeWebStoreRecord(prefix);
+    const normalized = normalize([record]);
+    assert.equal(normalized.length, 1, `${label}: packaged release skill should normalize`);
+    assert.deepEqual(normalized[0].tools.map((tool) => tool.name), [
+      'chrome_web_store_status',
+      'chrome_web_store_upload',
+      'chrome_web_store_publish',
+    ], `${label}: exact built-in release skill should receive all trusted tools`);
+    assert.equal(normalized[0].tools.every((tool) => tool.kind === 'chromeWebStore'), true, `${label}: release tools should use the trusted built-in kind`);
+
+    const rawSpoof = normalize([{ ...record, sourceType: 'text', sourceUrl: '' }]);
+    assert.equal(rawSpoof[0].tools.length, 0, `${label}: raw/imported text must not acquire privileged release handlers`);
+    const normalizedRecordSpoof = normalize([{ ...normalized[0], sourceType: 'text', sourceUrl: '' }]);
+    assert.equal(normalizedRecordSpoof[0].tools.length, 0, `${label}: persisted privileged tool objects must not survive without exact built-in provenance`);
+
+    const askNames = buildDefinitions(normalized, { mode: 'ask', tier: 'full' }).map((tool) => tool.function.name);
+    const actNames = buildDefinitions(normalized, { mode: 'act', tier: 'full' }).map((tool) => tool.function.name);
+    assert.deepEqual(askNames, ['chrome_web_store_status'], `${label}: Ask should expose only the read-only status tool`);
+    assert.deepEqual(actNames, ['chrome_web_store_status', 'chrome_web_store_upload', 'chrome_web_store_publish'], `${label}: Act should expose the full release workflow`);
+
+    const registry = buildRegistry(normalized);
+    const statusTool = registry.get('chrome_web_store_status');
+    const uploadTool = registry.get('chrome_web_store_upload');
+    const publishTool = registry.get('chrome_web_store_publish');
+    assert.equal(runtime.isTrustedChromeWebStoreSkillTool(statusTool), true, `${label}: registry should retain the trusted skill provenance`);
+
+    const storageData = {
+      [runtime.CHROME_WEB_STORE_CONFIG_KEY]: {
+        publisherId: 'f4a5b26f-27fe-4bc4-ad37-203b236e337c',
+        itemId: 'abcdefghijklmnopabcdefghijklmnop',
+      },
+      [runtime.CHROME_WEB_STORE_PACKAGE_KEY]: {
+        name: 'webbrain-25.4.2.zip',
+        size: 3,
+        sha256: 'abc123',
+        base64: btoa('zip'),
+      },
+    };
+    const storage = { get: async () => structuredClone(storageData) };
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      const result = url.endsWith(':fetchStatus')
+        ? { itemId: storageData[runtime.CHROME_WEB_STORE_CONFIG_KEY].itemId, publishedItemRevisionStatus: { state: 'OK' } }
+        : url.endsWith(':upload')
+          ? { uploadState: 'SUCCEEDED', crxVersion: '25.4.2' }
+          : { state: 'PENDING_REVIEW' };
+      return { ok: true, status: 200, text: async () => JSON.stringify(result) };
+    };
+    const opts = { storage, fetchImpl, accessToken: 'test-token' };
+    const status = await runtime.executeChromeWebStoreSkillTool(statusTool, {}, opts);
+    const upload = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, opts);
+    const publish = await runtime.executeChromeWebStoreSkillTool(publishTool, { publish_type: 'staged', deploy_percentage: 25 }, opts);
+    const invalidPublish = await runtime.executeChromeWebStoreSkillTool(publishTool, { publish_type: 'stage' }, opts);
+    assert.equal(status.success, true, `${label}: status should execute`);
+    assert.equal(status.dispatched, false, `${label}: status is read-only`);
+    assert.equal(upload.success, true, `${label}: upload should execute`);
+    assert.equal(upload.package.name, 'webbrain-25.4.2.zip', `${label}: upload should return metadata only`);
+    assert.equal(JSON.stringify(upload).includes('emlw'), false, `${label}: upload result must not contain ZIP base64`);
+    assert.equal(publish.success, true, `${label}: publish should execute`);
+    assert.equal(invalidPublish.success, false, `${label}: an unknown publish type must fail closed`);
+    assert.equal(invalidPublish.noDispatch, true, `${label}: an unknown publish type must not dispatch`);
+    assert.match(invalidPublish.error, /publish_type/, `${label}: invalid publish type should identify the bad argument`);
+    assert.equal(calls.length, 3, `${label}: invalid publish type must not send an API request`);
+    assert.equal(calls[0].url.endsWith(':fetchStatus'), true, `${label}: status endpoint mismatch`);
+    assert.equal(calls[1].url.includes('/upload/v2/publishers/'), true, `${label}: upload endpoint mismatch`);
+    assert.equal(calls[1].init.body instanceof Uint8Array, true, `${label}: upload should send binary bytes`);
+    assert.deepEqual(JSON.parse(calls[2].init.body), {
+      publishType: 'STAGED_PUBLISH',
+      blockOnWarnings: true,
+      deployInfos: [{ deployPercentage: 25 }],
+    }, `${label}: publish body should be warning-blocking and preserve explicit rollout`);
+
+    const preDispatchFailure = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, {
+      storage,
+      fetchImpl: {},
+      accessToken: 'test-token',
+    });
+    assert.equal(preDispatchFailure.success, false, `${label}: unavailable fetch should fail`);
+    assert.equal(preDispatchFailure.dispatched, false, `${label}: pre-dispatch setup failure was marked dispatched`);
+    assert.equal(preDispatchFailure.noDispatch, true, `${label}: pre-dispatch setup failure should avoid completion debt`);
+    assert.notEqual(preDispatchFailure.outcomeUnknown, true, `${label}: pre-dispatch setup failure should not be ambiguous`);
+
+    let ambiguousAttempts = 0;
+    const ambiguousFailure = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, {
+      storage,
+      fetchImpl: async () => {
+        ambiguousAttempts += 1;
+        throw new Error('connection reset');
+      },
+      accessToken: 'test-token',
+    });
+    assert.equal(ambiguousAttempts, 1, `${label}: ambiguous upload should attempt fetch once`);
+    assert.equal(ambiguousFailure.success, false, `${label}: rejected upload fetch should fail`);
+    assert.equal(ambiguousFailure.dispatched, true, `${label}: post-dispatch failure lost its dispatch marker`);
+    assert.equal(ambiguousFailure.outcomeUnknown, true, `${label}: post-dispatch failure should remain ambiguous`);
+    assert.notEqual(ambiguousFailure.noDispatch, true, `${label}: ambiguous upload must retain completion debt`);
+
+    const warningSecret = 'opaque_validation_token_abcdefghijklmnopqrstuvwxyz0123456789';
+    const warningFailure = await runtime.executeChromeWebStoreSkillTool(publishTool, {}, {
+      storage,
+      fetchImpl: async () => ({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({
+          error: {
+            message: 'Publish blocked by validation warnings.',
+            details: [{
+              reason: 'MISSING_PRIVACY_DISCLOSURE',
+              message: 'Add the required privacy disclosure before publishing.',
+              opaqueToken: warningSecret,
+            }],
+          },
+        }),
+      }),
+      accessToken: 'test-token',
+    });
+    assert.equal(warningFailure.success, false, `${label}: warning-blocked publish should fail`);
+    assert.match(warningFailure.error, /Publish blocked by validation warnings/, `${label}: warning failure lost its summary`);
+    assert.match(warningFailure.error, /MISSING_PRIVACY_DISCLOSURE/, `${label}: warning failure lost its detail code`);
+    assert.match(warningFailure.error, /required privacy disclosure/, `${label}: warning failure lost its remediation detail`);
+    assert.equal(warningFailure.error.includes(warningSecret), false, `${label}: warning failure leaked an opaque token`);
+    assert.ok(warningFailure.error.length <= 1000, `${label}: warning detail summary exceeded its bound`);
+  }
+
+  const originalChrome = globalThis.chrome;
+  try {
+    const tabId = 6023;
+    globalThis.chrome = {
+      tabs: {
+        get: async () => ({ id: tabId, url: dashboard }),
+      },
+    };
+    const agent = new AgentCh({ getVisionProvider: async () => null });
+    const messages = [];
+    let webMcpPreparationCalls = 0;
+    let submitProbeCalls = 0;
+    let permissionPromptCalls = 0;
+    let toolDispatchCalls = 0;
+    agent.conversationModes.set(tabId, 'act');
+    agent.providerManager = { ...(agent.providerManager || {}), getVisionProvider: async () => null };
+    agent._ensureGateSetting = async () => false;
+    agent._prepareWebMCPToolCall = async () => {
+      webMcpPreparationCalls += 1;
+      throw new Error('protected-page WebMCP preparation must not run');
+    };
+    agent._detectLikelySubmitAction = async () => {
+      submitProbeCalls += 1;
+      throw new Error('protected-page submit probing must not run');
+    };
+    agent._promptPermission = async () => {
+      permissionPromptCalls += 1;
+      return 'once';
+    };
+    agent.executeTool = async () => {
+      toolDispatchCalls += 1;
+      throw new Error('protected-page tool dispatch must not run');
+    };
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+
+    const batchResult = await agent._executeToolBatch(
+      tabId,
+      [{
+        id: 'cws_protected_webmcp',
+        function: { name: 'execute_webmcp_tool', arguments: '{"tool_id":"page-tool","input":{}}' },
+      }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['execute_webmcp_tool']),
+      1,
+    );
+
+    assert.equal(batchResult.action, 'continue', 'chrome: protected failure should return through the normal tool-result pipeline');
+    assert.equal(webMcpPreparationCalls, 0, 'chrome: protected guard must run before WebMCP/CDP preparation');
+    assert.equal(submitProbeCalls, 0, 'chrome: protected guard must run before submit DOM probes');
+    assert.equal(permissionPromptCalls, 0, 'chrome: blocked protected-page tools must not ask for a permission they cannot use');
+    assert.equal(toolDispatchCalls, 0, 'chrome: protected-page tools must not reach executeTool');
+    assert.equal(messages.length, 1, 'chrome: protected failure should produce one ordinary tool result');
+    assert.match(messages[0].content, /"errorCode":"chrome_protected_page"/);
+    assert.match(messages[0].content, /TRUSTED RUNTIME ROUTING/);
+  } finally {
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+
+  assert.equal(capabilityForCh('chrome_web_store_upload', {}), CapabilityCh.UPLOAD);
+  assert.equal(capabilityForCh('chrome_web_store_publish', {}), CapabilityCh.NETWORK);
+  assert.equal(
+    hostForCapabilityCh(CapabilityCh.UPLOAD, { _trustedPermissionUrl: 'https://chromewebstore.googleapis.com/' }, 'https://example.com/', 'chrome_web_store_upload'),
+    'chromewebstore.googleapis.com',
+  );
+  assert.equal(
+    hostForCapabilityCh(CapabilityCh.UPLOAD, { url: 'https://attacker.example/' }, 'https://dashboard.example/', 'upload_file'),
+    'dashboard.example',
+    'ordinary page uploads must remain charged to the current page even if raw args contain a URL',
+  );
+  for (const invariant of [CompletionInvariantCh, CompletionInvariantFx]) {
+    assert.equal(invariant.isCompletionActionTool('chrome_web_store_upload'), true);
+    assert.equal(invariant.isCompletionActionTool('chrome_web_store_publish'), true);
+    assert.equal(invariant.isCompletionObservationTool('chrome_web_store_status', {}, { success: true }), true);
+  }
+  for (const [label, AgentClass, invariant] of [
+    ['chrome', AgentCh, CompletionInvariantCh],
+    ['firefox', AgentFx, CompletionInvariantFx],
+  ]) {
+    const agent = new AgentClass({});
+    const tabId = label === 'chrome' ? 6021 : 6022;
+    agent.completionInvariants.set(tabId, invariant.createCompletionInvariantState(`${label}-cws`));
+    const recorded = agent._recordCompletionSubmitAttempt(
+      tabId,
+      { isSubmit: true },
+      'chrome_web_store_publish',
+      {},
+      '',
+      '',
+      { success: true, dispatched: true },
+    );
+    assert.equal(recorded, null, `${label}: API publishing should not create unverifiable dashboard DOM-submit state`);
+    assert.equal(agent._completionSubmitStates.has(tabId), false, `${label}: API publishing should verify through chrome_web_store_status`);
+  }
+
+  const adapter = getActiveAdapter(dashboard);
+  assert.equal(adapter?.name, 'chrome-web-store-developer');
+  assert.match(adapter?.notes || '', /chrome_web_store_status/);
+  assert.equal(getActiveAdapter('https://chrome.google.com/webstore/devconsole?authuser=1')?.name, 'chrome-web-store-developer');
+  assert.equal(getActiveAdapterFx(dashboard)?.name, 'chrome-web-store-developer');
+  assert.equal(getActiveAdapterFx('https://chrome.google.com/webstore/devconsole#drafts')?.name, 'chrome-web-store-developer');
+
+  const chromeAgentSource = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const guardIndex = chromeAgentSource.indexOf('const protectedPageFailure = await this._chromeProtectedPageFailure(tabId, fnName);');
+  const webMcpPreparationIndex = chromeAgentSource.indexOf('const webMcpPreparation = protectedPageFailure', guardIndex);
+  const toolDispatchIndex = chromeAgentSource.indexOf('const rawToolResult = protectedPageFailure || await this.executeTool(', guardIndex);
+  assert.ok(
+    guardIndex >= 0 && webMcpPreparationIndex > guardIndex && toolDispatchIndex > webMcpPreparationIndex,
+    'chrome: protected-page guard must run before WebMCP preparation and tool dispatch',
+  );
+  assert.match(chromeAgentSource, /TRUSTED RUNTIME ROUTING: Chrome blocks extension DOM\/debugger access/, 'chrome: protected-page recovery should remain outside the untrusted page-content wrapper');
+});
+
+test('Chrome Web Store upload forces a fresh status turn before any batched publish', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({
+      getActive: () => ({ promptTier: 'full', supportsVision: false }),
+      getVisionProvider: async () => null,
+    });
+    const tabId = label === 'chrome' ? 6024 : 6025;
+    const messages = [];
+    const executed = [];
+    agent._ensureGateSetting = async () => false;
+    agent._skipPermissionGate = true;
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true, dispatched: name !== 'chrome_web_store_status' };
+    };
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'release_upload', function: { name: 'chrome_web_store_upload', arguments: '{}' } },
+        { id: 'release_status', function: { name: 'chrome_web_store_status', arguments: '{}' } },
+        { id: 'release_publish', function: { name: 'chrome_web_store_publish', arguments: '{"publish_type":"default"}' } },
+      ],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['chrome_web_store_upload', 'chrome_web_store_status', 'chrome_web_store_publish']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${label}: upload boundary should start a fresh turn`);
+    assert.deepEqual(executed, ['chrome_web_store_upload'], `${label}: status or publish ran in the upload batch`);
+    for (const id of ['release_status', 'release_publish']) {
+      const skipped = JSON.parse(messages.find(message => message.tool_call_id === id).content);
+      assert.equal(skipped.skipped, true, `${label}/${id}: queued release call was not skipped`);
+      assert.equal(skipped.skippedBecause, 'fresh_turn_required', `${label}/${id}: fresh-turn marker missing`);
+      assert.equal(skipped.triggeringTool, 'chrome_web_store_upload', `${label}/${id}: upload trigger missing`);
+      assert.equal(skipped.reason, 'chrome_web_store_upload_requires_status', `${label}/${id}: status requirement missing`);
+    }
+  }
+});
+
+test('Chrome Web Store status forces a fresh inspection turn before publish', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({
+      getActive: () => ({ promptTier: 'full', supportsVision: false }),
+      getVisionProvider: async () => null,
+    });
+    const tabId = label === 'chrome' ? 6026 : 6027;
+    const messages = [];
+    const executed = [];
+    agent._ensureGateSetting = async () => false;
+    agent._skipPermissionGate = true;
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true, dispatched: name === 'chrome_web_store_publish' };
+    };
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'release_status', function: { name: 'chrome_web_store_status', arguments: '{}' } },
+        { id: 'release_publish', function: { name: 'chrome_web_store_publish', arguments: '{"publish_type":"default"}' } },
+      ],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['chrome_web_store_status', 'chrome_web_store_publish']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${label}: status boundary should start a fresh turn`);
+    assert.deepEqual(executed, ['chrome_web_store_status'], `${label}: publish ran before status inspection`);
+    const skipped = JSON.parse(messages.find(message => message.tool_call_id === 'release_publish').content);
+    assert.equal(skipped.skipped, true, `${label}: queued publish was not skipped`);
+    assert.equal(skipped.skippedBecause, 'fresh_turn_required', `${label}: fresh-turn marker missing`);
+    assert.equal(skipped.triggeringTool, 'chrome_web_store_status', `${label}: status trigger missing`);
+    assert.equal(skipped.reason, 'chrome_web_store_status_requires_inspection', `${label}: inspection requirement missing`);
+  }
+});
+
 test('settings exposes custom skills tab and packaged skills resource directory', () => {
   assert.equal(CUSTOM_SKILLS_STORAGE_KEY_CH, 'customSkills');
   assert.equal(CUSTOM_SKILLS_STORAGE_KEY_FX, 'customSkills');
@@ -39830,6 +40554,7 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     'temporary-file-share-litterbox',
     'open-meteo-weather',
     'open-library-books',
+    'chrome-web-store-release',
   ]);
   assert.deepEqual(PACKAGED_SKILL_SOURCES_FX.map((skill) => skill.id), [
     'freeskillz-xyz',
@@ -39838,6 +40563,7 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     'temporary-file-share-litterbox',
     'open-meteo-weather',
     'open-library-books',
+    'chrome-web-store-release',
   ]);
   assert.deepEqual(DEFAULT_SKILL_SOURCES_CH.map((skill) => skill.id), [
     'freeskillz-xyz',
@@ -39847,6 +40573,8 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     'freeskillz-xyz',
     'otp-verification-code-helper',
   ]);
+  assert.equal(DEFAULT_SKILL_SOURCES_CH.some((skill) => skill.id === 'chrome-web-store-release'), false, 'chrome: release skill must be disabled by default');
+  assert.equal(DEFAULT_SKILL_SOURCES_FX.some((skill) => skill.id === 'chrome-web-store-release'), false, 'firefox: release skill must be disabled by default');
 
   const privacyPolicy = fs.readFileSync(path.join(ROOT, 'web/privacy.html'), 'utf8');
   const privacyDataFlow = fs.readFileSync(path.join(ROOT, 'docs/privacy-and-data-flow.md'), 'utf8');
@@ -39907,6 +40635,8 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(html, /id="skill-url"/, `${label}: URL skill input missing`);
     assert.match(html, /id="skill-text"/, `${label}: raw skill textarea missing`);
     assert.match(html, /id="packaged-skills-list"/, `${label}: available packaged skills list missing`);
+    assert.match(html, /id="chrome-web-store-release-card" hidden/, `${label}: release setup should be hidden until the skill is enabled`);
+    assert.match(html, /id="chrome-web-store-package"[^>]*accept="\.zip,application\/zip"/, `${label}: release ZIP picker missing`);
     assert.match(html, /id="skill-preview-dialog"/, `${label}: skill content preview dialog missing`);
     assert.match(html, /id="skill-preview-rendered"[^>]*tabindex="0"/, `${label}: rendered skill preview should be keyboard-scrollable`);
     assert.match(html, /id="skill-preview-raw"[^>]*tabindex="0"[^>]*hidden/, `${label}: raw skill preview should be available but hidden by default`);
@@ -39939,6 +40669,15 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(settingsJs, /installedDefault/, `${label}: reinstalling a default should clear its removal tombstone`);
     assert.match(settingsJs, /st\.skills\.source\.built_in/, `${label}: settings should label packaged skills`);
     assert.match(settingsJs, /skill\.tools/, `${label}: settings should show exposed skill tools`);
+    assert.match(settingsJs, /CHROME_WEB_STORE_PACKAGE_KEY/, `${label}: release package should use dedicated local storage`);
+    assert.match(settingsJs, /crypto\.subtle\.digest\('SHA-256'/, `${label}: release package should record a local integrity digest`);
+    const skillIdFunction = settingsJs.slice(
+      settingsJs.indexOf('function makeSkillId()'),
+      settingsJs.indexOf('function showSkillsResult'),
+    );
+    assert.match(skillIdFunction, /crypto\.randomUUID\(\)/, `${label}: imported skill IDs should use secure randomness`);
+    assert.doesNotMatch(skillIdFunction, /Math\.random\(/, `${label}: imported skill IDs must not use insecure randomness`);
+    assert.match(background, /chrome_web_store_oauth_start/, `${label}: release OAuth should run in the durable background context`);
     assert.match(englishLocale, /small catalog sends only each eligible skill\\'s ID, name, summary, and optional semantic intents/, `${label}: settings should explain the semantic skill catalog`);
     assert.match(englishLocale, /full instructions and compatible <code>webbrain-tools<\/code> are exposed only after/i, `${label}: settings should explain on-demand skill loading`);
     assert.match(englishLocale, /Compact does not load skills/, `${label}: settings should explain Compact skill isolation`);
@@ -39968,6 +40707,11 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(freeSkillz, /browser cookies are not sent to the service/i, `${label}: FreeSkillz skill should explain the remote cookie boundary`);
     assert.doesNotMatch(freeSkillz, /raw FreeSkillz endpoints only/i, `${label}: bundled FreeSkillz skill should prefer declared tools`);
     assert.doesNotMatch(freeSkillz, /127\.0\.0\.1|localhost|Local development/i, `${label}: FreeSkillz skill should not include local development URLs`);
+    const chromeWebStore = fs.readFileSync(path.join(ROOT, prefix, 'skills/chrome-web-store-release.md'), 'utf8');
+    assert.match(chromeWebStore, /chrome_web_store_status/, `${label}: release status instructions missing`);
+    assert.match(chromeWebStore, /chrome_web_store_upload/, `${label}: release upload instructions missing`);
+    assert.match(chromeWebStore, /chrome_web_store_publish/, `${label}: release publish instructions missing`);
+    assert.match(chromeWebStore, /blockOnWarnings: true/, `${label}: publish warnings must fail closed`);
     const disposable = fs.readFileSync(path.join(ROOT, prefix, 'skills/disposable-email-mailtm.md'), 'utf8');
     assert.match(disposable, /Mail\.tm/, `${label}: disposable email skill should use Mail.tm by default`);
     assert.match(disposable, /disposable and should be used only for unimportant tasks/i, `${label}: disposable email skill should warn about unimportant use only`);
@@ -43111,6 +43855,80 @@ test('planner input: runtime context does not consume prior user-turn history bu
 // tool_result blocks combined into a SINGLE user message — otherwise the
 // Messages API rejects the consecutive user roles with a 400.
 for (const [label, Provider] of [['chrome', AnthropicProviderCh], ['firefox', AnthropicProviderFx]]) {
+  test(`anthropic (${label}): cache usage survives normalization`, () => {
+    const provider = new Provider({});
+    const usage = provider._normalizeUsage({
+      input_tokens: 200,
+      output_tokens: 100,
+      cache_read_input_tokens: 800,
+      cache_creation_input_tokens: 300,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 100,
+        ephemeral_1h_input_tokens: 200,
+      },
+    });
+    assert.deepEqual(usage, {
+      prompt_tokens: 200,
+      completion_tokens: 100,
+      total_tokens: 1400,
+      cache_read_input_tokens: 800,
+      cache_creation_input_tokens: 300,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 100,
+        ephemeral_1h_input_tokens: 200,
+      },
+    });
+  });
+
+  test(`anthropic (${label}): streaming accumulates cache usage from split events`, async () => {
+    const originalFetch = globalThis.fetch;
+    const events = [
+      {
+        type: 'message_start',
+        message: {
+          usage: {
+            input_tokens: 200,
+            output_tokens: 1,
+            cache_read_input_tokens: 800,
+            cache_creation_input_tokens: 300,
+            cache_creation: {
+              ephemeral_5m_input_tokens: 100,
+              ephemeral_1h_input_tokens: 200,
+            },
+          },
+        },
+      },
+      { type: 'message_delta', usage: { output_tokens: 100 } },
+      { type: 'message_stop' },
+    ];
+    const sse = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+    try {
+      globalThis.fetch = async () => new Response(sse, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+      const provider = new Provider({ apiKey: 'test-key' });
+      const chunks = [];
+      for await (const chunk of provider.chatStream([{ role: 'user', content: 'hello' }])) {
+        chunks.push(chunk);
+      }
+      const usage = chunks.find(chunk => chunk.type === 'usage')?.usage;
+      assert.deepEqual(usage, {
+        prompt_tokens: 200,
+        completion_tokens: 100,
+        total_tokens: 1400,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 300,
+        cache_creation: {
+          ephemeral_5m_input_tokens: 100,
+          ephemeral_1h_input_tokens: 200,
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test(`anthropic (${label}): parallel tool results merge into one user message`, () => {
     const provider = new Provider({});
     const { messages } = provider._convertMessages([
