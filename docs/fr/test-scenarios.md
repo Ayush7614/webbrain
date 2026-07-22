@@ -75,7 +75,7 @@ Une douzaine de tâches de bout en bout pour évaluer l'agent navigateur WebBrai
 Classées de la plus simple à la plus ambitieuse.
 
 ### 1. Traçage déjà existant (base de référence la moins coûteuse)
-Le traçage est déjà intégré. Activez-le dans Paramètres → "Enregistrer les traces", exécutez chaque scénario manuellement une fois par modèle que vous souhaitez comparer, puis ouvrez la page Traces et comparez côte à côte. C'est ce que nous avons fait dans cette session. Peu coûteux à démarrer, mais la notation est manuelle.
+Le traçage est déjà intégré et activé par défaut. Exécutez chaque scénario manuellement une fois par modèle que vous souhaitez comparer, puis ouvrez la page Traces et comparez côte à côte. C'est ce que nous avons fait dans cette session. Peu coûteux à démarrer, mais la notation est manuelle.
 
 ### 2. Exécuteur de scénarios depuis le panneau latéral
 Ajoutez un `tests.json` contenant des lignes `{ url, prompt, check }`. Construisez un petit onglet Exécuteur de tests (miroir de Traces) qui parcourt les entrées : pour chacune, ouvrez l'URL, insérez l'invite dans le champ de saisie du panneau latéral, attendez que l'agent termine, puis évaluez `check`. Trois variantes utiles de `check` :

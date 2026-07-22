@@ -8,7 +8,8 @@
  *   - shots      keyPath=[runId, seq]           // screenshot Blobs
  *
  * All writes are fire-and-forget. Recording is gated on the `tracingEnabled`
- * setting; when disabled, every call is a cheap no-op.
+ * setting; it is enabled when unset and an explicit false makes every call a
+ * cheap no-op.
  */
 
 const DB_NAME = 'webbrain_traces';
@@ -57,9 +58,10 @@ function promisifyReq(req) {
 
 async function tracingEnabled() {
   try {
+    if (typeof indexedDB === 'undefined') return false;
     const storageApi = (typeof browser !== 'undefined' ? browser : chrome).storage.local;
     const { tracingEnabled } = await storageApi.get(['tracingEnabled']);
-    return tracingEnabled === true;
+    return tracingEnabled !== false;
   } catch { return false; }
 }
 

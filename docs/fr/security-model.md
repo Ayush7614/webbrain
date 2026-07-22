@@ -146,7 +146,7 @@ Effacé à la réinitialisation de la conversation.
 
 ## Isolation des Données de Trace
 
-L'enregistreur de trace (`trace/recorder.js`) écrit dans IndexedDB sur la machine de l'utilisateur lorsqu'il est explicitement activé (Paramètres → Affichage → "Enregistrer les traces"). Les données ne quittent jamais le navigateur :
+L'enregistreur de trace (`trace/recorder.js`) écrit dans IndexedDB sur la machine de l'utilisateur. Il est activé par défaut et peut être désactivé dans Paramètres → Affichage → "Enregistrer les traces". Les données ne quittent jamais le navigateur :
 
 - Stockage `runs` : modèle, fournisseur, totaux de tokens, horodatages
 - Stockage `events` : requêtes/réponses LLM, appels d'outils, métadonnées de capture d'écran

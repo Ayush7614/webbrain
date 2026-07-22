@@ -16,7 +16,7 @@ Use this skill when the user explicitly asks WebBrain to find, read, copy, or en
 - Read only content available in that browser tab: an open message, a signed-in webmail page, or text the user selected or supplied on the page.
 - Do **not** claim to read SMS, phone notifications, native Mail or Messages apps, the operating system clipboard, another device, or any content that is not visible in the active browser tab. If the code was delivered only by SMS, ask the user to read or paste it themselves.
 - Do not use `fetch_url`, provider APIs, cookies, session tokens, developer tools, or hidden background pages to bypass a mailbox sign-in or obtain private messages.
-- Before the first mailbox read, briefly disclose that inspected message content and any extracted code are sent to the configured LLM provider in the current conversation. If Record traces is enabled, raw page-reading results and model responses can also remain in WebBrain's local trace database until the user deletes those traces. If the user does not want that exposure or retention, stop and ask them to disable tracing or provide only a narrowly selected snippet.
+- Before the first mailbox read, briefly disclose that inspected message content and any extracted code are sent to the configured LLM provider in the current conversation. Record traces is enabled by default, so raw page-reading results and model responses can also remain in WebBrain's local trace database until the user deletes those traces; it can be disabled in Settings → Display. If the user does not want that exposure or retention, stop and ask them to disable tracing or provide only a narrowly selected snippet.
 
 ## Safety rules
 

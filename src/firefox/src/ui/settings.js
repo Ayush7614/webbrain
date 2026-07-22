@@ -465,7 +465,7 @@ async function init() {
   }
   if (notifySoundToggle) notifySoundToggle.checked = stored.notifySound ?? true;
   if (completionConfettiToggle) completionConfettiToggle.checked = stored.completionConfetti ?? true;
-  if (tracingToggle) tracingToggle.checked = stored.tracingEnabled === true;
+  if (tracingToggle) tracingToggle.checked = stored.tracingEnabled !== false; // on by default; preserve explicit opt-out
   const sessionLimit = normalizeCostAmount(stored.costAllowanceSessionUsd);
   const totalLimit = normalizeCostAmount(stored.costAllowanceTotalUsd);
   const totalSpent = normalizeCostAmount(stored.cloudCostSpentUsd, 0);
