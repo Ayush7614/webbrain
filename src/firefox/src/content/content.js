@@ -1301,8 +1301,10 @@
    */
   function clickElement(params) {
     let el;
-    // The native-select rescue yields only to exact text matches. Prefix or
-    // contains matches can be unrelated controls ("Book" for needle "OK").
+    // Tracks whether text matching below resolved el via an EXACT-tier
+    // match. The auto-select rescue yields only to exact clickables — a
+    // contains-tier match (e.g. "Contact us" for needle "US") must not
+    // suppress selecting an exactly-matching <select> option.
     let textResolvedExact = false;
     // Reject jQuery/Playwright selectors with a clear error.
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
@@ -1584,9 +1586,11 @@
     // Runs when text matching resolved NO element, resolved the <select>
     // itself (a select's innerText contains its options, so the contains
     // level routinely lands here for option clicks — skipping the rescue
-    // then would wrongly fall through to the CANNOT-CLICK intercept), or a
-    // clickable resolved only by prefix/contains. It must not run when a
-    // genuine button/link labeled X matched exactly.
+    // then would wrongly fall through to the CANNOT-CLICK intercept), or
+    // resolved a clickable only via a NON-exact tier (option text matches
+    // exactly, so it beats a "Contact us"-style contains hit for "US").
+    // It must NOT run when a genuine button/link labeled X matched
+    // exactly — that element is what the model meant.
     if (params.text && (!el || el instanceof HTMLSelectElement || !textResolvedExact)) {
       const needle = params.text.trim();
       const lc = needle.toLowerCase();

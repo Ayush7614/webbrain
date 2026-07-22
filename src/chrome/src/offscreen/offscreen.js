@@ -61,7 +61,14 @@ chrome.runtime.onConnect.addListener((port) => {
         ok: res.ok,
         status: res.status,
         contentType: res.headers.get('content-type') || '',
+        hasBody: !!res.body,
       });
+      // HEAD and null-body statuses (204/205/304) legitimately expose no
+      // ReadableStream. Headers are the complete response in that case.
+      if (!res.body) {
+        post({ type: 'done' });
+        return;
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       for (;;) {

@@ -281,11 +281,22 @@
     return false;
   }
 
+  function _hasComposedClosest(el, selector) {
+    let cur = el;
+    while (cur) {
+      try {
+        if (cur.nodeType === Node.ELEMENT_NODE && cur.matches(selector)) return true;
+      } catch {}
+      cur = _composedParent(cur);
+    }
+    return false;
+  }
+
   function isVisiblyInteractive(el) {
     if (!el || el.tagName === 'BODY' || el.tagName === 'HTML') return false;
     // aria-hidden / inert subtrees are non-interactive for assistive tech
     // and should be for us too.
-    if (el.closest('[aria-hidden="true"], [inert]')) return false;
+    if (_hasComposedClosest(el, '[aria-hidden="true"], [inert]')) return false;
 
     const style = el.ownerDocument.defaultView.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
@@ -355,6 +366,14 @@
     }
   }
 
+  function _isNativeBlockingDialog(dialog) {
+    if (!dialog) return false;
+    try {
+      if (dialog.matches(':modal')) return true;
+    } catch {}
+    return dialog.getAttribute('aria-modal') === 'true';
+  }
+
   function _hasVisibleBox(el, minWidth = 1, minHeight = 1) {
     if (!el || typeof el.getBoundingClientRect !== 'function') return false;
     try {
@@ -368,20 +387,12 @@
     }
   }
 
-  function _isNativeBlockingDialog(dialog) {
-    if (!dialog) return false;
-    try {
-      if (dialog.matches(':modal')) return true;
-    } catch {}
-    return dialog.getAttribute('aria-modal') === 'true';
-  }
-
   function _findDialogContentForOverlay(overlay) {
     const selector = '[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog[open],[data-state="open"][role="dialog"],[class*="DialogContent"],[class*="ModalContent"],.modal.show';
     const pick = (node) => {
-      if (!node) return null;
+      if (!node || node === overlay) return null;
       try {
-        if (node !== overlay && node.matches?.(selector) && _hasVisibleBox(node, 20, 20)) return node;
+        if (node.matches?.(selector) && _hasVisibleBox(node, 20, 20)) return node;
         const match = node.querySelector?.(selector);
         if (match && _hasVisibleBox(match, 20, 20)) return match;
       } catch {}
@@ -426,7 +437,6 @@
       if (includeNonModalDialogs || _isNativeBlockingDialog(dialogs[i])) return dialogs[i];
     }
 
-    // 2. ARIA modal
     const ariaModals = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
     for (let i = ariaModals.length - 1; i >= 0; i--) {
       const r = ariaModals[i].getBoundingClientRect();
@@ -442,9 +452,6 @@
       }
     }
 
-    // 4. Common overlay patterns — look for large, high-z-index containers
-    // that cover most of the viewport. These often contain forms/modals on
-    // sites like Stripe, GitHub, AWS, etc.
     const candidates = document.querySelectorAll(
       '[data-overlay], ' +
       (includeNonModalDialogs ? '[data-state="open"][role="dialog"], ' : '') +
@@ -1196,6 +1203,11 @@
    */
   function clickElement(params) {
     let el;
+    // Tracks whether text matching below resolved el via an EXACT-tier
+    // match. The auto-select rescue yields only to exact clickables — a
+    // contains-tier match (e.g. "Contact us" for needle "US") must not
+    // suppress selecting an exactly-matching <select> option.
+    let textResolvedExact = false;
     if (params.selector && /:contains\(|:has-text\(/.test(params.selector)) {
       return {
         success: false,
@@ -1266,6 +1278,7 @@
             inp.scrollIntoView({ block: 'center', inline: 'center' });
             inp.focus();
             el = inp;
+            textResolvedExact = (needle === ltxt);
             break;
           }
         }
@@ -1306,6 +1319,7 @@
                 inp.scrollIntoView({ block: 'center', inline: 'center' });
                 inp.focus();
                 el = inp;
+                textResolvedExact = (needle === ltxt);
                 break;
               }
             }
@@ -1376,6 +1390,7 @@
       }
       if (!el) {
         let resolved = matches[0].e;
+        textResolvedExact = (usedMode === 'exact');
         // LABEL → associated input resolution
         if (resolved.tagName === 'LABEL') {
           let target = null;
@@ -1403,32 +1418,50 @@
     }
 
     // ── Auto-select: if click text matches a <select> option, select it ──
-    // Runs when text matching resolved NO element, or resolved the <select>
+    // Runs when text matching resolved NO element, resolved the <select>
     // itself (a select's innerText contains its options, so the contains
     // level routinely lands here for option clicks — skipping the rescue
-    // then would wrongly fall through to the CANNOT-CLICK intercept).
-    // It must NOT run when a genuine button/link labeled X resolved —
-    // otherwise that element would lose to an unrelated dropdown that
-    // merely has an option labeled X.
-    if (params.text && (!el || el instanceof HTMLSelectElement)) {
+    // then would wrongly fall through to the CANNOT-CLICK intercept), or
+    // resolved a clickable only via a NON-exact tier (option text matches
+    // exactly, so it beats a "Contact us"-style contains hit for "US").
+    // It must NOT run when a genuine button/link labeled X matched
+    // exactly — that element is what the model meant.
+    if (params.text && (!el || el instanceof HTMLSelectElement || !textResolvedExact)) {
       const needle = params.text.trim();
       const lc = needle.toLowerCase();
-      const allSels = document.querySelectorAll('select');
+      const selectScope = _findTopmostModal() || document;
+      const allSels = el instanceof HTMLSelectElement
+        ? [el]
+        : selectScope.querySelectorAll('select');
+      const matchingSelects = [];
       for (const sel of allSels) {
         const opts = Array.from(sel.options);
         const match = opts.find(o => o.text.trim() === needle)
           || opts.find(o => o.text.trim().toLowerCase() === lc)
           || opts.find(o => o.value === needle)
           || opts.find(o => o.value.toLowerCase() === lc);
-        if (match && sel.selectedIndex !== match.index) {
-          sel.focus();
-          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-          if (nativeSetter) nativeSetter.call(sel, match.value);
-          else sel.value = match.value;
-          sel.dispatchEvent(new Event('input', { bubbles: true }));
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true, method: 'auto-select', selectedText: match.text.trim(), selectedValue: match.value };
+        if (match) matchingSelects.push({ sel, match });
+      }
+      if (matchingSelects.length > 1) {
+        return {
+          success: false,
+          dispatched: false,
+          failureScope: `ambiguous-select-option:${lc}`,
+          error: `Ambiguous select option match for "${needle}" (${matchingSelects.length} dropdowns). Identify the intended field and use type_text on that select instead.`,
+        };
+      }
+      if (matchingSelects.length === 1) {
+        const { sel, match } = matchingSelects[0];
+        if (sel.selectedIndex === match.index) {
+          return { success: true, method: 'select-already-set', selectedText: match.text.trim(), selectedValue: match.value };
         }
+        sel.focus();
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+        if (nativeSetter) nativeSetter.call(sel, match.value);
+        else sel.value = match.value;
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return { success: true, method: 'auto-select', selectedText: match.text.trim(), selectedValue: match.value };
       }
     }
 
@@ -2627,6 +2660,7 @@
     const modal = _findTopmostBlockingModal();
 
     const isUsable = (el, rect) => {
+      if (_hasComposedClosest(el, '[aria-hidden="true"], [inert]')) return false;
       // Keep the agent-facing list and every indexed follow-up action inside
       // the same topmost modal/dialog boundary as the legacy collector.
       if (modal && !_isComposedAncestor(modal, el)) return false;

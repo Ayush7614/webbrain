@@ -239,7 +239,7 @@ const { transcribeAudio } = await import(
 // network-tools.js references chrome.* inside a try/catch at module load, so
 // it imports cleanly under Node — the storage init silently no-ops and
 // validateFetchUrl / registrableDomain are pure functions.
-const { validateFetchUrl, registrableDomain, filenameFromContentDisposition: filenameFromContentDispositionCh, fetchUrl: fetchUrlCh, downloadFiles: downloadFilesCh, executeHttpSkillTool: executeHttpSkillToolCh } = await import(
+const { validateFetchUrl, registrableDomain, filenameFromContentDisposition: filenameFromContentDispositionCh, fetchUrl: fetchUrlCh, researchUrl: researchUrlCh, downloadFiles: downloadFilesCh, executeHttpSkillTool: executeHttpSkillToolCh } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/network/network-tools.js').replace(/\\/g, '/')
 );
 const { validateFetchUrl: validateFetchUrlFx, registrableDomain: registrableDomainFx, filenameFromContentDisposition: filenameFromContentDispositionFx, fetchUrl: fetchUrlFx, readPageSource: readPageSourceFx, researchUrl: researchUrlFx, downloadFiles: downloadFilesFx, executeHttpSkillTool: executeHttpSkillToolFx } = await import(
@@ -247,6 +247,12 @@ const { validateFetchUrl: validateFetchUrlFx, registrableDomain: registrableDoma
 );
 const { firefoxRestrictedDomainForUrl, firefoxRestrictedDomainFailure, firefoxHostPermissionFailure } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/firefox-restricted-domains.js').replace(/\\/g, '/')
+);
+const TabChatPersistenceCh = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/ui/tab-chat-persistence.js').replace(/\\/g, '/')
+);
+const TabChatPersistenceFx = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/ui/tab-chat-persistence.js').replace(/\\/g, '/')
 );
 const { chromeProtectedPageForUrl, chromeProtectedPageFailure, isChromeProtectedPageDomTool } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/chrome-protected-pages.js').replace(/\\/g, '/')
@@ -5487,6 +5493,92 @@ test('Firefox network readers reject protected domains before network or tab wor
     assert.equal(fetchCalls, 0);
   } finally {
     globalThis.fetch = previousFetch;
+  }
+});
+
+test('research_url rejects blocked redirect targets before returning hidden-tab content', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousBrowser = globalThis.browser;
+  const previousSetTimeout = globalThis.setTimeout;
+  const nativeSetTimeout = previousSetTimeout;
+  // Keep the production navigation timeout real, but skip the intentional
+  // 800 ms SPA hydration pause in this deterministic unit test.
+  globalThis.setTimeout = (fn, ms, ...args) => nativeSetTimeout(fn, ms === 800 ? 0 : ms, ...args);
+
+  const blockedUrl = 'http://169.254.169.254/latest/meta-data/';
+  const publicUrl = 'https://public.example/redirect';
+  try {
+    for (const [label, researchUrl, apiName] of [
+      ['chrome', researchUrlCh, 'chrome'],
+      ['firefox', researchUrlFx, 'browser'],
+    ]) {
+      for (const blockedPhase of ['loaded-tab', 'page-result']) {
+        let executeCalls = 0;
+        let removeCalls = 0;
+        const updateListeners = new Set();
+        const tabs = {
+          async create() {
+            return { id: 77, url: publicUrl };
+          },
+          async get() {
+            return { id: 77, url: blockedPhase === 'loaded-tab' ? blockedUrl : publicUrl };
+          },
+          async remove() {
+            removeCalls++;
+          },
+          onUpdated: {
+            addListener(fn) {
+              updateListeners.add(fn);
+              nativeSetTimeout(() => fn(77, { status: 'complete' }), 0);
+            },
+            removeListener(fn) {
+              updateListeners.delete(fn);
+            },
+          },
+        };
+        const pageResult = {
+          title: 'redirected page',
+          url: blockedPhase === 'page-result' ? blockedUrl : publicUrl,
+          text: 'must not be returned',
+          originalLength: 20,
+          links: [],
+        };
+        if (apiName === 'chrome') {
+          globalThis.chrome = {
+            tabs,
+            scripting: {
+              async executeScript() {
+                executeCalls++;
+                return [{ result: pageResult }];
+              },
+            },
+          };
+        } else {
+          globalThis.browser = {
+            tabs: {
+              ...tabs,
+              async executeScript() {
+                executeCalls++;
+                return [pageResult];
+              },
+            },
+          };
+        }
+
+        const result = await researchUrl(publicUrl, { timeout: 1000 });
+        assert.equal(result.success, false, `${label}/${blockedPhase}: blocked redirect must fail`);
+        assert.match(result.error || '', /Redirect to blocked URL/i, `${label}/${blockedPhase}: missing redirect error`);
+        assert.equal(result.finalUrl, blockedUrl, `${label}/${blockedPhase}: final URL should be reported`);
+        assert.equal(executeCalls, blockedPhase === 'loaded-tab' ? 0 : 1, `${label}/${blockedPhase}: extraction timing mismatch`);
+        assert.equal(removeCalls, 1, `${label}/${blockedPhase}: hidden tab should always be closed`);
+      }
+    }
+  } finally {
+    globalThis.setTimeout = previousSetTimeout;
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
   }
 });
 
@@ -12491,6 +12583,7 @@ test('chrome fetch fallback resolves null-body proxy statuses without hanging', 
                 ok: nextStatus >= 200 && nextStatus < 300,
                 status: nextStatus,
                 contentType: 'application/json',
+                hasBody: false,
               }));
             });
           },
@@ -12523,6 +12616,40 @@ test('chrome fetch fallback resolves null-body proxy statuses without hanging', 
       globalThis.chrome = previousChrome;
     }
     console.warn = previousWarn;
+  }
+});
+
+test('chrome offscreen stream marks null response bodies and completes without a reader', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousFetch = globalThis.fetch;
+  let connectListener = null;
+  globalThis.chrome = {
+    runtime: {
+      onMessage: { addListener() {} },
+      onConnect: { addListener(fn) { connectListener = fn; } },
+    },
+  };
+  globalThis.fetch = async () => new Response(null, { status: 204 });
+  try {
+    const offscreenUrl = 'file://' + path.join(ROOT, 'src/chrome/src/offscreen/offscreen.js').replace(/\\/g, '/') + `?bodyless=${Date.now()}`;
+    await import(offscreenUrl);
+    assert.equal(typeof connectListener, 'function');
+    const requestListeners = [];
+    const posted = [];
+    connectListener({
+      name: 'offscreen-fetch-stream',
+      onMessage: { addListener(fn) { requestListeners.push(fn); } },
+      postMessage(msg) { posted.push(msg); },
+    });
+    await requestListeners[0]({ url: 'http://127.0.0.1/empty', method: 'HEAD' });
+    assert.deepEqual(posted.map(({ type }) => type), ['headers', 'done']);
+    assert.equal(posted[0].status, 204);
+    assert.equal(posted[0].hasBody, false);
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = previousFetch;
   }
 });
 
@@ -13746,6 +13873,110 @@ test('sidepanel flushes run chat before queue settlement after immediate tab swi
   }
 });
 
+test('tab-chat persistence recovers when several sub-threshold chats exceed the shared quota', async () => {
+  for (const [label, persistence] of [
+    ['chrome', TabChatPersistenceCh],
+    ['firefox', TabChatPersistenceFx],
+  ]) {
+    const values = {};
+    const quota = 10 * 1024 * 1024;
+    const storageArea = {
+      async get(query) {
+        if (query == null) return { ...values };
+        if (typeof query === 'string') return { [query]: values[query] };
+        return { ...values };
+      },
+      async set(patch) {
+        const next = { ...values, ...patch };
+        const bytes = Object.entries(next)
+          .reduce((total, [key, value]) => total + key.length + String(value).length, 0);
+        if (bytes > quota) throw new Error('QUOTA_BYTES exceeded');
+        Object.assign(values, patch);
+      },
+    };
+    const warnings = [];
+    const imagePayload = 'A'.repeat(6 * 1024 * 1024);
+    const firstHtml = `<div class="message"><img src="data:image/png;base64,${imagePayload}"></div>`;
+    const secondHtml = `<div class="message"><img src="data:image/webp;base64,${imagePayload}"></div>`;
+    const firstKey = persistence.TAB_CHAT_PREFIX + '1';
+    const secondKey = persistence.TAB_CHAT_PREFIX + '2';
+
+    const first = await persistence.persistTabChatToSession(storageArea, firstKey, firstHtml, (...args) => warnings.push(args));
+    assert.equal(first.ok, true, `${label}: first sub-threshold chat should persist`);
+    assert.equal(first.recoveredFromQuota, false, `${label}: first write should not need recovery`);
+    assert.equal(values[firstKey], firstHtml, `${label}: normal stored copy should retain its image`);
+
+    const second = await persistence.persistTabChatToSession(storageArea, secondKey, secondHtml, (...args) => warnings.push(args));
+    assert.equal(second.ok, true, `${label}: aggregate quota failure should recover`);
+    assert.equal(second.recoveredFromQuota, true, `${label}: second write should retry with a bounded stored copy`);
+    assert.equal(warnings.length, 0, `${label}: recovered quota writes should not warn`);
+    assert.equal(values[firstKey], firstHtml, `${label}: recovery should not rewrite unrelated tab chats`);
+    assert.match(values[secondKey], /data:image\/png;base64,iVBOR/, `${label}: second stored image should be compacted`);
+    assert.ok(values[secondKey].length < 2048, `${label}: second compacted chat should be small`);
+    assert.equal(firstHtml.includes(imagePayload), true, `${label}: caller's in-memory HTML must remain unchanged`);
+
+    const textOnly = `<div class="message">${'recent '.repeat(20 * 1024)}</div>`;
+    const bounded = persistence.compactTabChatForPersist(textOnly, 64 * 1024);
+    assert.ok(bounded.length <= 64 * 1024, `${label}: text-only fallback must respect its budget`);
+    assert.match(bounded, /^<div class="message system">/, `${label}: text-only fallback should remain valid message markup`);
+    assert.match(bounded, /<\/div><\/div>$/, `${label}: text-only fallback should close its markup`);
+
+    const whitespaceClosedRawText = `<div>${'visible text '.repeat(300)}<script>LEAK_SCRIPT</script ><style>LEAK_STYLE</style ></div>`;
+    const whitespaceClosedFallback = persistence.compactTabChatForPersist(whitespaceClosedRawText, 1024);
+    assert.doesNotMatch(whitespaceClosedFallback, /LEAK_SCRIPT|LEAK_STYLE/, `${label}: whitespace before raw-text end-tag brackets must not leak script/style text`);
+    assert.match(whitespaceClosedFallback, /visible text/, `${label}: safe readable text should survive raw-text removal`);
+  }
+});
+
+test('tab-chat persistence evicts an existing chat when older keys saturate the shared quota', async () => {
+  for (const [label, persistence] of [
+    ['chrome', TabChatPersistenceCh],
+    ['firefox', TabChatPersistenceFx],
+  ]) {
+    const values = { unrelatedSessionState: 'keep' };
+    const quota = 10 * 1024 * 1024;
+    const storageBytes = (next) => Object.entries(next)
+      .reduce((total, [storedKey, value]) => total + storedKey.length + String(value).length, 0);
+    const storageArea = {
+      async get(query) {
+        if (query == null) return { ...values };
+        if (typeof query === 'string') return { [query]: values[query] };
+        return { ...values };
+      },
+      async set(patch) {
+        const next = { ...values, ...patch };
+        if (storageBytes(next) > quota) throw new Error('QUOTA_BYTES exceeded');
+        Object.assign(values, patch);
+      },
+      async remove(keys) {
+        for (const storedKey of Array.isArray(keys) ? keys : [keys]) delete values[storedKey];
+      },
+    };
+    const oldKey = persistence.TAB_CHAT_PREFIX + 'older';
+    const newKey = persistence.TAB_CHAT_PREFIX + 'current';
+    const fixedBytes = storageBytes(values) + oldKey.length;
+    values[oldKey] = 'x'.repeat(quota - fixedBytes - 64);
+    const source = `<div class="message">${'recent text '.repeat(80 * 1024)}</div>`;
+    const warnings = [];
+
+    const result = await persistence.persistTabChatToSession(
+      storageArea,
+      newKey,
+      source,
+      (...args) => warnings.push(args),
+    );
+
+    assert.equal(result.ok, true, `${label}: saturated shared quota should recover`);
+    assert.equal(result.recoveredFromQuota, true, `${label}: recovery marker missing`);
+    assert.deepEqual(result.evictedKeys, [oldKey], `${label}: recovery should report the evicted chat`);
+    assert.equal(values[oldKey], undefined, `${label}: older chat should be evicted to free quota`);
+    assert.equal(typeof values[newKey], 'string', `${label}: current compacted chat should persist`);
+    assert.ok(values[newKey].length <= 256 * 1024, `${label}: recovered chat should remain tightly bounded`);
+    assert.equal(values.unrelatedSessionState, 'keep', `${label}: non-chat session state must not be evicted`);
+    assert.equal(warnings.length, 0, `${label}: successful recovery should not warn`);
+  }
+});
+
 test('chrome sidepanel serializes tab-chat storage writes with clears and reads', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
   assert.match(panel, /const tabChatOperations = new Map\(\);/, 'chrome: tab-chat operations should be queued per tab');
@@ -13756,8 +13987,7 @@ test('chrome sidepanel serializes tab-chat storage writes with clears and reads'
   assert.match(loadBody, /const numericTabId = Number\(tabId\);[\s\S]*?if \(!Number\.isFinite\(numericTabId\)\) return null;/, 'chrome: tab-chat restore should normalize tab ids before checking the cache');
   assert.match(loadBody, /if \(!tabChatOperations\.has\(numericTabId\) && tabChats\.has\(numericTabId\)\) return tabChats\.get\(numericTabId\);/, 'chrome: tab-chat restore should only trust cached HTML when no queued operation can update it');
   assert.match(loadBody, /return await enqueueTabChatOperation\(numericTabId, async \(queuedTabId\) => \{[\s\S]*?if \(tabChats\.has\(queuedTabId\)\) return tabChats\.get\(queuedTabId\);[\s\S]*?const stored = await chrome\.storage\.session\.get\(key\);/, 'chrome: tab-chat restore should wait behind pending per-tab operations before reading cache or storage');
-  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await chrome\.storage\.session\.set\(\{ \[key\]: toStore \}\)\.catch\(/, 'chrome: tab-chat persistence should be serialized through the queue');
-  assert.match(panel, /html\.length > TAB_CHAT_PERSIST_BUDGET[\s\S]*?stripImagePayloadsForPersist\(html\)/, 'chrome: oversized tab chats should strip embedded image payloads before persisting');
+  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?return persistTabChatToSession\(chrome\.storage\.session, key, html\);/, 'chrome: tab-chat persistence should be serialized through the queue and quota recovery helper');
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
   const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nasync function renderClearedConversationForTab', clearStart) + 2);
@@ -13776,8 +14006,7 @@ test('firefox sidepanel serializes tab-chat storage writes with clears and reads
   assert.match(loadBody, /const numericTabId = Number\(tabId\);[\s\S]*?if \(!Number\.isFinite\(numericTabId\)\) return null;/, 'firefox: tab-chat restore should normalize tab ids before checking the cache');
   assert.match(loadBody, /if \(!tabChatOperations\.has\(numericTabId\) && tabChats\.has\(numericTabId\)\) return tabChats\.get\(numericTabId\);/, 'firefox: tab-chat restore should only trust cached HTML when no queued operation can update it');
   assert.match(loadBody, /return await enqueueTabChatOperation\(numericTabId, async \(queuedTabId\) => \{[\s\S]*?if \(tabChats\.has\(queuedTabId\)\) return tabChats\.get\(queuedTabId\);[\s\S]*?const stored = await browser\.storage\.session\.get\(key\);/, 'firefox: tab-chat restore should wait behind pending per-tab operations before reading cache or storage');
-  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await browser\.storage\.session\.set\(\{ \[key\]: toStore \}\)\.catch\(/, 'firefox: tab-chat persistence should be serialized through the queue');
-  assert.match(panel, /html\.length > TAB_CHAT_PERSIST_BUDGET[\s\S]*?stripImagePayloadsForPersist\(html\)/, 'firefox: oversized tab chats should strip embedded image payloads before persisting');
+  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?return persistTabChatToSession\(browser\.storage\.session, key, html\);/, 'firefox: tab-chat persistence should be serialized through the queue and quota recovery helper');
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'firefox: clearCachedTabChat missing');
   const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\n// Save current tab', clearStart) + 2);
@@ -29544,6 +29773,20 @@ test('submit probe index resolver stays aligned with content click ordering', ()
   }
 });
 
+test('chrome CDP auto-select scopes to blocking dialogs and refuses ambiguous dropdown matches', () => {
+  const agent = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const start = agent.indexOf('async _autoSelectOption(');
+  const end = agent.indexOf('\n  async ', start + 10);
+  const body = agent.slice(start, end > start ? end : start + 12000);
+  assert.match(body, /const scope = findBlockingModal\(\) \|\| document;/, 'chrome: auto-select should be scoped to the blocking dialog');
+  assert.match(body, /for \(const el of scope\.querySelectorAll\(clickSels\)\)/, 'chrome: exact-clickable suppression should stay inside the active modal');
+  assert.match(body, /if \(!hasVisibleBox\(el\)\) continue;/, 'chrome: hidden clickables should not suppress a visible select option');
+  assert.match(body, /const sels = scope\.querySelectorAll\('select'\);/, 'chrome: auto-select should not scan background selects');
+  assert.match(body, /matchingSelects\.length !== 1/, 'chrome: auto-select should yield instead of choosing among multiple matching selects');
+  assert.match(body, /globalThis\[targetSlot\] = sel/, 'chrome: auto-select should preserve the exact scoped select for refocus');
+  assert.match(body, /const target = globalThis\[/, 'chrome: auto-select should refocus and verify the preserved select');
+});
+
 test('chrome full interactive indexes stay scoped to the topmost modal', () => {
   const content = fs.readFileSync(path.join(ROOT, 'src/chrome/src/content/content.js'), 'utf8');
   assert.match(content, /function _findDialogContentForOverlay\(overlay\)[\s\S]*?const siblings = overlay\?\.parentElement \? Array\.from\(overlay\.parentElement\.children\) : \[\];/, 'chrome: backdrop overlays should resolve an adjacent dialog container');
@@ -29561,6 +29804,22 @@ test('chrome full interactive indexes stay scoped to the topmost modal', () => {
   const indexedEnd = content.indexOf('\n  function ', indexedStart + 10);
   const indexedBody = content.slice(indexedStart, indexedEnd);
   assert.match(indexedBody, /return queryInteractiveFull\(\)\.map\(c => c\.el\);/, 'chrome: indexed clicks and typing must use the modal-scoped full collector');
+});
+
+test('content auto-select refuses ambiguous option matches in both browser builds', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/content/content.js'],
+    ['firefox', 'src/firefox/src/content/content.js'],
+  ]) {
+    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const start = content.indexOf('function clickElement(params) {');
+    const end = content.indexOf('\n  function ', start + 10);
+    const body = content.slice(start, end);
+    assert.match(body, /const matchingSelects = \[\];/, `${label}: native select rescue should collect every option match`);
+    assert.match(body, /matchingSelects\.length > 1/, `${label}: native select rescue should reject ambiguous dropdowns`);
+    assert.match(body, /failureScope: `ambiguous-select-option:\$\{lc\}`/, `${label}: ambiguous dropdown failures should be loop-scoped`);
+    assert.match(body, /method: 'select-already-set'/, `${label}: already-selected options should not fall through to unrelated clickables`);
+  }
 });
 
 test('synthetic key events cross shadow boundaries without double dispatch', () => {

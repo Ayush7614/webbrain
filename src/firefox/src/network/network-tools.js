@@ -2011,6 +2011,19 @@ export async function researchUrl(url, opts = {}) {
 
     await new Promise(r => setTimeout(r, 800));
 
+    // browser.tabs.create follows redirects. Re-check the actual loaded URL
+    // before reading the document so a permitted public URL cannot redirect
+    // the hidden tab to cloud metadata, localhost, or an RFC1918 host.
+    const loadedTab = await browser.tabs.get(tabId);
+    const loadedRestricted = firefoxRestrictedDomainFailure(loadedTab?.url || '');
+    if (loadedRestricted) return loadedRestricted;
+    const loadedUrlCheck = validateFetchUrl(loadedTab?.url || '', {
+      allowLocalNetwork: getAllowLocalNetwork(),
+    });
+    if (!loadedUrlCheck.ok) {
+      return { success: false, error: `Redirect to blocked URL: ${loadedUrlCheck.error}`, finalUrl: loadedTab?.url || '' };
+    }
+
     const code = `
       (() => {
         const title = document.title || '';
@@ -2030,6 +2043,16 @@ export async function researchUrl(url, opts = {}) {
     const results = await browser.tabs.executeScript(tabId, { code });
     const result = results?.[0];
     if (!result) return { success: false, error: 'extraction returned nothing' };
+    const resultRestricted = firefoxRestrictedDomainFailure(result.url || '');
+    if (resultRestricted) return resultRestricted;
+    // Close the navigation race between tabs.get() and executeScript(). SPAs
+    // and meta-refreshes can still change location during extraction.
+    const resultUrlCheck = validateFetchUrl(result.url || '', {
+      allowLocalNetwork: getAllowLocalNetwork(),
+    });
+    if (!resultUrlCheck.ok) {
+      return { success: false, error: `Redirect to blocked URL: ${resultUrlCheck.error}`, finalUrl: result.url || '' };
+    }
 
     return {
       success: true,

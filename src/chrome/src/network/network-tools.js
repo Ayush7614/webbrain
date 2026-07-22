@@ -2037,6 +2037,18 @@ export async function researchUrl(url, opts = {}) {
     // Give SPAs a beat to hydrate after onload.
     await new Promise(r => setTimeout(r, 800));
 
+    // tabs.create follows redirects. Re-check the actual loaded URL before
+    // reading the document so a permitted public URL cannot redirect the
+    // hidden tab to cloud metadata, localhost, or an RFC1918 host and expose
+    // that response to the agent.
+    const loadedTab = await chrome.tabs.get(tabId);
+    const loadedUrlCheck = validateFetchUrl(loadedTab?.url || '', {
+      allowLocalNetwork: getAllowLocalNetwork(),
+    });
+    if (!loadedUrlCheck.ok) {
+      return { success: false, error: `Redirect to blocked URL: ${loadedUrlCheck.error}`, finalUrl: loadedTab?.url || '' };
+    }
+
     // Extract content via injected script. Strips chrome (header/nav/footer)
     // so we get the actual article/main content rather than navigation.
     const results = await chrome.scripting.executeScript({
@@ -2061,6 +2073,15 @@ export async function researchUrl(url, opts = {}) {
 
     const result = results?.[0]?.result;
     if (!result) return { success: false, error: 'extraction returned nothing' };
+    // Close the navigation race between tabs.get() and executeScript(). SPAs
+    // and meta-refreshes can change location during extraction, so never
+    // return content unless the URL observed by the page itself is allowed.
+    const resultUrlCheck = validateFetchUrl(result.url || '', {
+      allowLocalNetwork: getAllowLocalNetwork(),
+    });
+    if (!resultUrlCheck.ok) {
+      return { success: false, error: `Redirect to blocked URL: ${resultUrlCheck.error}`, finalUrl: result.url || '' };
+    }
 
     return {
       success: true,

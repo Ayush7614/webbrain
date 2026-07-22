@@ -33,6 +33,7 @@ import {
   normalizeState as normalizeStoreReviewState,
 } from './store-review-prompt.js';
 import { providerIconUrl } from './provider-icons.js';
+import { TAB_CHAT_PREFIX, persistTabChatToSession } from './tab-chat-persistence.js';
 
 // Hydrate the theme from chrome.storage.local (the inline <head> bootstrap
 // only sees localStorage; if the user changes the theme on another device
@@ -1376,7 +1377,6 @@ function isSuccessfulAskCompletion(mode, response) {
 // Also mirrored to chrome.storage.session keyed `tabChat:<tabId>` so the
 // conversation survives the side panel being closed and reopened.
 const tabChats = new Map();
-const TAB_CHAT_PREFIX = 'tabChat:';
 const tabChatOperations = new Map();
 const tabInputDrafts = new Map();
 const permissionSkipCommandContextsByTab = new Map();
@@ -1416,36 +1416,14 @@ async function loadTabChat(tabId) {
   return null;
 }
 
-// chrome.storage.session is capped at 10 MB shared across every per-tab
-// chat entry. Screenshot results embed multi-MB base64 data URLs in the
-// message HTML, so a screenshot-heavy conversation can push the serialized
-// chat past the quota — and a rejected set() used to be swallowed
-// silently, so the tab's chat simply stopped persisting with no trace.
-// Over budget, strip image payloads down to a 1px placeholder for the
-// STORED copy only (the in-memory copy keeps the real images, so
-// same-session restores are unaffected), and log real failures.
-const TAB_CHAT_PERSIST_BUDGET = 7 * 1024 * 1024;
-const TRANSPARENT_PIXEL_PNG_DATA_URL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-
-function stripImagePayloadsForPersist(html) {
-  return html.replace(/data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/g, TRANSPARENT_PIXEL_PNG_DATA_URL);
-}
-
 function persistTabChat(tabId, html) {
   if (tabId == null) return;
   return enqueueTabChatOperation(tabId, async (numericTabId) => {
+    // Keep the live transcript lossless. persistTabChatToSession may compact
+    // only the storage.session copy when the shared quota requires it.
     tabChats.set(numericTabId, html);
-    const toStore = html.length > TAB_CHAT_PERSIST_BUDGET
-      ? stripImagePayloadsForPersist(html)
-      : html;
     const key = TAB_CHAT_PREFIX + numericTabId;
-    try {
-      await chrome.storage.session.set({ [key]: toStore }).catch((e) => {
-        console.warn('[WebBrain] persistTabChat: session storage write failed; chat may not survive a panel reopen:', e?.message || e);
-      });
-    } catch (e) { /* ignore */ }
-    return { ok: true };
+    return persistTabChatToSession(chrome.storage.session, key, html);
   });
 }
 

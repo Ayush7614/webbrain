@@ -4234,9 +4234,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   /**
    * Auto-select a <select> option by keyboard arrows.
-   * Scans ALL selects on the page. If `optionText` matches a non-current
-   * option, focuses that select, sends ArrowDown/Up via CDP, verifies,
-   * and returns a success result.  Returns null if no match found.
+   * Scans selects in the active blocking modal, or the full page when no
+   * modal is open. If `optionText` matches a non-current option, focuses that
+   * select, sends ArrowDown/Up via CDP, verifies, and returns a success result.
+   * Returns null if no match is found.
    *
    * When `optionText` matches the ALREADY-SELECTED option, returns a
    * result telling the agent it's already set (no action needed).
@@ -4244,33 +4245,78 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   async _autoSelectOption(tabId, cdpClient, optionText) {
     const needle = (optionText || '').trim();
     if (!needle) return null;
+    // Keep an exact reference to the scoped select across the separate CDP
+    // evaluations below. Re-discovering it by option text after Escape can
+    // target a different (for example, background) select with the same
+    // options.
+    const targetSlot = `__webbrainAutoSelectTarget_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
     const scanResult = await cdpClient.evaluate(tabId, `
       (() => {
         const needle = ${JSON.stringify(needle)};
         const lc = needle.toLowerCase();
-        // Yield to the normal text-click path only for an exact-tier match.
-        // An exact <option> label must beat a prefix/contains clickable: for
-        // example, "OK" selects the OK option instead of clicking "Book".
-        // Keep <select> out of this list because this rescue is its click path.
-        const clickables = document.querySelectorAll(
-          'a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="treeitem"], input:not([type="hidden"]), textarea, input[type="button"], input[type="submit"], summary, label, [onclick], [data-action]'
-        );
+        const targetSlot = ${JSON.stringify(targetSlot)};
+        const hasVisibleBox = (el, minWidth = 1, minHeight = 1) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          if (r.width < minWidth || r.height < minHeight) return false;
+          const cs = getComputedStyle(el);
+          return cs.visibility !== 'hidden' && cs.display !== 'none' && parseFloat(cs.opacity) !== 0;
+        };
+        const findBlockingModal = () => {
+          const nativeDialogs = Array.from(document.querySelectorAll('dialog[open]')).reverse();
+          for (const dialog of nativeDialogs) {
+            try { if (dialog.matches(':modal')) return dialog; } catch {}
+            if (dialog.getAttribute('aria-modal') === 'true') return dialog;
+          }
+          const ariaModals = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')).reverse();
+          for (const dialog of ariaModals) {
+            if (hasVisibleBox(dialog)) return dialog;
+          }
+          const overlays = Array.from(document.querySelectorAll(
+            '[data-overlay], .modal-overlay, .overlay, [class*="overlay"][class*="active"], [class*="DialogOverlay"], [class*="ModalOverlay"]'
+          )).reverse();
+          const dialogSelector = '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open], [class*="DialogContent"], [class*="ModalContent"], .modal.show';
+          for (const overlay of overlays) {
+            if (!hasVisibleBox(overlay, 100, 100)) continue;
+            const siblings = overlay.parentElement ? Array.from(overlay.parentElement.children) : [];
+            const start = siblings.indexOf(overlay);
+            const ordered = start < 0
+              ? []
+              : siblings.slice(start + 1).concat(siblings.slice(0, start).reverse());
+            for (const sibling of ordered) {
+              if (sibling === overlay) continue;
+              if (sibling.matches?.(dialogSelector) && hasVisibleBox(sibling, 20, 20)) return sibling;
+              const nested = sibling.querySelector?.(dialogSelector);
+              if (nested && hasVisibleBox(nested, 20, 20)) return nested;
+            }
+          }
+          return null;
+        };
+        const scope = findBlockingModal() || document;
+        // Yield to the normal text-click path ONLY when it would resolve an
+        // exact-tier clickable: an exactly-labeled button/link is what the
+        // model meant, but an exact <option> match beats a prefix/contains
+        // clickable (needle "OK" must select the OK option, not click a
+        // "Book" button that merely contains the substring). The extraction
+        // and hidden-option filtering mirror the text-click evaluate below;
+        // <select> elements never suppress — this rescue IS their path.
+        const clickSels = 'a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="treeitem"], input:not([type="hidden"]), textarea, input[type="button"], input[type="submit"], summary, label, [onclick], [data-action]';
         const _valIsLabel = (el) => {
           if (el.tagName === 'TEXTAREA') return false;
           if (el.tagName !== 'INPUT') return true;
-          const type = (el.getAttribute('type') || 'text').toLowerCase();
-          return type === 'button' || type === 'submit' || type === 'reset';
+          const t = (el.getAttribute('type') || 'text').toLowerCase();
+          return t === 'button' || t === 'submit' || t === 'reset';
         };
-        for (const el of clickables) {
-          const r = el.getBoundingClientRect();
-          if (r.width < 2 || r.height < 2) continue;
-          const cs = getComputedStyle(el);
-          if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+        for (const el of scope.querySelectorAll(clickSels)) {
+          try {
+            if (!hasVisibleBox(el)) continue;
+            if (el.closest('[aria-hidden="true"],[hidden]')) continue;
+          } catch (e) { continue; }
           const txt = (el.innerText || (_valIsLabel(el) ? el.value : '') || el.placeholder || el.ariaLabel || '').trim().toLowerCase();
           if (txt && txt === lc) return { found: false, suppressedByClickable: true };
         }
         const matchingSelects = [];
-        const sels = document.querySelectorAll('select');
+        const sels = scope.querySelectorAll('select');
         for (const sel of sels) {
           const opts = Array.from(sel.options);
           const match = opts.find(o => o.text.trim() === needle)
@@ -4279,14 +4325,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             || opts.find(o => o.value.toLowerCase() === lc);
           if (match) matchingSelects.push({ sel, match, opts });
         }
-        // Never mutate the first of several dropdowns that offer the same
-        // option. The normal resolver can surface the ambiguity instead.
-        if (matchingSelects.length !== 1) {
-          return { found: false, matchingSelectCount: matchingSelects.length };
-        }
+        // When more than one dropdown offers the same option, choosing the
+        // first one would be another silent cross-control mutation. Let the
+        // normal text resolver return an ambiguity instead.
+        if (matchingSelects.length !== 1) return { found: false, matchingSelectCount: matchingSelects.length };
         const { sel, match, opts } = matchingSelects[0];
         sel.focus();
         const cur = sel.selectedIndex;
+        if (cur !== match.index) globalThis[targetSlot] = sel;
         return {
           found: true,
           alreadySelected: cur === match.index,
@@ -4312,58 +4358,78 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       };
     }
 
-    // Close any open native dropdown
-    await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-      type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
-    });
-    await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-      type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
-    });
-    // Re-focus the select (Escape may have blurred it)
-    await cdpClient.evaluate(tabId, `
-      (() => {
-        const el = document.activeElement;
-        if (el && el.tagName === 'SELECT') return;
-        const sels = document.querySelectorAll('select');
-        for (const sel of sels) {
-          const opts = Array.from(sel.options);
-          if (opts.some(o => o.text.trim() === ${JSON.stringify(needle)} || o.text.trim().toLowerCase() === ${JSON.stringify(needle.toLowerCase())})) {
-            sel.focus(); return;
-          }
-        }
-      })()
-    `);
-
-    // Navigate with ArrowDown/ArrowUp
-    const delta = scan.targetIndex - scan.currentIndex;
-    const arrowKey = delta > 0 ? 'ArrowDown' : 'ArrowUp';
-    const arrowVK = delta > 0 ? 40 : 38;
-    for (let i = 0; i < Math.abs(delta); i++) {
-      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-        type: 'keyDown', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
-      });
-      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-        type: 'keyUp', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
-      });
-    }
-
-    // Verify
-    const verify = await cdpClient.evaluate(tabId, `
-      (() => {
-        const el = document.activeElement;
-        if (!el || el.tagName !== 'SELECT') return { verified: false };
-        return { verified: true, selectedText: el.options[el.selectedIndex]?.text?.trim(), selectedValue: el.value };
-      })()
-    `);
-    const v = verify?.result?.value;
-
-    return {
-      success: true,
-      method: 'auto-select-keyboard',
-      selectedText: v?.selectedText || scan.targetText,
-      selectedValue: v?.selectedValue || scan.targetValue,
-      keyPresses: Math.abs(delta),
+    const cleanupTarget = async () => {
+      try {
+        await cdpClient.evaluate(tabId, `delete globalThis[${JSON.stringify(targetSlot)}]`);
+      } catch {}
     };
+
+    try {
+      // Close any open native dropdown.
+      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+      });
+      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+      });
+      // Escape may blur the control. Re-focus only the exact select chosen by
+      // the modal-scoped, ambiguity-checked scan; never perform a global
+      // option-text lookup here.
+      const focusResult = await cdpClient.evaluate(tabId, `
+        (() => {
+          const target = globalThis[${JSON.stringify(targetSlot)}];
+          if (!target || target.tagName !== 'SELECT' || !target.isConnected) return { focused: false };
+          if (document.activeElement !== target) target.focus();
+          return { focused: document.activeElement === target };
+        })()
+      `);
+      if (!focusResult?.result?.value?.focused) return null;
+
+      // Navigate with ArrowDown/ArrowUp.
+      const delta = scan.targetIndex - scan.currentIndex;
+      const arrowKey = delta > 0 ? 'ArrowDown' : 'ArrowUp';
+      const arrowVK = delta > 0 ? 40 : 38;
+      for (let i = 0; i < Math.abs(delta); i++) {
+        await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyDown', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
+        });
+        await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyUp', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
+        });
+      }
+
+      // Verify the exact target rather than whichever select happens to be
+      // active after the keyboard events.
+      const verify = await cdpClient.evaluate(tabId, `
+        (() => {
+          const target = globalThis[${JSON.stringify(targetSlot)}];
+          if (!target || target.tagName !== 'SELECT' || !target.isConnected) return { verified: false };
+          return {
+            verified: target.selectedIndex === ${JSON.stringify(scan.targetIndex)},
+            selectedText: target.options[target.selectedIndex]?.text?.trim(),
+            selectedValue: target.value,
+          };
+        })()
+      `);
+      const v = verify?.result?.value;
+      if (!v?.verified) {
+        return {
+          success: false,
+          method: 'auto-select-keyboard',
+          error: `Could not verify that the intended dropdown changed to "${scan.targetText}".`,
+        };
+      }
+
+      return {
+        success: true,
+        method: 'auto-select-keyboard',
+        selectedText: v.selectedText || scan.targetText,
+        selectedValue: v.selectedValue || scan.targetValue,
+        keyPresses: Math.abs(delta),
+      };
+    } finally {
+      await cleanupTarget();
+    }
   }
 
   /**
