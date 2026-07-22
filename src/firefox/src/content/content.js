@@ -2025,7 +2025,10 @@
       const matchCase = params?.matchCase === true;
       const backwards = params?.backwards === true;
       const wrap = params?.wrap !== false;
-      const found = window.find(text, matchCase, backwards, wrap, false, false, false);
+      // Match browser Find semantics across the whole document, including
+      // embedded frames. Without searchInFrames, find_text falsely reports a
+      // miss for text that Ctrl/Cmd+F would find inside an iframe.
+      const found = window.find(text, matchCase, backwards, wrap, false, true, false);
       if (!found) {
         return {
           success: false,

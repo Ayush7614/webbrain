@@ -30949,7 +30949,7 @@ test('find_text uses page search and returns selected match evidence in both bro
     };
     const findText = vm.runInNewContext(`(${content.slice(start, end)})`, { window });
     const result = findText({ text: '  Needle  ', matchCase: true, backwards: true, wrap: false });
-    assert.deepEqual(Array.from(findArgs), ['Needle', true, true, false, false, false, false], `${label}: window.find flags should match the finite schema`);
+    assert.deepEqual(Array.from(findArgs), ['Needle', true, true, false, false, true, false], `${label}: window.find should include embedded frames while honoring the finite schema`);
     assert.equal(result.success, true);
     assert.equal(result.found, true);
     assert.equal(result.selectedText, 'Needle');
