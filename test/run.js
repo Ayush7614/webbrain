@@ -41884,6 +41884,23 @@ test('plan review: structured draft serialize/parse round-trips step edits', () 
     assert.equal(roundTrip.steps[1].id, '2', file);
     assert.deepEqual(roundTrip.risks, ['May require login'], file);
 
+    const multiline = {
+      summary: 'Review account settings',
+      steps: [
+        { id: '1', action: 'Open settings\n\nChoose the Billing section' },
+        { id: '2', action: 'Confirm the selected account' },
+      ],
+      risks: [],
+    };
+    const multilineMd = serializePlanDraftToMarkdown(multiline);
+    const multilineRoundTrip = parsePlanMarkdownToDraft(multilineMd);
+    assert.equal(
+      multilineRoundTrip.steps[0].action,
+      'Open settings\n\nChoose the Billing section',
+      `${file} should preserve multiline structured steps across restore`,
+    );
+    assert.equal(multilineRoundTrip.steps[1].action, 'Confirm the selected account', file);
+
     // Verbose tool suffixes strip; legitimate parentheticals stay.
     assert.equal(
       stripVerbosePlanStepToolSuffix('Click Save (click, type)'),
@@ -41899,6 +41916,11 @@ test('plan review: structured draft serialize/parse round-trips step edits', () 
       stripVerbosePlanStepToolSuffix('Inspect the page (get_accessibility_tree, wait_for_stable)'),
       'Inspect the page',
       `${file} should strip multi-segment canonical tool IDs`,
+    );
+    assert.equal(
+      stripVerbosePlanStepToolSuffix('Inspect the page\nThen wait (get_accessibility_tree, wait_for_stable)'),
+      'Inspect the page\nThen wait',
+      `${file} should strip canonical tool IDs from multiline actions`,
     );
     assert.equal(
       stripVerbosePlanStepToolSuffix('Open invoice (March)'),

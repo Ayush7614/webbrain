@@ -3664,7 +3664,7 @@ const PLAN_STEP_TOOL_SUFFIX_RE = /^(?:click|type|press|scroll|navigate|find|wait
 
 function stripVerbosePlanStepToolSuffix(action) {
   const text = String(action || '').trim();
-  const match = text.match(/^(.*?)\s+\(([^()]*)\)\s*$/);
+  const match = text.match(/^([\s\S]*?)\s+\(([^()]*)\)\s*$/);
   if (!match) return text;
   const suffix = match[2].trim();
   // Only strip parentheticals that look like planner tool lists, not user text
@@ -3691,9 +3691,13 @@ function parsePlanMarkdownToDraft(text) {
   // Ignore planner execution-metadata sections so "Done" from verbose raw mode
   // does not ingest skill IDs / memory bullets as risks.
   let section = 'body'; // body | steps | risks | meta
+  let activeStep = null;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      if (section === 'steps' && activeStep) activeStep.action += '\n';
+      continue;
+    }
 
     const heading = trimmed.match(/^###\s+(.+)$/i);
     if (heading) {
@@ -3708,31 +3712,38 @@ function parsePlanMarkdownToDraft(text) {
       } else {
         section = 'meta';
       }
+      activeStep = null;
       continue;
     }
 
-    if (section === 'meta') continue;
+    if (section === 'meta') {
+      activeStep = null;
+      continue;
+    }
     if (/^confidence:\s*/i.test(trimmed)) continue;
     if (/^(submission required|scratchpad|progress ledger)\b/i.test(trimmed)) continue;
 
     const bold = trimmed.match(/^\*\*(.+)\*\*$/);
     if (bold && !summary) {
       summary = bold[1].trim();
+      activeStep = null;
       continue;
     }
 
     const stepMatch = trimmed.match(/^(\d+)[\.)]\s+(.+)$/);
     if (stepMatch) {
-      steps.push({
+      activeStep = {
         id: stepMatch[1],
-        action: stripVerbosePlanStepToolSuffix(stepMatch[2]),
-      });
+        action: stepMatch[2].trim(),
+      };
+      steps.push(activeStep);
       section = 'steps';
       continue;
     }
 
     const riskMatch = trimmed.match(/^[-*]\s+(?:⚠️\s*)?(.+)$/);
     if (riskMatch) {
+      activeStep = null;
       const riskText = riskMatch[1].replace(/^⚠️\s*/, '').trim();
       if (!riskText) continue;
       // Only accept risk bullets that are explicitly marked, or that appear
@@ -3745,13 +3756,20 @@ function parsePlanMarkdownToDraft(text) {
       continue;
     }
 
+    if (section === 'steps' && activeStep) {
+      activeStep.action += `\n${line.trimEnd()}`;
+      continue;
+    }
+
     if (!summary && section === 'body' && !/^(confidence|submission required|scratchpad|progress ledger)/i.test(trimmed)) {
       summary = trimmed.replace(/^#+\s*/, '');
     }
   }
   return {
     summary,
-    steps: steps.filter((step) => step.action),
+    steps: steps
+      .map((step) => ({ ...step, action: stripVerbosePlanStepToolSuffix(step.action) }))
+      .filter((step) => step.action),
     risks: risks.filter(Boolean),
   };
 }
