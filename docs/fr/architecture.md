@@ -381,7 +381,7 @@ Les service workers MV3 peuvent mourir entre les tours. Les conversations sont p
 | Captures d'écran | CDP `Page.captureScreenshot` | `browser.tabs.captureVisibleTab()` |
 | Persistance conversation | `chrome.storage.session` | En mémoire uniquement |
 | Document hors-écran | Oui (proxy fetch + enregistreur) | Non disponible |
-| Enregistreur de trace | IndexedDB (activé par défaut ; désactivable) | IndexedDB (activé par défaut ; désactivable) — même `trace/recorder.js` |
+| Enregistreur de trace | IndexedDB (optionnel) | IndexedDB (optionnel) — même `trace/recorder.js` |
 | Garde de soumission en double | Oui | Non disponible |
 | `execute_js` | Mode Dev via CDP `Runtime.evaluate` | Mode Dev via l'évaluateur du script de contenu MV2 |
 | Percée Shadow DOM | CDP pour racines fermées ; `shadow_dom_query` est Chrome uniquement | Racines ouvertes uniquement |

@@ -56,8 +56,8 @@ transmis.
 
 ### Enregistreur de traces
 
-L'enregistrement des traces est activé par défaut et peut être désactivé dans
-Paramètres → Affichage. Tant qu'il est activé, chaque exécution de l'agent est écrite dans une base de données IndexedDB
+Lorsqu'il est activé (Paramètres → Affichage → « Enregistrer les traces »),
+chaque exécution de l'agent est écrite dans une base de données IndexedDB
 (`webbrain_traces`) :
 
 - **Stockage `runs`** : modèle, fournisseur, totaux de jetons, horodatages,

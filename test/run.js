@@ -3246,18 +3246,18 @@ test('config transfer exports and restores Settings values including provider ke
   );
 });
 
-test('trace recording is default-on while preserving an explicit opt-out', () => {
+test('trace recording remains opt-in by default', () => {
   for (const [label, prefix, configTransfer] of [
     ['chrome', 'src/chrome', ConfigTransferCh],
     ['firefox', 'src/firefox', ConfigTransferFx],
   ]) {
-    assert.equal(configTransfer.DEFAULT_CONFIG_SETTINGS.tracingEnabled, true, `${label}: portable config default should enable traces`);
+    assert.equal(configTransfer.DEFAULT_CONFIG_SETTINGS.tracingEnabled, false, `${label}: portable config default should disable traces`);
     const settings = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/settings.js'), 'utf8');
     const recorder = fs.readFileSync(path.join(ROOT, prefix, 'src/trace/recorder.js'), 'utf8');
     const locale = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/locales/en.js'), 'utf8');
-    assert.match(settings, /tracingToggle\.checked = stored\.tracingEnabled !== false/, `${label}: unset tracing preference should render enabled`);
-    assert.match(recorder, /return tracingEnabled !== false;/, `${label}: recorder should treat an unset preference as enabled`);
-    assert.match(locale, /On by default for local debugging; turn it off here at any time/i, `${label}: tracing disclosure does not match the new default`);
+    assert.match(settings, /tracingToggle\.checked = stored\.tracingEnabled === true/, `${label}: unset tracing preference should render disabled`);
+    assert.match(recorder, /return tracingEnabled === true;/, `${label}: recorder should require an explicit opt-in`);
+    assert.match(locale, /Off by default because it adds disk writes per step/i, `${label}: tracing disclosure does not match the opt-in default`);
   }
 });
 
@@ -44050,14 +44050,17 @@ test('sidepanel: restored plan review cards rebind approve and cancel actions', 
     assert.doesNotMatch(css, /field-sizing:\s*content/, `${file} should not combine CSS and JavaScript textarea autosizing`);
     const enLocale = fs.readFileSync(path.join(ROOT, file.replace(/src\/ui\/sidepanel\.js$/, 'src/ui/locales/en.js')), 'utf8');
     assert.match(enLocale, /'sp\.plan\.skills': 'Skills to activate'/, `${file} should label the visible skill activation disclosure`);
-    assert.match(enLocale, /'sp\.plan\.approve': '👍 Run'/, `${file} should use the concise plan run action`);
+    assert.match(enLocale, /'sp\.plan\.approve': 'Run & approve'/, `${file} should label the approval action explicitly`);
     assert.match(enLocale, /'sp\.plan\.edit_as_text': 'Edit as text'/, `${file} should label the raw markdown escape hatch`);
     assert.match(enLocale, /'sp\.plan\.remove_step': 'Remove step'/, `${file} should label one-click step removal`);
     assert.match(enLocale, /'sp\.plan\.add_step': 'Add step'/, `${file} should label add-step`);
     assert.match(enLocale, /'sp\.plan\.reorder_hint': 'Drag step numbers to reorder'/, `${file} should explain step reordering`);
     assert.match(enLocale, /'sp\.plan\.reorder_step': 'Drag to reorder step \{step\}'/, `${file} should label each numbered drag handle`);
     assert.match(source, /const useVerbosePlan = verboseMode && !!data\.verboseMarkdown;/, `${file} should use the verbose plan only in verbose mode`);
-    assert.match(source, /t\('sp\.plan\.approve'\) : '👍 Run'/, `${file} should retain the concise plan run fallback`);
+    assert.match(source, /t\('sp\.plan\.approve'\) : 'Run & approve'/, `${file} should retain the explicit plan approval fallback`);
+    assert.match(source, /cancelRow\.appendChild\(cancelBtn\);[\s\S]*card\.appendChild\(actions\);\s*card\.appendChild\(cancelRow\);/, `${file} should place Cancel below the primary actions`);
+    assert.match(css, /\.plan-review-cancel-row[\s\S]*margin-top:\s*6px/, `${file} css should separate the Cancel link from the action row`);
+    assert.match(css, /\.plan-review-cancel\s*\{[\s\S]*border:\s*0;[\s\S]*text-decoration:\s*underline;/, `${file} css should render Cancel as an unoutlined link`);
     const renderPlanReviewStart = source.indexOf('function renderPlanReviewCard(data) {');
     const renderPlanReviewEnd = source.indexOf('\nfunction submitPlanReview(', renderPlanReviewStart);
     assert.notEqual(renderPlanReviewStart, -1, `${file} should render plan review cards`);

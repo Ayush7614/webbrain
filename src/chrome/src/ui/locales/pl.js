@@ -361,7 +361,7 @@ export default {
   'st.display.auto_screenshot.state_change': 'Przy zmianie stanu (domyślnie)',
   'st.display.auto_screenshot.every_step': 'Przy każdym kroku',
   'st.display.tracing.label': 'Rejestruj ślady (do porównywania modeli)',
-  'st.display.tracing.desc_html': 'Zapisuj każde wykonanie (żądania LLM, odpowiedzi, wywołania narzędzi, zrzuty ekranu) w lokalnej bazie IndexedDB, aby móc je analizować i porównywać modele obok siebie. Otwiera się w osobnej karcie Ślady. Domyślnie włączone, aby ułatwić lokalne debugowanie; możesz je tutaj wyłączyć w dowolnym momencie. <a href="traces.html" target="_blank" style="color:var(--accent);">Otwórz stronę Ślady →</a>',
+  'st.display.tracing.desc_html': 'Zapisuj każde wykonanie (żądania LLM, odpowiedzi, wywołania narzędzi, zrzuty ekranu) w lokalnej bazie IndexedDB, aby móc je analizować i porównywać modele obok siebie. Otwiera się w osobnej karcie Ślady. Domyślnie wyłączone, ponieważ dodaje zapisy na dysk przy każdym kroku. <a href="traces.html" target="_blank" style="color:var(--accent);">Otwórz stronę Ślady →</a>',
   'st.display.cost_session_limit.label': 'Limit kosztów chmury na sesję',
   'st.display.cost_session_limit.desc': 'Zatrzymuje wykonania w chmurze i OpenRouter przed kolejnym płatnym wywołaniem modelu, gdy ta sesja osiągnie zgłoszony lub szacowany limit kosztów. Domyślnie 10 USD.',
   'st.display.cost_total_limit.label': 'Całkowity limit kosztów chmury',

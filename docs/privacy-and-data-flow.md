@@ -109,7 +109,7 @@ Stored in `chrome.storage.session` (Chrome) or in-memory (Firefox). Used to rest
 
 ### Trace Recorder
 
-Record traces is enabled by default and can be disabled under Settings → Display. While enabled, every agent run is written to an IndexedDB database (`webbrain_traces`):
+When enabled (Settings → Display → "Record traces"), every agent run is written to an IndexedDB database (`webbrain_traces`):
 
 - **`runs` store**: model, provider, token totals, timestamps, user message, final content
 - **`events` store**: per-step LLM requests/responses, tool calls with args and results

@@ -271,7 +271,7 @@ MV3 Service Worker 将会话持久化到 `chrome.storage.session`。
 | 截图 | CDP `Page.captureScreenshot` | `browser.tabs.captureVisibleTab()` |
 | 对话持久化 | `chrome.storage.session` | 仅内存 |
 | 离屏文档 | 有（fetch 代理 + 录制器） | 不可用 |
-| 轨迹记录器 | IndexedDB（默认启用；可关闭） | IndexedDB（默认启用；可关闭）— 相同的 `trace/recorder.js` |
+| 轨迹记录器 | IndexedDB（可选） | IndexedDB（可选）— 相同的 `trace/recorder.js` |
 | 重复提交防护 | 有 | 不可用 |
 | `execute_js` | 通过 CDP `Runtime.evaluate` 在 Dev 模式中调用 | 通过 MV2 内容脚本求值器在 Dev 模式中调用 |
 | Shadow DOM 穿透 | CDP 用于封闭 root；`shadow_dom_query` 仅 Chrome | 仅开放 root |

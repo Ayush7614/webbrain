@@ -581,7 +581,7 @@ Persisted debounced 300 ms after any change; lazily hydrated on first message to
 
 ## Trace Recorder (optional)
 
-Enabled by default and disableable via Settings → Display → "Record traces". While enabled, every agent run writes to an IndexedDB database (`webbrain-traces`):
+Off by default. Enabled via Settings → Display → "Record traces". When on, every agent run writes to an IndexedDB database (`webbrain-traces`):
 
 - `runs` store: one row per user message — model, provider, token totals, timestamps.
 - `events` store: one row per LLM request/response, tool call, screenshot. Rows are indexed by `(runId, seq)`.

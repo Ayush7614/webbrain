@@ -213,7 +213,7 @@ export default {
   'st.display.auto_screenshot.state_change': '状態変化時（デフォルト）',
   'st.display.auto_screenshot.every_step': '毎ステップ',
   'st.display.tracing.label': 'トレースを記録（モデル比較用）',
-  'st.display.tracing.desc_html': 'すべての実行（LLM リクエスト、レスポンス、ツール呼び出し、スクリーンショット）をローカルの IndexedDB に保存し、モデルを並べて検査・比較できるようにします。別の「トレース」タブで開きます。ローカルでのデバッグを容易にするためデフォルトでオンです。ここでいつでもオフにできます。<a href="traces.html" target="_blank" style="color:var(--accent);">トレースページを開く →</a>',
+  'st.display.tracing.desc_html': 'すべての実行（LLM リクエスト、レスポンス、ツール呼び出し、スクリーンショット）をローカルの IndexedDB に保存し、モデルを並べて検査・比較できるようにします。別の「トレース」タブで開きます。毎ステップで書き込みが増えるためデフォルトはオフです。<a href="traces.html" target="_blank" style="color:var(--accent);">トレースページを開く →</a>',
   'st.display.allow_local_network.label': 'エージェントにローカルネットワークへのアクセスを許可',
   'st.display.allow_local_network.desc': 'エージェントの fetch_url ツールがループバック（127.0.0.1、localhost）やプライベート/RFC1918 アドレス（10.x、192.168.x、172.16–31.x）に届くようになります。ローカル開発サーバー、社内ツール、セルフホスト API に便利です。デフォルトはオフ — オフのときは prompt 注入されたページがエージェントにローカルネットワークの探索をさせることはできません。クラウドメタデータアドレス（169.254.169.254）と *.internal/*.local ホスト名はオンでもブロックされたままです。',
   'st.display.notify_sound.label': '完了サウンド',

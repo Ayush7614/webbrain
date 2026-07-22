@@ -213,7 +213,7 @@ export default {
   'st.display.auto_screenshot.state_change': 'Saat perubahan status (bawaan)',
   'st.display.auto_screenshot.every_step': 'Setiap langkah',
   'st.display.tracing.label': 'Rekam jejak (untuk perbandingan model)',
-  'st.display.tracing.desc_html': 'Simpan setiap proses (permintaan LLM, respons, pemanggilan alat, tangkapan layar) ke IndexedDB lokal sehingga Anda dapat memeriksa dan membandingkan model berdampingan. Membuka tab Jejak terpisah. Aktif secara bawaan untuk memudahkan debugging lokal; Anda dapat menonaktifkannya di sini kapan saja. <a href="traces.html" target="_blank" style="color:var(--accent);">Buka halaman Jejak →</a>',
+  'st.display.tracing.desc_html': 'Simpan setiap proses (permintaan LLM, respons, pemanggilan alat, tangkapan layar) ke IndexedDB lokal sehingga Anda dapat memeriksa dan membandingkan model berdampingan. Membuka tab Jejak terpisah. Nonaktif secara bawaan karena menambah penulisan disk per langkah. <a href="traces.html" target="_blank" style="color:var(--accent);">Buka halaman Jejak →</a>',
   'st.display.allow_local_network.label': 'Izinkan agen mengakses jaringan lokal',
   'st.display.allow_local_network.desc': 'Memungkinkan alat fetch_url agen menjangkau loopback (127.0.0.1, localhost) dan alamat privat/RFC1918 (10.x, 192.168.x, 172.16–31.x). Berguna untuk server pengembangan lokal, alat intranet, atau API yang di-host sendiri. Nonaktif secara bawaan — saat nonaktif, halaman yang disisipi prompt-injection tidak dapat menyuruh agen memindai jaringan lokal Anda. Alamat metadata cloud (169.254.169.254) dan nama host *.internal/*.local tetap diblokir bahkan saat diaktifkan.',
   'st.display.notify_sound.label': 'Suara penyelesaian',

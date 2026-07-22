@@ -41,7 +41,7 @@ export const DEFAULT_CONFIG_SETTINGS = Object.freeze({
   downloadDirectory: '',
   notifySound: true,
   completionConfetti: true,
-  tracingEnabled: true,
+  tracingEnabled: false,
   strictSecretMode: false,
   agentAllowLocalNetwork: false,
   scheduledTasksEnabled: true,

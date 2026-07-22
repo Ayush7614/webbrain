@@ -626,7 +626,7 @@ MV3 service workers can die between turns. Conversations are persisted to `chrom
 | Screenshots | CDP `Page.captureScreenshot` | `browser.tabs.captureVisibleTab()` |
 | Conversation persistence | `chrome.storage.session` | In-memory only |
 | Offscreen document | Yes (fetch proxy + recorder) | Not available |
-| Trace recorder | IndexedDB (on by default; user-disableable) | IndexedDB (on by default; user-disableable) — same `trace/recorder.js` |
+| Trace recorder | IndexedDB (opt-in) | IndexedDB (opt-in) — same `trace/recorder.js` |
 | Duplicate-submit guard | Yes | Not available |
 | `execute_js` | Dev mode through CDP `Runtime.evaluate` | Dev mode through the MV2 content-script evaluator |
 | Reversible Dev patches | CSS + structured element patches with patch IDs | Not yet available |

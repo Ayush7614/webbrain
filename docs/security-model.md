@@ -157,7 +157,7 @@ Cleared on conversation reset.
 
 ## Trace Data Isolation
 
-The trace recorder (`trace/recorder.js`) writes to IndexedDB on the user's machine. It is enabled by default and can be disabled under Settings → Display → "Record traces". Data never leaves the browser:
+The trace recorder (`trace/recorder.js`) writes to IndexedDB on the user's machine when explicitly enabled (Settings → Display → "Record traces"). Data never leaves the browser:
 
 - `runs` store: model, provider, token totals, timestamps
 - `events` store: LLM requests/responses, tool calls, screenshot metadata
