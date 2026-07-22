@@ -4,6 +4,24 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [25.7.0] - 2026-07-22
+
+### Added
+- Added safe saved workflow schema and UI support for saving and managing traced runs (Chrome and Firefox parity).
+
+### Changed
+- Updated workflow replay to use the new safe saved workflow schema, improving reliability and reducing brittle replay behavior (Chrome and Firefox parity).
+- Updated documentation for privacy/data flow and security model to reflect saved workflow/replay behavior.
+
+### Fixed
+- Guarded workflow replay by page scope to prevent cross-page/brittle replays.
+- Rejected brittle selector replay during saved workflow replay to avoid incorrect actions.
+- Improved workflow replay safety by replaying saved actions in a more controlled manner.
+- Closed workflow gaps for save, replay, and telemetry to ensure consistent end-to-end behavior (Chrome and Firefox parity).
+
+### Tests
+- Updated test runner (`test/run.js`) to align with the saved workflow/replay changes.
+
 ## [25.6.0] - 2026-07-22
 
 ### Added
