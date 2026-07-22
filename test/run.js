@@ -134,6 +134,17 @@ function packagedOpenLibraryRecord(prefix) {
   };
 }
 
+function packagedChromeWebStoreRecord(prefix) {
+  return {
+    id: 'chrome-web-store-release',
+    name: 'Chrome Web Store release',
+    sourceType: 'built-in',
+    sourceUrl: 'skills/chrome-web-store-release.md',
+    content: fs.readFileSync(path.join(ROOT, prefix, 'skills/chrome-web-store-release.md'), 'utf8'),
+    createdAt: 0,
+  };
+}
+
 function activateSkillForTest(agent, tabIds, skillId, mode = 'act') {
   for (const tabId of Array.isArray(tabIds) ? tabIds : [tabIds]) {
     agent.conversationModes.set(tabId, mode);
@@ -228,7 +239,7 @@ const { transcribeAudio } = await import(
 // network-tools.js references chrome.* inside a try/catch at module load, so
 // it imports cleanly under Node — the storage init silently no-ops and
 // validateFetchUrl / registrableDomain are pure functions.
-const { validateFetchUrl, registrableDomain, filenameFromContentDisposition: filenameFromContentDispositionCh, fetchUrl: fetchUrlCh, downloadFiles: downloadFilesCh, executeHttpSkillTool: executeHttpSkillToolCh } = await import(
+const { validateFetchUrl, registrableDomain, filenameFromContentDisposition: filenameFromContentDispositionCh, fetchUrl: fetchUrlCh, researchUrl: researchUrlCh, downloadFiles: downloadFilesCh, executeHttpSkillTool: executeHttpSkillToolCh } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/network/network-tools.js').replace(/\\/g, '/')
 );
 const { validateFetchUrl: validateFetchUrlFx, registrableDomain: registrableDomainFx, filenameFromContentDisposition: filenameFromContentDispositionFx, fetchUrl: fetchUrlFx, readPageSource: readPageSourceFx, researchUrl: researchUrlFx, downloadFiles: downloadFilesFx, executeHttpSkillTool: executeHttpSkillToolFx } = await import(
@@ -236,6 +247,21 @@ const { validateFetchUrl: validateFetchUrlFx, registrableDomain: registrableDoma
 );
 const { firefoxRestrictedDomainForUrl, firefoxRestrictedDomainFailure, firefoxHostPermissionFailure } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/firefox-restricted-domains.js').replace(/\\/g, '/')
+);
+const TabChatPersistenceCh = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/ui/tab-chat-persistence.js').replace(/\\/g, '/')
+);
+const TabChatPersistenceFx = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/ui/tab-chat-persistence.js').replace(/\\/g, '/')
+);
+const { chromeProtectedPageForUrl, chromeProtectedPageFailure, isChromeProtectedPageDomTool } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/chrome-protected-pages.js').replace(/\\/g, '/')
+);
+const ChromeWebStoreReleaseCh = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/chrome-web-store-release.js').replace(/\\/g, '/')
+);
+const ChromeWebStoreReleaseFx = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/chrome-web-store-release.js').replace(/\\/g, '/')
 );
 
 // markdown-link.js is pure JS with no DOM / chrome.* deps.
@@ -5470,6 +5496,92 @@ test('Firefox network readers reject protected domains before network or tab wor
   }
 });
 
+test('research_url rejects blocked redirect targets before returning hidden-tab content', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousBrowser = globalThis.browser;
+  const previousSetTimeout = globalThis.setTimeout;
+  const nativeSetTimeout = previousSetTimeout;
+  // Keep the production navigation timeout real, but skip the intentional
+  // 800 ms SPA hydration pause in this deterministic unit test.
+  globalThis.setTimeout = (fn, ms, ...args) => nativeSetTimeout(fn, ms === 800 ? 0 : ms, ...args);
+
+  const blockedUrl = 'http://169.254.169.254/latest/meta-data/';
+  const publicUrl = 'https://public.example/redirect';
+  try {
+    for (const [label, researchUrl, apiName] of [
+      ['chrome', researchUrlCh, 'chrome'],
+      ['firefox', researchUrlFx, 'browser'],
+    ]) {
+      for (const blockedPhase of ['loaded-tab', 'page-result']) {
+        let executeCalls = 0;
+        let removeCalls = 0;
+        const updateListeners = new Set();
+        const tabs = {
+          async create() {
+            return { id: 77, url: publicUrl };
+          },
+          async get() {
+            return { id: 77, url: blockedPhase === 'loaded-tab' ? blockedUrl : publicUrl };
+          },
+          async remove() {
+            removeCalls++;
+          },
+          onUpdated: {
+            addListener(fn) {
+              updateListeners.add(fn);
+              nativeSetTimeout(() => fn(77, { status: 'complete' }), 0);
+            },
+            removeListener(fn) {
+              updateListeners.delete(fn);
+            },
+          },
+        };
+        const pageResult = {
+          title: 'redirected page',
+          url: blockedPhase === 'page-result' ? blockedUrl : publicUrl,
+          text: 'must not be returned',
+          originalLength: 20,
+          links: [],
+        };
+        if (apiName === 'chrome') {
+          globalThis.chrome = {
+            tabs,
+            scripting: {
+              async executeScript() {
+                executeCalls++;
+                return [{ result: pageResult }];
+              },
+            },
+          };
+        } else {
+          globalThis.browser = {
+            tabs: {
+              ...tabs,
+              async executeScript() {
+                executeCalls++;
+                return [pageResult];
+              },
+            },
+          };
+        }
+
+        const result = await researchUrl(publicUrl, { timeout: 1000 });
+        assert.equal(result.success, false, `${label}/${blockedPhase}: blocked redirect must fail`);
+        assert.match(result.error || '', /Redirect to blocked URL/i, `${label}/${blockedPhase}: missing redirect error`);
+        assert.equal(result.finalUrl, blockedUrl, `${label}/${blockedPhase}: final URL should be reported`);
+        assert.equal(executeCalls, blockedPhase === 'loaded-tab' ? 0 : 1, `${label}/${blockedPhase}: extraction timing mismatch`);
+        assert.equal(removeCalls, 1, `${label}/${blockedPhase}: hidden tab should always be closed`);
+      }
+    }
+  } finally {
+    globalThis.setTimeout = previousSetTimeout;
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = previousBrowser;
+  }
+});
+
 test('firefox port validator agrees with chrome on a sample of cases', () => {
   // Sanity check that the two ports stay in sync. Pick one case from each
   // category — full coverage runs against the chrome copy above.
@@ -10664,6 +10776,7 @@ test('every bundled skill declares its canonical semantic intents', () => {
     'open-meteo-weather': ['current_weather', 'weather_forecast', 'location_forecast'],
     'open-library-books': ['book_search', 'book_metadata', 'isbn_lookup', 'author_lookup'],
     'temporary-file-share-litterbox': ['temporary_file_share', 'public_upload_link', 'expiring_file_upload'],
+    'chrome-web-store-release': ['chrome-web-store-release', 'extension-publish'],
   };
   for (const [label, prefix, sources, normalizeSkills] of [
     ['chrome', 'src/chrome', PACKAGED_SKILL_SOURCES_CH, normalizeCustomSkillsCh],
@@ -11270,7 +11383,6 @@ test('sidepanel exposes schedule slash commands in both builds', () => {
     assert.match(panel, /Date\.parse\(job\?\.completedAt/, `${label}: completed job auto-hide should use completion time`);
     assert.match(panel, /scheduleCompletedJobAutoHide\(jobs\)/, `${label}: completed job auto-hide should reschedule the scheduled-job strip`);
     assert.match(panel, /job\.status === 'completed' && job\.lastResult/, `${label}: completed job cards should expose saved results after refresh`);
-    assert.match(panel, /crossPanelScheduledJobIds/, `${label}: cross-panel scheduled jobs should stay tracked until terminal events`);
     assert.match(panel, /terminalScheduledEvent/, `${label}: cross-panel scheduled terminal events should settle the panel`);
     assert.match(panel, /event === 'needs_user_input' \|\|\s*terminalScheduledEvent/, `${label}: URL-target terminal events should return to the scheduling panel without a prior clarify card`);
     assert.match(panel, /ensureScheduledTerminalMessage/, `${label}: URL-target terminal events should create a visible result message`);
@@ -12391,12 +12503,23 @@ test('chrome fetch fallback clears offscreen proxy timeout after success', async
       },
     },
     runtime: {
-      async sendMessage() {
+      connect({ name }) {
+        const messageListeners = [];
         return {
-          ok: true,
-          status: 200,
-          contentType: 'application/json',
-          body: '{"ok":true}',
+          onMessage: { addListener: (fn) => messageListeners.push(fn) },
+          onDisconnect: { addListener: () => {} },
+          postMessage() {
+            // Simulate the offscreen streaming protocol: headers first
+            // (clears the caller's connection-phase timeout), then the
+            // body as chunks, then done.
+            queueMicrotask(() => {
+              const emit = (m) => messageListeners.forEach((fn) => fn(m));
+              emit({ type: 'headers', ok: true, status: 200, contentType: 'application/json' });
+              emit({ type: 'chunk', text: '{"ok":true}' });
+              emit({ type: 'done' });
+            });
+          },
+          disconnect() {},
         };
       },
     },
@@ -12428,6 +12551,105 @@ test('chrome fetch fallback clears offscreen proxy timeout after success', async
       globalThis.chrome = previousChrome;
     }
     console.warn = previousWarn;
+  }
+});
+
+test('chrome fetch fallback resolves null-body proxy statuses without hanging', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousFetch = globalThis.fetch;
+  const previousWarn = console.warn;
+  let nextStatus = 204;
+  let disconnects = 0;
+  console.warn = () => {};
+  globalThis.fetch = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+  globalThis.chrome = {
+    offscreen: {
+      async hasDocument() {
+        return true;
+      },
+    },
+    runtime: {
+      connect() {
+        const messageListeners = [];
+        return {
+          onMessage: { addListener: (fn) => messageListeners.push(fn) },
+          onDisconnect: { addListener: () => {} },
+          postMessage() {
+            queueMicrotask(() => {
+              messageListeners.forEach((fn) => fn({
+                type: 'headers',
+                ok: nextStatus >= 200 && nextStatus < 300,
+                status: nextStatus,
+                contentType: 'application/json',
+                hasBody: false,
+              }));
+            });
+          },
+          disconnect() {
+            disconnects++;
+          },
+        };
+      },
+    },
+  };
+  try {
+    const fetchUrl = 'file://' + path.join(ROOT, 'src/chrome/src/providers/fetch-with-fallback.js').replace(/\\/g, '/') + `?test=${Date.now()}`;
+    const { fetchWithFallback } = await import(fetchUrl);
+    for (const status of [204, 205, 304]) {
+      nextStatus = status;
+      const res = await fetchWithFallback('http://127.0.0.1:11434/api/models', { timeoutMs: 12345 });
+      assert.equal(res.status, status, `chrome: proxied ${status} status should resolve`);
+      assert.equal(await res.text(), '', `chrome: proxied ${status} response must have no body`);
+    }
+    assert.equal(disconnects, 3, 'chrome: null-body responses should close their streaming ports immediately');
+  } finally {
+    if (previousFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = previousFetch;
+    }
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+    console.warn = previousWarn;
+  }
+});
+
+test('chrome offscreen stream marks null response bodies and completes without a reader', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousFetch = globalThis.fetch;
+  let connectListener = null;
+  globalThis.chrome = {
+    runtime: {
+      onMessage: { addListener() {} },
+      onConnect: { addListener(fn) { connectListener = fn; } },
+    },
+  };
+  globalThis.fetch = async () => new Response(null, { status: 204 });
+  try {
+    const offscreenUrl = 'file://' + path.join(ROOT, 'src/chrome/src/offscreen/offscreen.js').replace(/\\/g, '/') + `?bodyless=${Date.now()}`;
+    await import(offscreenUrl);
+    assert.equal(typeof connectListener, 'function');
+    const requestListeners = [];
+    const posted = [];
+    connectListener({
+      name: 'offscreen-fetch-stream',
+      onMessage: { addListener(fn) { requestListeners.push(fn); } },
+      postMessage(msg) { posted.push(msg); },
+    });
+    await requestListeners[0]({ url: 'http://127.0.0.1/empty', method: 'HEAD' });
+    assert.deepEqual(posted.map(({ type }) => type), ['headers', 'done']);
+    assert.equal(posted[0].status, 204);
+    assert.equal(posted[0].hasBody, false);
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    if (previousFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = previousFetch;
   }
 });
 
@@ -13613,19 +13835,19 @@ test('sidepanel flushes run chat before queue settlement after immediate tab swi
     assert.ok(sendMatch, `${label}: sendMessage finally block missing`);
     const sendFinally = sendMatch[1];
     const sendFlushIdx = sendFinally.indexOf('flushRenderedTabChat()');
-    const sendDrainIdx = sendFinally.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    const sendDrainIdx = sendFinally.indexOf('await drainQueuedPromptsAfterRunSettles();');
     assert.notEqual(sendFlushIdx, -1, `${label}: send completion should flush the final transcript`);
-    assert.notEqual(sendDrainIdx, -1, `${label}: send completion should drain pending tab switches`);
-    assert.equal(sendFlushIdx < sendDrainIdx, true, `${label}: send completion must flush before deferred tab switching`);
+    assert.notEqual(sendDrainIdx, -1, `${label}: send completion should drain queued prompts`);
+    assert.equal(sendFlushIdx < sendDrainIdx, true, `${label}: send completion must flush before draining queued prompts`);
 
     const continueMatch = panel.match(/async function continueAgent\(options = \{\}\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/);
     assert.ok(continueMatch, `${label}: continueAgent finally block missing`);
     const continueFinally = continueMatch[1];
     const continueFlushIdx = continueFinally.indexOf('flushRenderedTabChat()');
-    const continueDrainIdx = continueFinally.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    const continueDrainIdx = continueFinally.indexOf('await drainQueuedPromptsAfterRunSettles();');
     assert.notEqual(continueFlushIdx, -1, `${label}: Continue completion should flush the final transcript`);
-    assert.notEqual(continueDrainIdx, -1, `${label}: Continue completion should drain pending tab switches`);
-    assert.equal(continueFlushIdx < continueDrainIdx, true, `${label}: Continue completion must flush before deferred tab switching`);
+    assert.notEqual(continueDrainIdx, -1, `${label}: Continue completion should drain queued prompts`);
+    assert.equal(continueFlushIdx < continueDrainIdx, true, `${label}: Continue completion must flush before draining queued prompts`);
 
     const scheduledStart = panel.search(/(?:async\s+)?function settleScheduledRun\(event, job, tabId = currentTabId\)/);
     const scheduledEnd = panel.search(/(?:async\s+)?function handleScheduledJobEvent\(data, tabId\)/);
@@ -13633,21 +13855,125 @@ test('sidepanel flushes run chat before queue settlement after immediate tab swi
     assert.notEqual(scheduledEnd, -1, `${label}: scheduled event handler boundary missing`);
     const scheduledBody = panel.slice(scheduledStart, scheduledEnd);
     const scheduledFlushNeedle = 'await flushRenderedTabChat()';
-    const scheduledDrainNeedle = 'await drainQueuedContextMenuPromptsAfterPendingTabSwitch();';
+    const scheduledDrainNeedle = 'await drainQueuedPromptsAfterRunSettles();';
     const scheduledFlushIdx = scheduledBody.indexOf(scheduledFlushNeedle);
     const scheduledDrainIdx = scheduledBody.indexOf(scheduledDrainNeedle);
     assert.notEqual(scheduledFlushIdx, -1, `${label}: scheduled completion should flush the final transcript`);
-    assert.notEqual(scheduledDrainIdx, -1, `${label}: scheduled completion should drain pending tab switches`);
-    assert.equal(scheduledFlushIdx < scheduledDrainIdx, true, `${label}: scheduled completion must flush before deferred tab switching`);
+    assert.notEqual(scheduledDrainIdx, -1, `${label}: scheduled completion should drain queued prompts`);
+    assert.equal(scheduledFlushIdx < scheduledDrainIdx, true, `${label}: scheduled completion must flush before draining queued prompts`);
 
     const abortMatch = panel.match(/setTimeout\(async \(\) => \{[\s\S]*?if \(isTabAbortRequested\(tabId\)\) \{([\s\S]*?)\n    \}\n  \}, 3000\);/);
     assert.ok(abortMatch, `${label}: abort safety timeout body missing`);
     const abortBody = abortMatch[1];
     const abortFlushIdx = abortBody.indexOf('flushRenderedTabChat()');
-    const abortDrainIdx = abortBody.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    const abortDrainIdx = abortBody.indexOf('await drainQueuedPromptsAfterRunSettles();');
     assert.notEqual(abortFlushIdx, -1, `${label}: abort timeout should flush the stopped transcript`);
-    assert.notEqual(abortDrainIdx, -1, `${label}: abort timeout should drain pending tab switches`);
-    assert.equal(abortFlushIdx < abortDrainIdx, true, `${label}: abort timeout must flush before deferred tab switching`);
+    assert.notEqual(abortDrainIdx, -1, `${label}: abort timeout should drain queued prompts`);
+    assert.equal(abortFlushIdx < abortDrainIdx, true, `${label}: abort timeout must flush before draining queued prompts`);
+  }
+});
+
+test('tab-chat persistence recovers when several sub-threshold chats exceed the shared quota', async () => {
+  for (const [label, persistence] of [
+    ['chrome', TabChatPersistenceCh],
+    ['firefox', TabChatPersistenceFx],
+  ]) {
+    const values = {};
+    const quota = 10 * 1024 * 1024;
+    const storageArea = {
+      async get(query) {
+        if (query == null) return { ...values };
+        if (typeof query === 'string') return { [query]: values[query] };
+        return { ...values };
+      },
+      async set(patch) {
+        const next = { ...values, ...patch };
+        const bytes = Object.entries(next)
+          .reduce((total, [key, value]) => total + key.length + String(value).length, 0);
+        if (bytes > quota) throw new Error('QUOTA_BYTES exceeded');
+        Object.assign(values, patch);
+      },
+    };
+    const warnings = [];
+    const imagePayload = 'A'.repeat(6 * 1024 * 1024);
+    const firstHtml = `<div class="message"><img src="data:image/png;base64,${imagePayload}"></div>`;
+    const secondHtml = `<div class="message"><img src="data:image/webp;base64,${imagePayload}"></div>`;
+    const firstKey = persistence.TAB_CHAT_PREFIX + '1';
+    const secondKey = persistence.TAB_CHAT_PREFIX + '2';
+
+    const first = await persistence.persistTabChatToSession(storageArea, firstKey, firstHtml, (...args) => warnings.push(args));
+    assert.equal(first.ok, true, `${label}: first sub-threshold chat should persist`);
+    assert.equal(first.recoveredFromQuota, false, `${label}: first write should not need recovery`);
+    assert.equal(values[firstKey], firstHtml, `${label}: normal stored copy should retain its image`);
+
+    const second = await persistence.persistTabChatToSession(storageArea, secondKey, secondHtml, (...args) => warnings.push(args));
+    assert.equal(second.ok, true, `${label}: aggregate quota failure should recover`);
+    assert.equal(second.recoveredFromQuota, true, `${label}: second write should retry with a bounded stored copy`);
+    assert.equal(warnings.length, 0, `${label}: recovered quota writes should not warn`);
+    assert.equal(values[firstKey], firstHtml, `${label}: recovery should not rewrite unrelated tab chats`);
+    assert.match(values[secondKey], /data:image\/png;base64,iVBOR/, `${label}: second stored image should be compacted`);
+    assert.ok(values[secondKey].length < 2048, `${label}: second compacted chat should be small`);
+    assert.equal(firstHtml.includes(imagePayload), true, `${label}: caller's in-memory HTML must remain unchanged`);
+
+    const textOnly = `<div class="message">${'recent '.repeat(20 * 1024)}</div>`;
+    const bounded = persistence.compactTabChatForPersist(textOnly, 64 * 1024);
+    assert.ok(bounded.length <= 64 * 1024, `${label}: text-only fallback must respect its budget`);
+    assert.match(bounded, /^<div class="message system">/, `${label}: text-only fallback should remain valid message markup`);
+    assert.match(bounded, /<\/div><\/div>$/, `${label}: text-only fallback should close its markup`);
+
+    const whitespaceClosedRawText = `<div>${'visible text '.repeat(300)}<script>LEAK_SCRIPT</script ><style>LEAK_STYLE</style ></div>`;
+    const whitespaceClosedFallback = persistence.compactTabChatForPersist(whitespaceClosedRawText, 1024);
+    assert.doesNotMatch(whitespaceClosedFallback, /LEAK_SCRIPT|LEAK_STYLE/, `${label}: whitespace before raw-text end-tag brackets must not leak script/style text`);
+    assert.match(whitespaceClosedFallback, /visible text/, `${label}: safe readable text should survive raw-text removal`);
+  }
+});
+
+test('tab-chat persistence evicts an existing chat when older keys saturate the shared quota', async () => {
+  for (const [label, persistence] of [
+    ['chrome', TabChatPersistenceCh],
+    ['firefox', TabChatPersistenceFx],
+  ]) {
+    const values = { unrelatedSessionState: 'keep' };
+    const quota = 10 * 1024 * 1024;
+    const storageBytes = (next) => Object.entries(next)
+      .reduce((total, [storedKey, value]) => total + storedKey.length + String(value).length, 0);
+    const storageArea = {
+      async get(query) {
+        if (query == null) return { ...values };
+        if (typeof query === 'string') return { [query]: values[query] };
+        return { ...values };
+      },
+      async set(patch) {
+        const next = { ...values, ...patch };
+        if (storageBytes(next) > quota) throw new Error('QUOTA_BYTES exceeded');
+        Object.assign(values, patch);
+      },
+      async remove(keys) {
+        for (const storedKey of Array.isArray(keys) ? keys : [keys]) delete values[storedKey];
+      },
+    };
+    const oldKey = persistence.TAB_CHAT_PREFIX + 'older';
+    const newKey = persistence.TAB_CHAT_PREFIX + 'current';
+    const fixedBytes = storageBytes(values) + oldKey.length;
+    values[oldKey] = 'x'.repeat(quota - fixedBytes - 64);
+    const source = `<div class="message">${'recent text '.repeat(80 * 1024)}</div>`;
+    const warnings = [];
+
+    const result = await persistence.persistTabChatToSession(
+      storageArea,
+      newKey,
+      source,
+      (...args) => warnings.push(args),
+    );
+
+    assert.equal(result.ok, true, `${label}: saturated shared quota should recover`);
+    assert.equal(result.recoveredFromQuota, true, `${label}: recovery marker missing`);
+    assert.deepEqual(result.evictedKeys, [oldKey], `${label}: recovery should report the evicted chat`);
+    assert.equal(values[oldKey], undefined, `${label}: older chat should be evicted to free quota`);
+    assert.equal(typeof values[newKey], 'string', `${label}: current compacted chat should persist`);
+    assert.ok(values[newKey].length <= 256 * 1024, `${label}: recovered chat should remain tightly bounded`);
+    assert.equal(values.unrelatedSessionState, 'keep', `${label}: non-chat session state must not be evicted`);
+    assert.equal(warnings.length, 0, `${label}: successful recovery should not warn`);
   }
 });
 
@@ -13661,7 +13987,7 @@ test('chrome sidepanel serializes tab-chat storage writes with clears and reads'
   assert.match(loadBody, /const numericTabId = Number\(tabId\);[\s\S]*?if \(!Number\.isFinite\(numericTabId\)\) return null;/, 'chrome: tab-chat restore should normalize tab ids before checking the cache');
   assert.match(loadBody, /if \(!tabChatOperations\.has\(numericTabId\) && tabChats\.has\(numericTabId\)\) return tabChats\.get\(numericTabId\);/, 'chrome: tab-chat restore should only trust cached HTML when no queued operation can update it');
   assert.match(loadBody, /return await enqueueTabChatOperation\(numericTabId, async \(queuedTabId\) => \{[\s\S]*?if \(tabChats\.has\(queuedTabId\)\) return tabChats\.get\(queuedTabId\);[\s\S]*?const stored = await chrome\.storage\.session\.get\(key\);/, 'chrome: tab-chat restore should wait behind pending per-tab operations before reading cache or storage');
-  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await chrome\.storage\.session\.set\(\{ \[key\]: html \}\)\.catch\(\(\) => \{\}\);/, 'chrome: tab-chat persistence should be serialized through the queue');
+  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?return persistTabChatToSession\(chrome\.storage\.session, key, html\);/, 'chrome: tab-chat persistence should be serialized through the queue and quota recovery helper');
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
   const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nasync function renderClearedConversationForTab', clearStart) + 2);
@@ -13680,7 +14006,7 @@ test('firefox sidepanel serializes tab-chat storage writes with clears and reads
   assert.match(loadBody, /const numericTabId = Number\(tabId\);[\s\S]*?if \(!Number\.isFinite\(numericTabId\)\) return null;/, 'firefox: tab-chat restore should normalize tab ids before checking the cache');
   assert.match(loadBody, /if \(!tabChatOperations\.has\(numericTabId\) && tabChats\.has\(numericTabId\)\) return tabChats\.get\(numericTabId\);/, 'firefox: tab-chat restore should only trust cached HTML when no queued operation can update it');
   assert.match(loadBody, /return await enqueueTabChatOperation\(numericTabId, async \(queuedTabId\) => \{[\s\S]*?if \(tabChats\.has\(queuedTabId\)\) return tabChats\.get\(queuedTabId\);[\s\S]*?const stored = await browser\.storage\.session\.get\(key\);/, 'firefox: tab-chat restore should wait behind pending per-tab operations before reading cache or storage');
-  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await browser\.storage\.session\.set\(\{ \[key\]: html \}\)\.catch\(\(\) => \{\}\);/, 'firefox: tab-chat persistence should be serialized through the queue');
+  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?return persistTabChatToSession\(browser\.storage\.session, key, html\);/, 'firefox: tab-chat persistence should be serialized through the queue and quota recovery helper');
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'firefox: clearCachedTabChat missing');
   const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\n// Save current tab', clearStart) + 2);
@@ -15734,16 +16060,16 @@ test('sidepanel queued composer messages expose edit and delete controls', () =>
     assert.notEqual(queueShiftIdx, -1, `${label}: queued composer drain should shift the next queued message`);
     assert.equal(draftGuardIdx < queueShiftIdx, true, `${label}: queued composer drain must preserve drafts before removing queued messages`);
     assert.match(panel, /if \(drainQueuedComposerMessageForCurrentTab\(\)\) return;[\s\S]*?drainQueuedContextMenuPrompts\(\);/, `${label}: run settlement should drain queued composer messages before context-menu recovery prompts`);
-    const helperStart = panel.indexOf('async function drainQueuedContextMenuPromptsAfterPendingTabSwitch()');
+    const helperStart = panel.indexOf('async function drainQueuedPromptsAfterRunSettles()');
     const helperEnd = panel.indexOf('function queueAgentUpdateDuringTabSwitch', helperStart);
     assert.notEqual(helperStart, -1, `${label}: queued drain helper should exist`);
     assert.notEqual(helperEnd, -1, `${label}: queued drain helper boundary should exist`);
     const helperBody = panel.slice(helperStart, helperEnd);
     const composerDrainIdx = helperBody.indexOf('if (drainQueuedComposerMessageForCurrentTab()) return;');
-    const pendingSwitchIdx = helperBody.indexOf('const pending = pendingTabSwitch;');
+    const contextDrainIdx = helperBody.indexOf('drainQueuedContextMenuPrompts();');
     assert.notEqual(composerDrainIdx, -1, `${label}: completed-tab queued composer drain should run in the drain helper`);
-    assert.notEqual(pendingSwitchIdx, -1, `${label}: pending tab switch should still be applied in the drain helper`);
-    assert.equal(composerDrainIdx < pendingSwitchIdx, true, `${label}: queued composer messages for the completed tab must drain before applying a pending tab switch`);
+    assert.notEqual(contextDrainIdx, -1, `${label}: context-menu prompt drain should run in the drain helper`);
+    assert.equal(composerDrainIdx < contextDrainIdx, true, `${label}: queued composer messages for the completed tab must drain before context-menu recovery prompts`);
     assert.match(css, /\.queued-messages/, `${label}: queued message strip should be styled`);
     assert.match(css, /\.queued-message-action/, `${label}: queued message controls should be styled`);
     assert.match(locale, /'sp\.queue\.edit': 'Edit queued message'/, `${label}: queued edit label should have an English fallback`);
@@ -15845,7 +16171,7 @@ test('sidepanel continue runs use the initiating tab state', () => {
   }
 });
 
-test('sidepanel drains queued context-menu prompts after pending tab switches on run completion', () => {
+test('sidepanel drains queued context-menu prompts on run completion', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
@@ -15860,17 +16186,16 @@ test('sidepanel drains queued context-menu prompts after pending tab switches on
       assert.ok(match, `${label}: ${fnName} finally block missing`);
       const finallyBody = match[1];
       const idleIdx = finallyBody.indexOf('setTabProcessing(tabId, false);');
-      const helperIdx = finallyBody.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+      const helperIdx = finallyBody.indexOf('await drainQueuedPromptsAfterRunSettles();');
       assert.notEqual(idleIdx, -1, `${label}: ${fnName} should clear processing state`);
-      assert.notEqual(helperIdx, -1, `${label}: ${fnName} completion should apply pending tab switches before draining queued prompts`);
+      assert.notEqual(helperIdx, -1, `${label}: ${fnName} completion should drain queued prompts via the settlement helper`);
       assert.equal(idleIdx < helperIdx, true, `${label}: ${fnName} context-menu queue must drain after processing is cleared`);
-      assert.equal(finallyBody.includes('await switchToTab(pending);'), false, `${label}: ${fnName} should use the non-throwing context-menu drain helper`);
       assert.equal(finallyBody.includes('drainQueuedContextMenuPrompts();'), false, `${label}: ${fnName} should not drain directly against a potentially stale tab`);
     }
   }
 });
 
-test('sidepanel abort safety timeout drains queued prompts after pending tab switches', () => {
+test('sidepanel abort safety timeout drains queued prompts', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
@@ -15880,34 +16205,33 @@ test('sidepanel abort safety timeout drains queued prompts after pending tab swi
     assert.ok(match, `${label}: abort safety timeout body missing`);
     const body = match[1];
     const idleIdx = body.indexOf('setTabProcessing(tabId, false);');
-    const helperIdx = body.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    const helperIdx = body.indexOf('await drainQueuedPromptsAfterRunSettles();');
     assert.notEqual(idleIdx, -1, `${label}: abort timeout should clear processing state`);
-    assert.notEqual(helperIdx, -1, `${label}: abort timeout should apply pending tab switches before draining queued prompts`);
+    assert.notEqual(helperIdx, -1, `${label}: abort timeout should drain queued prompts via the settlement helper`);
     assert.equal(idleIdx < helperIdx, true, `${label}: abort timeout should drain after processing is cleared`);
-    assert.equal(body.includes('await switchToTab(pending);'), false, `${label}: abort timeout should use the non-throwing context-menu drain helper`);
     assert.equal(body.includes('drainQueuedContextMenuPrompts();'), false, `${label}: abort timeout should not drain directly against a potentially stale tab`);
   }
 });
 
-test('sidepanel drains scheduled-run context-menu prompts after pending tab switches', () => {
+test('sidepanel drains scheduled-run context-menu prompts', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
-    assert.match(panel, /async function drainQueuedContextMenuPromptsAfterPendingTabSwitch\(\) \{[\s\S]*?if \(pendingTabSwitch == null\) \{[\s\S]*?drainQueuedContextMenuPrompts\(\);[\s\S]*?const pending = pendingTabSwitch;[\s\S]*?pendingTabSwitch = null;[\s\S]*?try \{[\s\S]*?await switchToTab\(pending\);[\s\S]*?\} catch \{[\s\S]*?\}[\s\S]*?drainQueuedContextMenuPrompts\(\);/, `${label}: scheduled completions need a non-throwing pending-tab switch before draining context-menu prompts`);
+    assert.match(panel, /async function drainQueuedPromptsAfterRunSettles\(\) \{[\s\S]*?if \(drainQueuedComposerMessageForCurrentTab\(\)\) return;[\s\S]*?drainQueuedContextMenuPrompts\(\);/, `${label}: scheduled completions need a settlement drain helper that runs composer drain before context-menu prompts`);
 
     const scheduledStart = panel.search(/(?:async\s+)?function settleScheduledRun\(event, job, tabId = currentTabId\)/);
     const scheduledEnd = panel.indexOf('if (scheduledJobsEl)', scheduledStart);
     assert.notEqual(scheduledStart, -1, `${label}: scheduled run settlement helper missing`);
     assert.notEqual(scheduledEnd, -1, `${label}: scheduled job event block missing`);
     const scheduledBlock = panel.slice(scheduledStart, scheduledEnd);
-    const helperCalls = scheduledBlock.match(/drainQueuedContextMenuPromptsAfterPendingTabSwitch\(\);/g) || [];
-    assert.equal(helperCalls.length >= 2, true, `${label}: scheduled terminal and waiting-idle paths should drain after pending tab switches`);
+    const helperCalls = scheduledBlock.match(/drainQueuedPromptsAfterRunSettles\(\);/g) || [];
+    assert.equal(helperCalls.length >= 2, true, `${label}: scheduled terminal and waiting-idle paths should drain via the settlement helper`);
   }
 });
 
-test('sidepanel drains scheduled-clarify rejection prompts after pending tab switches', () => {
+test('sidepanel drains scheduled-clarify rejection prompts', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
@@ -15917,9 +16241,9 @@ test('sidepanel drains scheduled-clarify rejection prompts after pending tab swi
     assert.ok(match, `${label}: scheduled clarify rejection handler missing`);
     const body = match[1];
     const idleIdx = body.indexOf('setTabProcessing(tabId, false);');
-    const drainIdx = body.indexOf('drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    const drainIdx = body.indexOf('drainQueuedPromptsAfterRunSettles();');
     assert.notEqual(idleIdx, -1, `${label}: scheduled clarify rejection should clear processing state`);
-    assert.notEqual(drainIdx, -1, `${label}: scheduled clarify rejection should apply pending tab switches before draining`);
+    assert.notEqual(drainIdx, -1, `${label}: scheduled clarify rejection should drain queued prompts via the settlement helper`);
     assert.equal(body.includes('drainQueuedContextMenuPrompts();'), false, `${label}: scheduled clarify rejection must not drain against the stale tab`);
     assert.equal(idleIdx < drainIdx, true, `${label}: scheduled clarify rejection should drain after processing is cleared`);
   }
@@ -15932,7 +16256,7 @@ test('sidepanel keeps scheduled job action errors on the initiating tab', () => 
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     const start = panel.indexOf('async function scheduledJobAction(action, jobId)');
-    const end = panel.indexOf('function drainQueuedContextMenuPromptsAfterPendingTabSwitch', start);
+    const end = panel.indexOf('function drainQueuedPromptsAfterRunSettles', start);
     assert.notEqual(start, -1, `${label}: scheduledJobAction missing`);
     assert.notEqual(end, -1, `${label}: scheduledJobAction boundary missing`);
     const body = panel.slice(start, end);
@@ -30116,6 +30440,28 @@ test('submit controls bypass native select guards in click paths', () => {
   assert.match(chromeContent, /el\.tagName === 'INPUT' && !\['button', 'checkbox'[\s\S]*?'submit'\]\.includes\(inputType\)/, 'chrome: checkbox/radio focus must not receive the text-editable stale-click exemption');
 });
 
+test('native select rescue yields only to exact clickables and refuses ambiguous dropdowns', () => {
+  const chromeAgent = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const autoSelectStart = chromeAgent.indexOf('async _autoSelectOption(');
+  const autoSelectEnd = chromeAgent.indexOf('\n  async ', autoSelectStart + 10);
+  const autoSelectBody = chromeAgent.slice(autoSelectStart, autoSelectEnd);
+  assert.ok(autoSelectStart >= 0 && autoSelectEnd > autoSelectStart, 'chrome: auto-select helper should be independently inspectable');
+  assert.match(autoSelectBody, /if \(txt && txt === lc\) return \{ found: false, suppressedByClickable: true \};/, 'chrome: only exact clickable text should suppress select rescue');
+  assert.doesNotMatch(autoSelectBody, /txt\.includes\(lc\)[^\n]*suppressedByClickable/, 'chrome: substring clickables must not suppress select rescue');
+  assert.match(autoSelectBody, /if \(matchingSelects\.length !== 1\)/, 'chrome: auto-select must not pick the first of several matching dropdowns');
+
+  const firefoxContent = fs.readFileSync(path.join(ROOT, 'src/firefox/src/content/content.js'), 'utf8');
+  const clickStart = firefoxContent.indexOf('function clickElement(params) {');
+  const clickEnd = firefoxContent.indexOf('\n  function ', clickStart + 10);
+  const clickBody = firefoxContent.slice(clickStart, clickEnd);
+  assert.ok(clickStart >= 0 && clickEnd > clickStart, 'firefox: click helper should be independently inspectable');
+  assert.match(clickBody, /let textResolvedExact = false;/, 'firefox: click resolution should track the winning text tier');
+  assert.match(clickBody, /textResolvedExact = \(usedMode === 'exact'\);/, 'firefox: direct matches should record exact-tier resolution');
+  assert.match(clickBody, /!el \|\| el instanceof HTMLSelectElement \|\| !textResolvedExact/, 'firefox: prefix and contains matches should keep select rescue enabled');
+  assert.match(clickBody, /matchingSelects\.length > 1/, 'firefox: select rescue must reject ambiguous dropdown matches');
+  assert.match(clickBody, /method: 'select-already-set'/, 'firefox: an already-selected exact option must not fall through to an unrelated click');
+});
+
 test('accessibility ref lookup rejects disconnected elements', () => {
   for (const [label, rel] of [
     ['chrome', 'src/chrome/src/content/accessibility-tree.js'],
@@ -30460,13 +30806,78 @@ test('chrome submit detector probes iframe coordinate clicks in child frames', (
 
 test('submit probe index resolver stays aligned with content click ordering', () => {
   const cases = [
-    ['chrome', 'src/chrome/src/content/content.js', /return queryInteractive\(\)\[index\] \|\| null/],
+    ['chrome', 'src/chrome/src/content/content.js', /return queryInteractiveForToolIndex\(\)\[index\] \|\| null/],
     ['firefox', 'src/firefox/src/content/content.js', /return queryInteractiveForToolIndex\(\)\[index\] \|\| null/],
   ];
   for (const [label, rel, expectedResolver] of cases) {
     const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     assert.match(content, /window\.__wb_resolve_click_target_for_submit_probe/, `${label}: content submit-probe resolver missing`);
     assert.match(content, expectedResolver, `${label}: submit-probe resolver should use the same indexed click ordering as content click`);
+  }
+});
+
+test('chrome CDP auto-select scopes to blocking dialogs and refuses ambiguous dropdown matches', () => {
+  const agent = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const start = agent.indexOf('async _autoSelectOption(');
+  const end = agent.indexOf('\n  async ', start + 10);
+  const body = agent.slice(start, end > start ? end : start + 12000);
+  assert.match(body, /const scope = findBlockingModal\(\) \|\| document;/, 'chrome: auto-select should be scoped to the blocking dialog');
+  assert.match(body, /for \(const el of scope\.querySelectorAll\(clickSels\)\)/, 'chrome: exact-clickable suppression should stay inside the active modal');
+  assert.match(body, /if \(!hasVisibleBox\(el\)\) continue;/, 'chrome: hidden clickables should not suppress a visible select option');
+  assert.match(body, /const sels = scope\.querySelectorAll\('select'\);/, 'chrome: auto-select should not scan background selects');
+  assert.match(body, /matchingSelects\.length !== 1/, 'chrome: auto-select should yield instead of choosing among multiple matching selects');
+  assert.match(body, /globalThis\[targetSlot\] = sel/, 'chrome: auto-select should preserve the exact scoped select for refocus');
+  assert.match(body, /const target = globalThis\[/, 'chrome: auto-select should refocus and verify the preserved select');
+});
+
+test('chrome full interactive indexes stay scoped to the topmost modal', () => {
+  const content = fs.readFileSync(path.join(ROOT, 'src/chrome/src/content/content.js'), 'utf8');
+  assert.match(content, /function _findDialogContentForOverlay\(overlay\)[\s\S]*?const siblings = overlay\?\.parentElement \? Array\.from\(overlay\.parentElement\.children\) : \[\];/, 'chrome: backdrop overlays should resolve an adjacent dialog container');
+  assert.match(content, /const dialogContent = _findDialogContentForOverlay\(candidates\[i\]\);\s*if \(dialogContent\) return dialogContent;/, 'chrome: modal scoping should prefer dialog content over a backdrop sibling');
+  assert.match(content, /const interactive = candidates\[i\]\.querySelector\?\.\(INTERACTIVE_SELECTORS\.join\(', '\)\);\s*if \(interactive\) return candidates\[i\];/, 'chrome: a backdrop without dialog or interactive descendants must not become the modal scope');
+  assert.match(content, /function _findTopmostBlockingModal\(\) \{\s*return _findTopmostModal\(\{ includeNonModalDialogs: false \}\);\s*\}/, 'chrome: interactive collectors should have a blocking-only modal resolver');
+  const fullStart = content.indexOf('function queryInteractiveFull() {');
+  const fullEnd = content.indexOf('\n  function queryInteractiveForToolIndex()', fullStart);
+  const fullBody = content.slice(fullStart, fullEnd);
+  assert.ok(fullStart >= 0 && fullEnd > fullStart, 'chrome: full interactive collector should be independently inspectable');
+  assert.match(fullBody, /const modal = _findTopmostBlockingModal\(\);/, 'chrome: full collector should ignore visible but non-modal dialogs');
+  assert.match(fullBody, /if \(modal && !_isComposedAncestor\(modal, el\)\) return false;/, 'chrome: full collector must exclude elements behind the modal, including across shadow roots');
+
+  const indexedStart = content.indexOf('function queryInteractiveForToolIndex() {', fullEnd);
+  const indexedEnd = content.indexOf('\n  function ', indexedStart + 10);
+  const indexedBody = content.slice(indexedStart, indexedEnd);
+  assert.match(indexedBody, /return queryInteractiveFull\(\)\.map\(c => c\.el\);/, 'chrome: indexed clicks and typing must use the modal-scoped full collector');
+});
+
+test('content auto-select refuses ambiguous option matches in both browser builds', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/content/content.js'],
+    ['firefox', 'src/firefox/src/content/content.js'],
+  ]) {
+    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const start = content.indexOf('function clickElement(params) {');
+    const end = content.indexOf('\n  function ', start + 10);
+    const body = content.slice(start, end);
+    assert.match(body, /const matchingSelects = \[\];/, `${label}: native select rescue should collect every option match`);
+    assert.match(body, /matchingSelects\.length > 1/, `${label}: native select rescue should reject ambiguous dropdowns`);
+    assert.match(body, /failureScope: `ambiguous-select-option:\$\{lc\}`/, `${label}: ambiguous dropdown failures should be loop-scoped`);
+    assert.match(body, /method: 'select-already-set'/, `${label}: already-selected options should not fall through to unrelated clickables`);
+  }
+});
+
+test('synthetic key events cross shadow boundaries without double dispatch', () => {
+  for (const [label, rel] of [
+    ['chrome', 'src/chrome/src/content/content.js'],
+    ['firefox', 'src/firefox/src/content/content.js'],
+  ]) {
+    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const start = content.indexOf("const down = new KeyboardEvent('keydown'");
+    const end = content.indexOf("return { success: true, dispatched: true, key, repeat, method: 'keyboardevent'", start);
+    const keyBody = content.slice(start, end);
+    assert.ok(start >= 0 && end > start, `${label}: synthetic key dispatch should be independently inspectable`);
+    assert.match(keyBody, /new KeyboardEvent\('keydown',[\s\S]*?composed: true,[\s\S]*?new KeyboardEvent\('keyup',[\s\S]*?composed: true,/, `${label}: keydown and keyup should escape open shadow roots`);
+    assert.match(keyBody, /target\.dispatchEvent\(down\);\s*target\.dispatchEvent\(up\);/, `${label}: key events should still dispatch exactly once on the focused target`);
+    assert.doesNotMatch(keyBody, /document\.dispatchEvent\((?:down|up)\)/, `${label}: shadow-safe key events must not restore duplicate document dispatch`);
   }
 });
 
@@ -40814,6 +41225,364 @@ test('plan before act: try is default while explicit off is preserved', () => {
   }
 });
 
+test('Chrome Web Store release uses an always-on protected-page guard and opt-in trusted skill tools', async () => {
+  const dashboard = 'https://chrome.google.com/webstore/devconsole/f4a5b26f-27fe-4bc4-ad37-203b236e337c';
+  assert.equal(chromeProtectedPageForUrl(dashboard), 'chrome-web-store-developer');
+  assert.equal(chromeProtectedPageForUrl('https://chrome.google.com/webstore/devconsole?hl=en'), 'chrome-web-store-developer');
+  assert.equal(chromeProtectedPageForUrl('https://chrome.google.com/webstore/devconsole#published'), 'chrome-web-store-developer');
+  assert.equal(chromeProtectedPageForUrl('https://example.com/?next=https://chrome.google.com/webstore/devconsole'), '');
+  const failure = chromeProtectedPageFailure(dashboard, 'get_accessibility_tree');
+  assert.equal(failure.errorCode, 'chrome_protected_page');
+  assert.equal(failure.nonRetryable, true);
+  assert.equal(failure.dispatched, false);
+  assert.equal(failure.recoverySkill, 'chrome-web-store-release');
+  assert.match(failure.error, /Do not retry/i);
+  for (const toolName of ['wait_for_stable', 'get_accessibility_tree', 'read_page', 'click_ax', 'upload_file', 'download_resource_from_page', 'execute_js', 'get_frames']) {
+    assert.equal(isChromeProtectedPageDomTool(toolName), true, `chrome: ${toolName} should be stopped before protected-page dispatch`);
+  }
+  assert.equal(isChromeProtectedPageDomTool('download_files'), false, 'chrome: direct URL downloads should remain available without page DOM');
+  assert.equal(isChromeProtectedPageDomTool('screenshot'), false, 'chrome: screenshots remain an optional read-only fallback');
+  assert.equal(isChromeProtectedPageDomTool('chrome_web_store_status'), false, 'chrome: trusted release tools must bypass the DOM guard');
+
+  for (const [label, prefix, normalize, buildDefinitions, buildRegistry, runtime] of [
+    ['chrome', 'src/chrome', normalizeCustomSkillsCh, buildSkillToolDefinitionsCh, buildSkillToolRegistryCh, ChromeWebStoreReleaseCh],
+    ['firefox', 'src/firefox', normalizeCustomSkillsFx, buildSkillToolDefinitionsFx, buildSkillToolRegistryFx, ChromeWebStoreReleaseFx],
+  ]) {
+    const record = packagedChromeWebStoreRecord(prefix);
+    const normalized = normalize([record]);
+    assert.equal(normalized.length, 1, `${label}: packaged release skill should normalize`);
+    assert.deepEqual(normalized[0].tools.map((tool) => tool.name), [
+      'chrome_web_store_status',
+      'chrome_web_store_upload',
+      'chrome_web_store_publish',
+    ], `${label}: exact built-in release skill should receive all trusted tools`);
+    assert.equal(normalized[0].tools.every((tool) => tool.kind === 'chromeWebStore'), true, `${label}: release tools should use the trusted built-in kind`);
+
+    const rawSpoof = normalize([{ ...record, sourceType: 'text', sourceUrl: '' }]);
+    assert.equal(rawSpoof[0].tools.length, 0, `${label}: raw/imported text must not acquire privileged release handlers`);
+    const normalizedRecordSpoof = normalize([{ ...normalized[0], sourceType: 'text', sourceUrl: '' }]);
+    assert.equal(normalizedRecordSpoof[0].tools.length, 0, `${label}: persisted privileged tool objects must not survive without exact built-in provenance`);
+
+    const askNames = buildDefinitions(normalized, { mode: 'ask', tier: 'full' }).map((tool) => tool.function.name);
+    const actNames = buildDefinitions(normalized, { mode: 'act', tier: 'full' }).map((tool) => tool.function.name);
+    assert.deepEqual(askNames, ['chrome_web_store_status'], `${label}: Ask should expose only the read-only status tool`);
+    assert.deepEqual(actNames, ['chrome_web_store_status', 'chrome_web_store_upload', 'chrome_web_store_publish'], `${label}: Act should expose the full release workflow`);
+
+    const registry = buildRegistry(normalized);
+    const statusTool = registry.get('chrome_web_store_status');
+    const uploadTool = registry.get('chrome_web_store_upload');
+    const publishTool = registry.get('chrome_web_store_publish');
+    assert.equal(runtime.isTrustedChromeWebStoreSkillTool(statusTool), true, `${label}: registry should retain the trusted skill provenance`);
+
+    const storageData = {
+      [runtime.CHROME_WEB_STORE_CONFIG_KEY]: {
+        publisherId: 'f4a5b26f-27fe-4bc4-ad37-203b236e337c',
+        itemId: 'abcdefghijklmnopabcdefghijklmnop',
+      },
+      [runtime.CHROME_WEB_STORE_PACKAGE_KEY]: {
+        name: 'webbrain-25.4.2.zip',
+        size: 3,
+        sha256: 'abc123',
+        base64: btoa('zip'),
+      },
+    };
+    const storage = { get: async () => structuredClone(storageData) };
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      const result = url.endsWith(':fetchStatus')
+        ? { itemId: storageData[runtime.CHROME_WEB_STORE_CONFIG_KEY].itemId, publishedItemRevisionStatus: { state: 'OK' } }
+        : url.endsWith(':upload')
+          ? { uploadState: 'SUCCEEDED', crxVersion: '25.4.2' }
+          : { state: 'PENDING_REVIEW' };
+      return { ok: true, status: 200, text: async () => JSON.stringify(result) };
+    };
+    const opts = { storage, fetchImpl, accessToken: 'test-token' };
+    const status = await runtime.executeChromeWebStoreSkillTool(statusTool, {}, opts);
+    const upload = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, opts);
+    const publish = await runtime.executeChromeWebStoreSkillTool(publishTool, { publish_type: 'staged', deploy_percentage: 25 }, opts);
+    const invalidPublish = await runtime.executeChromeWebStoreSkillTool(publishTool, { publish_type: 'stage' }, opts);
+    assert.equal(status.success, true, `${label}: status should execute`);
+    assert.equal(status.dispatched, false, `${label}: status is read-only`);
+    assert.equal(upload.success, true, `${label}: upload should execute`);
+    assert.equal(upload.package.name, 'webbrain-25.4.2.zip', `${label}: upload should return metadata only`);
+    assert.equal(JSON.stringify(upload).includes('emlw'), false, `${label}: upload result must not contain ZIP base64`);
+    assert.equal(publish.success, true, `${label}: publish should execute`);
+    assert.equal(invalidPublish.success, false, `${label}: an unknown publish type must fail closed`);
+    assert.equal(invalidPublish.noDispatch, true, `${label}: an unknown publish type must not dispatch`);
+    assert.match(invalidPublish.error, /publish_type/, `${label}: invalid publish type should identify the bad argument`);
+    assert.equal(calls.length, 3, `${label}: invalid publish type must not send an API request`);
+    assert.equal(calls[0].url.endsWith(':fetchStatus'), true, `${label}: status endpoint mismatch`);
+    assert.equal(calls[1].url.includes('/upload/v2/publishers/'), true, `${label}: upload endpoint mismatch`);
+    assert.equal(calls[1].init.body instanceof Uint8Array, true, `${label}: upload should send binary bytes`);
+    assert.deepEqual(JSON.parse(calls[2].init.body), {
+      publishType: 'STAGED_PUBLISH',
+      blockOnWarnings: true,
+      deployInfos: [{ deployPercentage: 25 }],
+    }, `${label}: publish body should be warning-blocking and preserve explicit rollout`);
+
+    const preDispatchFailure = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, {
+      storage,
+      fetchImpl: {},
+      accessToken: 'test-token',
+    });
+    assert.equal(preDispatchFailure.success, false, `${label}: unavailable fetch should fail`);
+    assert.equal(preDispatchFailure.dispatched, false, `${label}: pre-dispatch setup failure was marked dispatched`);
+    assert.equal(preDispatchFailure.noDispatch, true, `${label}: pre-dispatch setup failure should avoid completion debt`);
+    assert.notEqual(preDispatchFailure.outcomeUnknown, true, `${label}: pre-dispatch setup failure should not be ambiguous`);
+
+    let ambiguousAttempts = 0;
+    const ambiguousFailure = await runtime.executeChromeWebStoreSkillTool(uploadTool, {}, {
+      storage,
+      fetchImpl: async () => {
+        ambiguousAttempts += 1;
+        throw new Error('connection reset');
+      },
+      accessToken: 'test-token',
+    });
+    assert.equal(ambiguousAttempts, 1, `${label}: ambiguous upload should attempt fetch once`);
+    assert.equal(ambiguousFailure.success, false, `${label}: rejected upload fetch should fail`);
+    assert.equal(ambiguousFailure.dispatched, true, `${label}: post-dispatch failure lost its dispatch marker`);
+    assert.equal(ambiguousFailure.outcomeUnknown, true, `${label}: post-dispatch failure should remain ambiguous`);
+    assert.notEqual(ambiguousFailure.noDispatch, true, `${label}: ambiguous upload must retain completion debt`);
+
+    const warningSecret = 'opaque_validation_token_abcdefghijklmnopqrstuvwxyz0123456789';
+    const warningFailure = await runtime.executeChromeWebStoreSkillTool(publishTool, {}, {
+      storage,
+      fetchImpl: async () => ({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({
+          error: {
+            message: 'Publish blocked by validation warnings.',
+            details: [{
+              reason: 'MISSING_PRIVACY_DISCLOSURE',
+              message: 'Add the required privacy disclosure before publishing.',
+              opaqueToken: warningSecret,
+            }],
+          },
+        }),
+      }),
+      accessToken: 'test-token',
+    });
+    assert.equal(warningFailure.success, false, `${label}: warning-blocked publish should fail`);
+    assert.match(warningFailure.error, /Publish blocked by validation warnings/, `${label}: warning failure lost its summary`);
+    assert.match(warningFailure.error, /MISSING_PRIVACY_DISCLOSURE/, `${label}: warning failure lost its detail code`);
+    assert.match(warningFailure.error, /required privacy disclosure/, `${label}: warning failure lost its remediation detail`);
+    assert.equal(warningFailure.error.includes(warningSecret), false, `${label}: warning failure leaked an opaque token`);
+    assert.ok(warningFailure.error.length <= 1000, `${label}: warning detail summary exceeded its bound`);
+  }
+
+  const originalChrome = globalThis.chrome;
+  try {
+    const tabId = 6023;
+    globalThis.chrome = {
+      tabs: {
+        get: async () => ({ id: tabId, url: dashboard }),
+      },
+    };
+    const agent = new AgentCh({ getVisionProvider: async () => null });
+    const messages = [];
+    let webMcpPreparationCalls = 0;
+    let submitProbeCalls = 0;
+    let permissionPromptCalls = 0;
+    let toolDispatchCalls = 0;
+    agent.conversationModes.set(tabId, 'act');
+    agent.providerManager = { ...(agent.providerManager || {}), getVisionProvider: async () => null };
+    agent._ensureGateSetting = async () => false;
+    agent._prepareWebMCPToolCall = async () => {
+      webMcpPreparationCalls += 1;
+      throw new Error('protected-page WebMCP preparation must not run');
+    };
+    agent._detectLikelySubmitAction = async () => {
+      submitProbeCalls += 1;
+      throw new Error('protected-page submit probing must not run');
+    };
+    agent._promptPermission = async () => {
+      permissionPromptCalls += 1;
+      return 'once';
+    };
+    agent.executeTool = async () => {
+      toolDispatchCalls += 1;
+      throw new Error('protected-page tool dispatch must not run');
+    };
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+
+    const batchResult = await agent._executeToolBatch(
+      tabId,
+      [{
+        id: 'cws_protected_webmcp',
+        function: { name: 'execute_webmcp_tool', arguments: '{"tool_id":"page-tool","input":{}}' },
+      }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['execute_webmcp_tool']),
+      1,
+    );
+
+    assert.equal(batchResult.action, 'continue', 'chrome: protected failure should return through the normal tool-result pipeline');
+    assert.equal(webMcpPreparationCalls, 0, 'chrome: protected guard must run before WebMCP/CDP preparation');
+    assert.equal(submitProbeCalls, 0, 'chrome: protected guard must run before submit DOM probes');
+    assert.equal(permissionPromptCalls, 0, 'chrome: blocked protected-page tools must not ask for a permission they cannot use');
+    assert.equal(toolDispatchCalls, 0, 'chrome: protected-page tools must not reach executeTool');
+    assert.equal(messages.length, 1, 'chrome: protected failure should produce one ordinary tool result');
+    assert.match(messages[0].content, /"errorCode":"chrome_protected_page"/);
+    assert.match(messages[0].content, /TRUSTED RUNTIME ROUTING/);
+  } finally {
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+  }
+
+  assert.equal(capabilityForCh('chrome_web_store_upload', {}), CapabilityCh.UPLOAD);
+  assert.equal(capabilityForCh('chrome_web_store_publish', {}), CapabilityCh.NETWORK);
+  assert.equal(
+    hostForCapabilityCh(CapabilityCh.UPLOAD, { _trustedPermissionUrl: 'https://chromewebstore.googleapis.com/' }, 'https://example.com/', 'chrome_web_store_upload'),
+    'chromewebstore.googleapis.com',
+  );
+  assert.equal(
+    hostForCapabilityCh(CapabilityCh.UPLOAD, { url: 'https://attacker.example/' }, 'https://dashboard.example/', 'upload_file'),
+    'dashboard.example',
+    'ordinary page uploads must remain charged to the current page even if raw args contain a URL',
+  );
+  for (const invariant of [CompletionInvariantCh, CompletionInvariantFx]) {
+    assert.equal(invariant.isCompletionActionTool('chrome_web_store_upload'), true);
+    assert.equal(invariant.isCompletionActionTool('chrome_web_store_publish'), true);
+    assert.equal(invariant.isCompletionObservationTool('chrome_web_store_status', {}, { success: true }), true);
+  }
+  for (const [label, AgentClass, invariant] of [
+    ['chrome', AgentCh, CompletionInvariantCh],
+    ['firefox', AgentFx, CompletionInvariantFx],
+  ]) {
+    const agent = new AgentClass({});
+    const tabId = label === 'chrome' ? 6021 : 6022;
+    agent.completionInvariants.set(tabId, invariant.createCompletionInvariantState(`${label}-cws`));
+    const recorded = agent._recordCompletionSubmitAttempt(
+      tabId,
+      { isSubmit: true },
+      'chrome_web_store_publish',
+      {},
+      '',
+      '',
+      { success: true, dispatched: true },
+    );
+    assert.equal(recorded, null, `${label}: API publishing should not create unverifiable dashboard DOM-submit state`);
+    assert.equal(agent._completionSubmitStates.has(tabId), false, `${label}: API publishing should verify through chrome_web_store_status`);
+  }
+
+  const adapter = getActiveAdapter(dashboard);
+  assert.equal(adapter?.name, 'chrome-web-store-developer');
+  assert.match(adapter?.notes || '', /chrome_web_store_status/);
+  assert.equal(getActiveAdapter('https://chrome.google.com/webstore/devconsole?authuser=1')?.name, 'chrome-web-store-developer');
+  assert.equal(getActiveAdapterFx(dashboard)?.name, 'chrome-web-store-developer');
+  assert.equal(getActiveAdapterFx('https://chrome.google.com/webstore/devconsole#drafts')?.name, 'chrome-web-store-developer');
+
+  const chromeAgentSource = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/agent.js'), 'utf8');
+  const guardIndex = chromeAgentSource.indexOf('const protectedPageFailure = await this._chromeProtectedPageFailure(tabId, fnName);');
+  const webMcpPreparationIndex = chromeAgentSource.indexOf('const webMcpPreparation = protectedPageFailure', guardIndex);
+  const toolDispatchIndex = chromeAgentSource.indexOf('const rawToolResult = protectedPageFailure || await this.executeTool(', guardIndex);
+  assert.ok(
+    guardIndex >= 0 && webMcpPreparationIndex > guardIndex && toolDispatchIndex > webMcpPreparationIndex,
+    'chrome: protected-page guard must run before WebMCP preparation and tool dispatch',
+  );
+  assert.match(chromeAgentSource, /TRUSTED RUNTIME ROUTING: Chrome blocks extension DOM\/debugger access/, 'chrome: protected-page recovery should remain outside the untrusted page-content wrapper');
+});
+
+test('Chrome Web Store upload forces a fresh status turn before any batched publish', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({
+      getActive: () => ({ promptTier: 'full', supportsVision: false }),
+      getVisionProvider: async () => null,
+    });
+    const tabId = label === 'chrome' ? 6024 : 6025;
+    const messages = [];
+    const executed = [];
+    agent._ensureGateSetting = async () => false;
+    agent._skipPermissionGate = true;
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true, dispatched: name !== 'chrome_web_store_status' };
+    };
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'release_upload', function: { name: 'chrome_web_store_upload', arguments: '{}' } },
+        { id: 'release_status', function: { name: 'chrome_web_store_status', arguments: '{}' } },
+        { id: 'release_publish', function: { name: 'chrome_web_store_publish', arguments: '{"publish_type":"default"}' } },
+      ],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['chrome_web_store_upload', 'chrome_web_store_status', 'chrome_web_store_publish']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${label}: upload boundary should start a fresh turn`);
+    assert.deepEqual(executed, ['chrome_web_store_upload'], `${label}: status or publish ran in the upload batch`);
+    for (const id of ['release_status', 'release_publish']) {
+      const skipped = JSON.parse(messages.find(message => message.tool_call_id === id).content);
+      assert.equal(skipped.skipped, true, `${label}/${id}: queued release call was not skipped`);
+      assert.equal(skipped.skippedBecause, 'fresh_turn_required', `${label}/${id}: fresh-turn marker missing`);
+      assert.equal(skipped.triggeringTool, 'chrome_web_store_upload', `${label}/${id}: upload trigger missing`);
+      assert.equal(skipped.reason, 'chrome_web_store_upload_requires_status', `${label}/${id}: status requirement missing`);
+    }
+  }
+});
+
+test('Chrome Web Store status forces a fresh inspection turn before publish', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({
+      getActive: () => ({ promptTier: 'full', supportsVision: false }),
+      getVisionProvider: async () => null,
+    });
+    const tabId = label === 'chrome' ? 6026 : 6027;
+    const messages = [];
+    const executed = [];
+    agent._ensureGateSetting = async () => false;
+    agent._skipPermissionGate = true;
+    agent._rememberMastodonObservation = async () => null;
+    agent._recordProgressObservation = async () => null;
+    agent._autoRecordProgressAction = () => null;
+    agent._persist = () => {};
+    agent.executeTool = async (_tabId, name) => {
+      executed.push(name);
+      return { success: true, dispatched: name === 'chrome_web_store_publish' };
+    };
+
+    const result = await agent._executeToolBatch(
+      tabId,
+      [
+        { id: 'release_status', function: { name: 'chrome_web_store_status', arguments: '{}' } },
+        { id: 'release_publish', function: { name: 'chrome_web_store_publish', arguments: '{"publish_type":"default"}' } },
+      ],
+      messages,
+      () => {},
+      { supportsVision: false },
+      null,
+      new Set(['chrome_web_store_status', 'chrome_web_store_publish']),
+      1,
+    );
+
+    assert.equal(result.action, 'continue', `${label}: status boundary should start a fresh turn`);
+    assert.deepEqual(executed, ['chrome_web_store_status'], `${label}: publish ran before status inspection`);
+    const skipped = JSON.parse(messages.find(message => message.tool_call_id === 'release_publish').content);
+    assert.equal(skipped.skipped, true, `${label}: queued publish was not skipped`);
+    assert.equal(skipped.skippedBecause, 'fresh_turn_required', `${label}: fresh-turn marker missing`);
+    assert.equal(skipped.triggeringTool, 'chrome_web_store_status', `${label}: status trigger missing`);
+    assert.equal(skipped.reason, 'chrome_web_store_status_requires_inspection', `${label}: inspection requirement missing`);
+  }
+});
+
 test('settings exposes custom skills tab and packaged skills resource directory', () => {
   assert.equal(CUSTOM_SKILLS_STORAGE_KEY_CH, 'customSkills');
   assert.equal(CUSTOM_SKILLS_STORAGE_KEY_FX, 'customSkills');
@@ -40828,6 +41597,7 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     'temporary-file-share-litterbox',
     'open-meteo-weather',
     'open-library-books',
+    'chrome-web-store-release',
   ]);
   assert.deepEqual(PACKAGED_SKILL_SOURCES_FX.map((skill) => skill.id), [
     'freeskillz-xyz',
@@ -40836,6 +41606,7 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     'temporary-file-share-litterbox',
     'open-meteo-weather',
     'open-library-books',
+    'chrome-web-store-release',
   ]);
   assert.deepEqual(DEFAULT_SKILL_SOURCES_CH.map((skill) => skill.id), [
     'freeskillz-xyz',
@@ -40845,6 +41616,8 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     'freeskillz-xyz',
     'otp-verification-code-helper',
   ]);
+  assert.equal(DEFAULT_SKILL_SOURCES_CH.some((skill) => skill.id === 'chrome-web-store-release'), false, 'chrome: release skill must be disabled by default');
+  assert.equal(DEFAULT_SKILL_SOURCES_FX.some((skill) => skill.id === 'chrome-web-store-release'), false, 'firefox: release skill must be disabled by default');
 
   const privacyPolicy = fs.readFileSync(path.join(ROOT, 'web/privacy.html'), 'utf8');
   const privacyDataFlow = fs.readFileSync(path.join(ROOT, 'docs/privacy-and-data-flow.md'), 'utf8');
@@ -40905,6 +41678,8 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(html, /id="skill-url"/, `${label}: URL skill input missing`);
     assert.match(html, /id="skill-text"/, `${label}: raw skill textarea missing`);
     assert.match(html, /id="packaged-skills-list"/, `${label}: available packaged skills list missing`);
+    assert.match(html, /id="chrome-web-store-release-card" hidden/, `${label}: release setup should be hidden until the skill is enabled`);
+    assert.match(html, /id="chrome-web-store-package"[^>]*accept="\.zip,application\/zip"/, `${label}: release ZIP picker missing`);
     assert.match(html, /id="skill-preview-dialog"/, `${label}: skill content preview dialog missing`);
     assert.match(html, /id="skill-preview-rendered"[^>]*tabindex="0"/, `${label}: rendered skill preview should be keyboard-scrollable`);
     assert.match(html, /id="skill-preview-raw"[^>]*tabindex="0"[^>]*hidden/, `${label}: raw skill preview should be available but hidden by default`);
@@ -40937,6 +41712,15 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(settingsJs, /installedDefault/, `${label}: reinstalling a default should clear its removal tombstone`);
     assert.match(settingsJs, /st\.skills\.source\.built_in/, `${label}: settings should label packaged skills`);
     assert.match(settingsJs, /skill\.tools/, `${label}: settings should show exposed skill tools`);
+    assert.match(settingsJs, /CHROME_WEB_STORE_PACKAGE_KEY/, `${label}: release package should use dedicated local storage`);
+    assert.match(settingsJs, /crypto\.subtle\.digest\('SHA-256'/, `${label}: release package should record a local integrity digest`);
+    const skillIdFunction = settingsJs.slice(
+      settingsJs.indexOf('function makeSkillId()'),
+      settingsJs.indexOf('function showSkillsResult'),
+    );
+    assert.match(skillIdFunction, /crypto\.randomUUID\(\)/, `${label}: imported skill IDs should use secure randomness`);
+    assert.doesNotMatch(skillIdFunction, /Math\.random\(/, `${label}: imported skill IDs must not use insecure randomness`);
+    assert.match(background, /chrome_web_store_oauth_start/, `${label}: release OAuth should run in the durable background context`);
     assert.match(englishLocale, /small catalog sends only each eligible skill\\'s ID, name, summary, and optional semantic intents/, `${label}: settings should explain the semantic skill catalog`);
     assert.match(englishLocale, /full instructions and compatible <code>webbrain-tools<\/code> are exposed only after/i, `${label}: settings should explain on-demand skill loading`);
     assert.match(englishLocale, /Compact does not load skills/, `${label}: settings should explain Compact skill isolation`);
@@ -40966,6 +41750,11 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(freeSkillz, /browser cookies are not sent to the service/i, `${label}: FreeSkillz skill should explain the remote cookie boundary`);
     assert.doesNotMatch(freeSkillz, /raw FreeSkillz endpoints only/i, `${label}: bundled FreeSkillz skill should prefer declared tools`);
     assert.doesNotMatch(freeSkillz, /127\.0\.0\.1|localhost|Local development/i, `${label}: FreeSkillz skill should not include local development URLs`);
+    const chromeWebStore = fs.readFileSync(path.join(ROOT, prefix, 'skills/chrome-web-store-release.md'), 'utf8');
+    assert.match(chromeWebStore, /chrome_web_store_status/, `${label}: release status instructions missing`);
+    assert.match(chromeWebStore, /chrome_web_store_upload/, `${label}: release upload instructions missing`);
+    assert.match(chromeWebStore, /chrome_web_store_publish/, `${label}: release publish instructions missing`);
+    assert.match(chromeWebStore, /blockOnWarnings: true/, `${label}: publish warnings must fail closed`);
     const disposable = fs.readFileSync(path.join(ROOT, prefix, 'skills/disposable-email-mailtm.md'), 'utf8');
     assert.match(disposable, /Mail\.tm/, `${label}: disposable email skill should use Mail.tm by default`);
     assert.match(disposable, /disposable and should be used only for unimportant tasks/i, `${label}: disposable email skill should warn about unimportant use only`);

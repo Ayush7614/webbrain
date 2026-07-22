@@ -49,6 +49,8 @@ import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalize
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
 import { buildTrustedRuntimeContext, stripTrustedRuntimeContext } from './runtime-context.js';
 import { resolveSavedDownload } from '../download-result.js';
+import { executeChromeWebStoreSkillTool, isTrustedChromeWebStoreSkillTool } from '../chrome-web-store-release.js';
+import { chromeProtectedPageFailure, isChromeProtectedPageDomTool } from '../chrome-protected-pages.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -432,6 +434,10 @@ export class Agent {
   }
 
   _recordCompletionSubmitAttempt(tabId, detectedSubmit, name, args, beforeUrl, afterUrl, result, beforeDocument = '', afterDocument = '') {
+    // API-backed Chrome Web Store submission is verified by the subsequent
+    // chrome_web_store_status observation. Do not create DOM-form transition
+    // state for a dashboard Chrome intentionally prevents us from inspecting.
+    if (name === 'chrome_web_store_publish') return null;
     // execute_js is always classified as submit-capable for its permission
     // prompt, but that conservative fallback is not evidence that this call
     // actually submitted anything. Only arm completion verification for JS
@@ -2817,6 +2823,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return false;
   }
 
+  async _chromeProtectedPageFailure(tabId, toolName) {
+    if (!isChromeProtectedPageDomTool(toolName)) return null;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return chromeProtectedPageFailure(tab?.url || '', toolName);
+    } catch {
+      // A missing/closed tab will fail through the ordinary tool handler. Do
+      // not misclassify unrelated tab lookup failures as protected-page hits.
+      return null;
+    }
+  }
+
   async _prepareWebMCPToolCall(tabId, name, args = {}) {
     if (name !== 'execute_webmcp_tool') return { args };
     if (!this.webMcpEnabled) {
@@ -2900,6 +2918,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   _browserActionFreshTurnReason(tier, toolName, toolResult) {
     if (toolName === 'done' && toolResult?.completionPageBlock === true) {
       return 'completion_page_block';
+    }
+    // Publishing must be planned only after the model has seen the upload
+    // result and can verify the staged revision with chrome_web_store_status.
+    // Never execute a publish call generated in the same assistant batch.
+    if (toolName === 'chrome_web_store_upload') {
+      return 'chrome_web_store_upload_requires_status';
+    }
+    // The status response itself is the publish precondition. Give the model a
+    // fresh turn to inspect it instead of executing a publish call that was
+    // planned before the response existed.
+    if (toolName === 'chrome_web_store_status') {
+      return 'chrome_web_store_status_requires_inspection';
     }
     if (!this._isBrowserMutationTool(toolName)) return '';
     if (
@@ -3046,7 +3076,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       let fnArgs = this._toolCallArgsWithReplayMethod(tabId, fnName, argRepair.args);
       const argRepairNotice = argRepair.note || '';
 
-      const webMcpPreparation = await this._prepareWebMCPToolCall(tabId, fnName, fnArgs);
+      // Chrome-protected pages must be rejected before any helper can touch
+      // the DOM or debugger. In particular, WebMCP preparation attaches CDP
+      // and submit/form-validation preflights execute page probes before the
+      // call reaches executeTool(). Keep the failure in the ordinary result
+      // pipeline below so tracing, loop handling, and trusted recovery notes
+      // still behave exactly like other tool results.
+      const protectedPageFailure = await this._chromeProtectedPageFailure(tabId, fnName);
+
+      const webMcpPreparation = protectedPageFailure
+        ? { args: fnArgs }
+        : await this._prepareWebMCPToolCall(tabId, fnName, fnArgs);
       if (webMcpPreparation.error) {
         messages.push({
           role: 'tool',
@@ -3077,7 +3117,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // A call may require MORE THAN ONE capability — e.g. set_field({submit})
       // both types AND submits, so it needs a TYPE grant and a CLICK grant.
       const skillCallTool = this._activeSkillToolForName(tabId, fnName);
-      let capabilities = capabilitiesFor(fnName, fnArgs);
+      let capabilities = protectedPageFailure ? [] : capabilitiesFor(fnName, fnArgs);
       if (skillCallTool?.requiresDownloadPermission && !capabilities.includes(Capability.DOWNLOAD)) {
         capabilities.push(Capability.DOWNLOAD);
       }
@@ -3085,15 +3125,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // path later removes a capability whose prompt was already satisfied.
       // A missing response after any consequential call is an unknown outcome:
       // the side effect may have completed before its reply was lost.
-      const isStateChangingCall = Agent.STATE_CHANGE_TOOLS.has(fnName);
+      const isStateChangingCall = !protectedPageFailure && Agent.STATE_CHANGE_TOOLS.has(fnName);
       const missingResponseOutcomeUnknown = capabilities.length > 0 || isStateChangingCall;
-      const executionMutationEvidence = this._isExecutionMutationEvidence(fnName, fnArgs, capabilities);
-      const clarificationAuthorizationBlock = this._clarificationAuthorizationBlock(
-        tabId,
-        fnName,
-        fnArgs,
-        capabilities,
-      );
+      const executionMutationEvidence = !protectedPageFailure
+        && this._isExecutionMutationEvidence(fnName, fnArgs, capabilities);
+      const clarificationAuthorizationBlock = protectedPageFailure
+        ? null
+        : this._clarificationAuthorizationBlock(
+            tabId,
+            fnName,
+            fnArgs,
+            capabilities,
+          );
       if (clarificationAuthorizationBlock) {
         const blockedResult = clarificationAuthorizationBlock.result;
         onUpdate('tool_call', { name: fnName, args: fnArgs, outcomeUnknown: false });
@@ -3177,7 +3220,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         onUpdate('warning', { message: 'API mutation blocked until /allow-api is enabled.' });
         continue;
       }
-      const formValidationCandidate = this._isFormValidationCandidate(fnName, fnArgs);
+      const formValidationCandidate = !protectedPageFailure
+        && this._isFormValidationCandidate(fnName, fnArgs);
       let formValidationCoordinateFrames = null;
       if (
         formValidationCandidate
@@ -3206,6 +3250,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               : {}),
           })
         : null;
+      if (fnName === 'chrome_web_store_publish') {
+        detectedSubmitAction = {
+          isSubmit: true,
+          host: 'chromewebstore.googleapis.com',
+          reason: 'submit the configured Chrome Web Store release for review',
+        };
+      }
       const validationBlock = formValidationCandidate ? this._formValidationBlocks.get(tabId) : null;
       let priorValidationFailure = !!validationBlock;
       let correctedPriorValidationFailure = false;
@@ -3246,7 +3297,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const requiresMandatoryWebMCPGates = fnName === 'execute_webmcp_tool';
       const bypassesConsequentialGates = !requiresMandatoryWebMCPGates
         && (this._skipPermissionGate || scheduledBypassesGate);
-      if (!bypassesConsequentialGates) {
+      if (!protectedPageFailure && !bypassesConsequentialGates) {
         const submitConfirmation = detectedSubmitAction || await this._detectLikelySubmitAction(tabId, fnName, fnArgs);
         detectedSubmitAction = submitConfirmation;
         if (submitConfirmation?.isSubmit) {
@@ -3451,7 +3502,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // Snapshot URL before nav-prone calls. Some tools are conditional:
       // Enter and set_field({submit:true}) can navigate, while other key
       // presses and ordinary field edits should avoid the URL-check delay.
-      const navigationProneCall = this._isNavigationProneToolCall(fnName, fnArgs);
+      const navigationProneCall = !protectedPageFailure
+        && this._isNavigationProneToolCall(fnName, fnArgs);
       let beforeUrl = '';
       let afterUrl = '';
       const beforeDocument = String(this._lastAxScopes.get(tabId)?.documentToken || '');
@@ -3471,9 +3523,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         } catch {}
       }
       const _toolStart = Date.now();
-      const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate, {
-        completionBatchStartState,
-      });
+      const rawToolResult = protectedPageFailure || await this.executeTool(
+        tabId,
+        fnName,
+        fnArgs,
+        onUpdate,
+        { completionBatchStartState },
+      );
       const toolResult = this._normalizeToolResult(fnName, rawToolResult, missingResponseOutcomeUnknown);
       const inspectFormValidationAfter = formValidationCandidate
         && this._formValidationActionLooksSubmit(
@@ -3769,6 +3825,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // our own trusted notes (the loop nudge), so the nudge stays outside the
       // <untrusted_page_content> box and is read as an instruction, not data.
       let resultContent = this._wrapUntrusted(fnName, this._limitToolResult(toolResult));
+      if (toolResult?.errorCode === 'chrome_protected_page') {
+        resultContent += '\n[TRUSTED RUNTIME ROUTING: Chrome blocks extension DOM/debugger access on this dashboard. Do not call another DOM, accessibility, wait, script, iframe, WebMCP, or upload_file tool here. If chrome-web-store-release is enabled and visible in the skill catalog, load it and use its chrome_web_store_* tools. Otherwise ask the user to enable/configure that packaged skill or continue manually.]';
+        onUpdate('warning', { message: 'Chrome-protected dashboard detected; DOM automation is unavailable.' });
+      }
       if (nytimesPageGateFallback) {
         resultContent += `\n${nytimesPageGateFallback.note}`;
         onUpdate('warning', {
@@ -4174,9 +4234,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   /**
    * Auto-select a <select> option by keyboard arrows.
-   * Scans ALL selects on the page. If `optionText` matches a non-current
-   * option, focuses that select, sends ArrowDown/Up via CDP, verifies,
-   * and returns a success result.  Returns null if no match found.
+   * Scans selects in the active blocking modal, or the full page when no
+   * modal is open. If `optionText` matches a non-current option, focuses that
+   * select, sends ArrowDown/Up via CDP, verifies, and returns a success result.
+   * Returns null if no match is found.
    *
    * When `optionText` matches the ALREADY-SELECTED option, returns a
    * result telling the agent it's already set (no action needed).
@@ -4184,33 +4245,104 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   async _autoSelectOption(tabId, cdpClient, optionText) {
     const needle = (optionText || '').trim();
     if (!needle) return null;
+    // Keep an exact reference to the scoped select across the separate CDP
+    // evaluations below. Re-discovering it by option text after Escape can
+    // target a different (for example, background) select with the same
+    // options.
+    const targetSlot = `__webbrainAutoSelectTarget_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
     const scanResult = await cdpClient.evaluate(tabId, `
       (() => {
         const needle = ${JSON.stringify(needle)};
         const lc = needle.toLowerCase();
-        const sels = document.querySelectorAll('select');
+        const targetSlot = ${JSON.stringify(targetSlot)};
+        const hasVisibleBox = (el, minWidth = 1, minHeight = 1) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          if (r.width < minWidth || r.height < minHeight) return false;
+          const cs = getComputedStyle(el);
+          return cs.visibility !== 'hidden' && cs.display !== 'none' && parseFloat(cs.opacity) !== 0;
+        };
+        const findBlockingModal = () => {
+          const nativeDialogs = Array.from(document.querySelectorAll('dialog[open]')).reverse();
+          for (const dialog of nativeDialogs) {
+            try { if (dialog.matches(':modal')) return dialog; } catch {}
+            if (dialog.getAttribute('aria-modal') === 'true') return dialog;
+          }
+          const ariaModals = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')).reverse();
+          for (const dialog of ariaModals) {
+            if (hasVisibleBox(dialog)) return dialog;
+          }
+          const overlays = Array.from(document.querySelectorAll(
+            '[data-overlay], .modal-overlay, .overlay, [class*="overlay"][class*="active"], [class*="DialogOverlay"], [class*="ModalOverlay"]'
+          )).reverse();
+          const dialogSelector = '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open], [class*="DialogContent"], [class*="ModalContent"], .modal.show';
+          for (const overlay of overlays) {
+            if (!hasVisibleBox(overlay, 100, 100)) continue;
+            const siblings = overlay.parentElement ? Array.from(overlay.parentElement.children) : [];
+            const start = siblings.indexOf(overlay);
+            const ordered = start < 0
+              ? []
+              : siblings.slice(start + 1).concat(siblings.slice(0, start).reverse());
+            for (const sibling of ordered) {
+              if (sibling === overlay) continue;
+              if (sibling.matches?.(dialogSelector) && hasVisibleBox(sibling, 20, 20)) return sibling;
+              const nested = sibling.querySelector?.(dialogSelector);
+              if (nested && hasVisibleBox(nested, 20, 20)) return nested;
+            }
+          }
+          return null;
+        };
+        const scope = findBlockingModal() || document;
+        // Yield to the normal text-click path ONLY when it would resolve an
+        // exact-tier clickable: an exactly-labeled button/link is what the
+        // model meant, but an exact <option> match beats a prefix/contains
+        // clickable (needle "OK" must select the OK option, not click a
+        // "Book" button that merely contains the substring). The extraction
+        // and hidden-option filtering mirror the text-click evaluate below;
+        // <select> elements never suppress — this rescue IS their path.
+        const clickSels = 'a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="treeitem"], input:not([type="hidden"]), textarea, input[type="button"], input[type="submit"], summary, label, [onclick], [data-action]';
+        const _valIsLabel = (el) => {
+          if (el.tagName === 'TEXTAREA') return false;
+          if (el.tagName !== 'INPUT') return true;
+          const t = (el.getAttribute('type') || 'text').toLowerCase();
+          return t === 'button' || t === 'submit' || t === 'reset';
+        };
+        for (const el of scope.querySelectorAll(clickSels)) {
+          try {
+            if (!hasVisibleBox(el)) continue;
+            if (el.closest('[aria-hidden="true"],[hidden]')) continue;
+          } catch (e) { continue; }
+          const txt = (el.innerText || (_valIsLabel(el) ? el.value : '') || el.placeholder || el.ariaLabel || '').trim().toLowerCase();
+          if (txt && txt === lc) return { found: false, suppressedByClickable: true };
+        }
+        const matchingSelects = [];
+        const sels = scope.querySelectorAll('select');
         for (const sel of sels) {
           const opts = Array.from(sel.options);
           const match = opts.find(o => o.text.trim() === needle)
             || opts.find(o => o.text.trim().toLowerCase() === lc)
             || opts.find(o => o.value === needle)
             || opts.find(o => o.value.toLowerCase() === lc);
-          if (match) {
-            sel.focus();
-            const cur = sel.selectedIndex;
-            return {
-              found: true,
-              alreadySelected: cur === match.index,
-              currentIndex: cur,
-              targetIndex: match.index,
-              targetText: match.text.trim(),
-              targetValue: match.value,
-              currentText: sel.options[cur]?.text?.trim() || '',
-              allOptions: opts.map(o => o.text.trim()),
-            };
-          }
+          if (match) matchingSelects.push({ sel, match, opts });
         }
-        return { found: false };
+        // When more than one dropdown offers the same option, choosing the
+        // first one would be another silent cross-control mutation. Let the
+        // normal text resolver return an ambiguity instead.
+        if (matchingSelects.length !== 1) return { found: false, matchingSelectCount: matchingSelects.length };
+        const { sel, match, opts } = matchingSelects[0];
+        sel.focus();
+        const cur = sel.selectedIndex;
+        if (cur !== match.index) globalThis[targetSlot] = sel;
+        return {
+          found: true,
+          alreadySelected: cur === match.index,
+          currentIndex: cur,
+          targetIndex: match.index,
+          targetText: match.text.trim(),
+          targetValue: match.value,
+          currentText: sel.options[cur]?.text?.trim() || '',
+          allOptions: opts.map(o => o.text.trim()),
+        };
       })()
     `);
     const scan = scanResult?.result?.value;
@@ -4226,58 +4358,78 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       };
     }
 
-    // Close any open native dropdown
-    await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-      type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
-    });
-    await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-      type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
-    });
-    // Re-focus the select (Escape may have blurred it)
-    await cdpClient.evaluate(tabId, `
-      (() => {
-        const el = document.activeElement;
-        if (el && el.tagName === 'SELECT') return;
-        const sels = document.querySelectorAll('select');
-        for (const sel of sels) {
-          const opts = Array.from(sel.options);
-          if (opts.some(o => o.text.trim() === ${JSON.stringify(needle)} || o.text.trim().toLowerCase() === ${JSON.stringify(needle.toLowerCase())})) {
-            sel.focus(); return;
-          }
-        }
-      })()
-    `);
-
-    // Navigate with ArrowDown/ArrowUp
-    const delta = scan.targetIndex - scan.currentIndex;
-    const arrowKey = delta > 0 ? 'ArrowDown' : 'ArrowUp';
-    const arrowVK = delta > 0 ? 40 : 38;
-    for (let i = 0; i < Math.abs(delta); i++) {
-      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-        type: 'keyDown', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
-      });
-      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
-        type: 'keyUp', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
-      });
-    }
-
-    // Verify
-    const verify = await cdpClient.evaluate(tabId, `
-      (() => {
-        const el = document.activeElement;
-        if (!el || el.tagName !== 'SELECT') return { verified: false };
-        return { verified: true, selectedText: el.options[el.selectedIndex]?.text?.trim(), selectedValue: el.value };
-      })()
-    `);
-    const v = verify?.result?.value;
-
-    return {
-      success: true,
-      method: 'auto-select-keyboard',
-      selectedText: v?.selectedText || scan.targetText,
-      selectedValue: v?.selectedValue || scan.targetValue,
-      keyPresses: Math.abs(delta),
+    const cleanupTarget = async () => {
+      try {
+        await cdpClient.evaluate(tabId, `delete globalThis[${JSON.stringify(targetSlot)}]`);
+      } catch {}
     };
+
+    try {
+      // Close any open native dropdown.
+      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+      });
+      await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+      });
+      // Escape may blur the control. Re-focus only the exact select chosen by
+      // the modal-scoped, ambiguity-checked scan; never perform a global
+      // option-text lookup here.
+      const focusResult = await cdpClient.evaluate(tabId, `
+        (() => {
+          const target = globalThis[${JSON.stringify(targetSlot)}];
+          if (!target || target.tagName !== 'SELECT' || !target.isConnected) return { focused: false };
+          if (document.activeElement !== target) target.focus();
+          return { focused: document.activeElement === target };
+        })()
+      `);
+      if (!focusResult?.result?.value?.focused) return null;
+
+      // Navigate with ArrowDown/ArrowUp.
+      const delta = scan.targetIndex - scan.currentIndex;
+      const arrowKey = delta > 0 ? 'ArrowDown' : 'ArrowUp';
+      const arrowVK = delta > 0 ? 40 : 38;
+      for (let i = 0; i < Math.abs(delta); i++) {
+        await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyDown', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
+        });
+        await cdpClient.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyUp', key: arrowKey, code: arrowKey, windowsVirtualKeyCode: arrowVK,
+        });
+      }
+
+      // Verify the exact target rather than whichever select happens to be
+      // active after the keyboard events.
+      const verify = await cdpClient.evaluate(tabId, `
+        (() => {
+          const target = globalThis[${JSON.stringify(targetSlot)}];
+          if (!target || target.tagName !== 'SELECT' || !target.isConnected) return { verified: false };
+          return {
+            verified: target.selectedIndex === ${JSON.stringify(scan.targetIndex)},
+            selectedText: target.options[target.selectedIndex]?.text?.trim(),
+            selectedValue: target.value,
+          };
+        })()
+      `);
+      const v = verify?.result?.value;
+      if (!v?.verified) {
+        return {
+          success: false,
+          method: 'auto-select-keyboard',
+          error: `Could not verify that the intended dropdown changed to "${scan.targetText}".`,
+        };
+      }
+
+      return {
+        success: true,
+        method: 'auto-select-keyboard',
+        selectedText: v.selectedText || scan.targetText,
+        selectedValue: v.selectedValue || scan.targetValue,
+        keyPresses: Math.abs(delta),
+      };
+    } finally {
+      await cleanupTarget();
+    }
   }
 
   /**
@@ -8371,6 +8523,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _skillPermissionArgsForCapability(skillTool, capability, args) {
+    if (
+      isTrustedChromeWebStoreSkillTool(skillTool)
+      && (capability === Capability.NETWORK || capability === Capability.UPLOAD)
+    ) {
+      return capability === Capability.UPLOAD
+        ? { ...(args || {}), _trustedPermissionUrl: skillTool.endpoint }
+        : { ...(args || {}), url: skillTool.endpoint };
+    }
     if (capability !== Capability.DOWNLOAD || !skillTool?.requiresDownloadPermission) return args;
     const inputUrlArg = skillTool.inputUrlArg || 'url';
     if (!inputUrlArg || inputUrlArg === 'url') return args;
@@ -10130,6 +10290,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _isExecutionMutationEvidence(name, args = {}, capabilities = []) {
+    if (name === 'chrome_web_store_upload' || name === 'chrome_web_store_publish') return true;
     const mutationCapabilities = new Set([
       Capability.NAVIGATE,
       Capability.CLICK,
@@ -11528,13 +11689,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // recovering, defeating the whole point of the fallback.
     while (recent.length && recent[0].role === 'tool') recent.shift();
 
-    // Also truncate any huge tool results in remaining messages
+    // Also truncate any huge tool results in remaining messages. Use the
+    // wrapper-preserving variant: a plain slice can cut the
+    // </untrusted_page_content> closing tag off an untrusted tool result,
+    // which makes _hasUntrustedWrapper() return false on later passes and
+    // can launder page text into the trusted trim summary (see
+    // _truncatePreservingUntrustedWrapper's doc comment).
     for (const msg of recent) {
       if (msg.role === 'tool' && msg.content && msg.content.length > 2000) {
-        msg.content = msg.content.slice(0, 2000) + '\n[...truncated due to context limit]';
+        msg.content = this._truncatePreservingUntrustedWrapper(msg.content, 2000);
       }
       if (typeof msg.content === 'string' && msg.content.length > 5000) {
-        msg.content = msg.content.slice(0, 5000) + '\n[...truncated due to context limit]';
+        msg.content = this._truncatePreservingUntrustedWrapper(msg.content, 5000);
       }
     }
 
@@ -12184,6 +12350,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (name === 'done_json') {
       return handleDoneJson(this.cloudRunContexts.get(tabId), args);
     }
+    const protectedFailure = await this._chromeProtectedPageFailure(tabId, name);
+    if (protectedFailure) return protectedFailure;
     if (name === 'list_webmcp_tools') {
       if (!this.webMcpEnabled) {
         return {
@@ -13064,6 +13232,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const skillTool = this._activeSkillToolForName(tabId, name);
     if (skillTool) {
+      if (isTrustedChromeWebStoreSkillTool(skillTool)) {
+        return await executeChromeWebStoreSkillTool(skillTool, args, { tabId });
+      }
       return await executeHttpSkillTool(skillTool, args, { tabId });
     }
     const skillEndpointRedirect = this._skillEndpointToolRedirect(name, args, tabId);
