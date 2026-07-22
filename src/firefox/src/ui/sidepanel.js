@@ -6388,7 +6388,6 @@ function renderPlanReviewCard(data) {
       bindPlanReviewCard(existing);
       setPlanReviewAwaiting(tabId, true, existing.closest('.message.assistant'));
     }
-    scrollToBottom();
     return;
   }
 
@@ -6456,7 +6455,7 @@ function renderPlanReviewCard(data) {
   const approveBtn = document.createElement('button');
   approveBtn.type = 'button';
   approveBtn.className = 'plan-review-approve';
-  approveBtn.textContent = typeof t === 'function' ? t('sp.plan.approve') : 'Approve & run';
+  approveBtn.textContent = typeof t === 'function' ? t('sp.plan.approve') : '👍 Run';
 
   const changeBtn = document.createElement('button');
   changeBtn.type = 'button';

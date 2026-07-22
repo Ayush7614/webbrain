@@ -43337,10 +43337,27 @@ test('sidepanel: restored plan review cards rebind approve and cancel actions', 
     assert.match(css, /\.plan-review-skills[\s\S]*\.plan-review-skill-list[\s\S]*\.plan-review-skill/, `${file} css should make planned skill activation visible`);
     const enLocale = fs.readFileSync(path.join(ROOT, file.replace(/src\/ui\/sidepanel\.js$/, 'src/ui/locales/en.js')), 'utf8');
     assert.match(enLocale, /'sp\.plan\.skills': 'Skills to activate'/, `${file} should label the visible skill activation disclosure`);
+    assert.match(enLocale, /'sp\.plan\.approve': '👍 Run'/, `${file} should use the concise plan run action`);
     assert.match(enLocale, /'sp\.plan\.edit_as_text': 'Edit as text'/, `${file} should label the raw markdown escape hatch`);
     assert.match(enLocale, /'sp\.plan\.remove_step': 'Remove step'/, `${file} should label one-click step removal`);
     assert.match(enLocale, /'sp\.plan\.add_step': 'Add step'/, `${file} should label add-step`);
     assert.match(source, /const useVerbosePlan = verboseMode && !!data\.verboseMarkdown;/, `${file} should use the verbose plan only in verbose mode`);
+    assert.match(source, /t\('sp\.plan\.approve'\) : '👍 Run'/, `${file} should retain the concise plan run fallback`);
+    const renderPlanReviewStart = source.indexOf('function renderPlanReviewCard(data) {');
+    const renderPlanReviewEnd = source.indexOf('\nfunction submitPlanReview(', renderPlanReviewStart);
+    assert.notEqual(renderPlanReviewStart, -1, `${file} should render plan review cards`);
+    assert.notEqual(renderPlanReviewEnd, -1, `${file} should delimit plan review rendering`);
+    const renderPlanReviewSource = source.slice(renderPlanReviewStart, renderPlanReviewEnd);
+    assert.doesNotMatch(
+      renderPlanReviewSource,
+      /if \(existing\) \{[\s\S]{0,600}?scrollToBottom\(\);[\s\S]{0,100}?return;/,
+      `${file} should not force the conversation to the bottom when polling an existing plan`,
+    );
+    assert.match(
+      renderPlanReviewSource,
+      /content\.appendChild\(card\);\s*setPlanReviewAwaiting\([^;]+;\s*scrollToBottom\(\);/,
+      `${file} should still reveal a newly inserted plan card`,
+    );
     assert.match(source, /card\.dataset\.planMarkdownMode = useVerbosePlan \? 'verbose' : 'compact';/, `${file} should remember which plan text was displayed`);
     assert.match(
       source,
