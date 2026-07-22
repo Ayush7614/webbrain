@@ -13,6 +13,11 @@ import {
 } from './agent/skills.js';
 import { ScheduledJobManager } from './agent/scheduler.js';
 import {
+  compileLatestSuccessfulWorkflow,
+  createSavedWorkflowStore,
+} from './agent/workflows.js';
+import * as workflowTrace from './trace/recorder.js';
+import {
   startClaudeOAuth,
   refreshClaudeAccessToken,
   signOutClaude,
@@ -78,6 +83,7 @@ import {
 const providerManager = new ProviderManager();
 const agent = new Agent(providerManager);
 const userMemoryStore = createUserMemoryStore(chrome.storage.local);
+const savedWorkflowStore = createSavedWorkflowStore(chrome.storage.local);
 const profileSync = new ProfileSyncManager(chrome.storage.local);
 installDownloadDirectoryRouting(chrome);
 const scheduler = new ScheduledJobManager({
@@ -294,6 +300,7 @@ let userMemoryExtractionDrainPromise = null;
 let userMemoryExtractionTimer = null;
 let userMemoryExtractionQueueLock = Promise.resolve();
 let userMemoryStoreLock = Promise.resolve();
+let savedWorkflowStoreLock = Promise.resolve();
 const userMemoryTurnContextByTab = new Map();
 
 function userMemoryTurnContextKey(tabId) {
@@ -469,6 +476,12 @@ async function markUserMemoryExtractionJobFailed(jobId) {
 async function withUserMemoryStoreLock(task) {
   const run = userMemoryStoreLock.then(task, task);
   userMemoryStoreLock = run.catch(() => {});
+  return run;
+}
+
+async function withSavedWorkflowStoreLock(task) {
+  const run = savedWorkflowStoreLock.then(task, task);
+  savedWorkflowStoreLock = run.catch(() => {});
   return run;
 }
 
@@ -1971,6 +1984,33 @@ async function handleMessage(msg, sender) {
       return { ok: true, ...result };
     }
 
+    // --- Saved Workflows ---
+    case 'list_saved_workflows':
+      return { ok: true, workflows: await savedWorkflowStore.list() };
+
+    case 'get_saved_workflow': {
+      const workflow = await savedWorkflowStore.get(String(msg.id || ''));
+      return workflow ? { ok: true, workflow } : { ok: false, reason: 'not_found' };
+    }
+
+    case 'save_latest_workflow': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (!tabId) return { ok: false, reason: 'tab_required' };
+      const conversationId = await agent.getConversationId(tabId);
+      const compiled = await compileLatestSuccessfulWorkflow(workflowTrace, {
+        conversationId,
+        name: msg.name,
+      });
+      if (!compiled.workflow) return { ok: false, ...compiled };
+      const saved = await withSavedWorkflowStoreLock(() => savedWorkflowStore.put(compiled.workflow));
+      return { ok: saved.changed, workflow: saved.workflow, warnings: compiled.warnings, reason: saved.reason || '' };
+    }
+
+    case 'delete_saved_workflow': {
+      const result = await withSavedWorkflowStoreLock(() => savedWorkflowStore.delete(String(msg.id || '')));
+      return { ok: result.changed, ...result };
+    }
+
     // --- Chat / Agent ---
     case 'ensure_conversation_id': {
       const tabId = msg.tabId || sender.tab?.id;
@@ -1991,7 +2031,8 @@ async function handleMessage(msg, sender) {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) throw new Error('No tab ID');
       assertRunCanStart(tabId, msg);
-      const mode = msg.mode || 'ask';
+      const isWorkflowRun = !!msg.workflowId;
+      const mode = isWorkflowRun ? 'act' : (msg.mode || 'ask');
       const runUi = await beginContinuationRunUiSnapshot(tabId, msg.requestId, { mode, kind: 'chat' });
       const releaseRunKeepalive = acquireRunKeepalive();
 
@@ -2042,20 +2083,47 @@ async function handleMessage(msg, sender) {
             return flushRunUiSnapshot(tabId, runUi.requestId);
           },
         };
-        result = await agent.processMessage(tabId, msg.text, (type, data) => {
+        const publishUpdate = (type, data) => {
           updates.push({ type, data });
           sendAgentUpdate(tabId, runUi.requestId, type, data);
-        }, mode, msg.attachments, runOptions);
+        };
+        if (isWorkflowRun) {
+          const workflow = await savedWorkflowStore.get(String(msg.workflowId || ''));
+          if (!workflow) throw new Error('Saved workflow not found.');
+          const replay = await agent.replaySavedWorkflow(
+            tabId,
+            workflow,
+            msg.workflowParameters && typeof msg.workflowParameters === 'object' ? msg.workflowParameters : {},
+            publishUpdate,
+            runOptions,
+          );
+          result = replay.summary || '';
+          if (replay.status === 'fallback') {
+            publishUpdate('workflow_fallback', {
+              workflowId: workflow.id,
+              stepIndex: replay.stepIndex,
+              reason: replay.reason,
+            });
+            result = await agent.processMessage(tabId, replay.prompt, publishUpdate, 'act', [], runOptions);
+          }
+        } else {
+          result = await agent.processMessage(tabId, msg.text, publishUpdate, mode, msg.attachments, runOptions);
+        }
 
-        const userMemoryPayload = takeUserMemoryTurnExtractionPayload(tabId, {
-          userText: msg.text,
-          assistantText: result,
-          mode,
-          succeeded: runUpdatesSucceeded(updates),
-        });
-        userMemoryPayload.conversationId = await agent.getConversationId(tabId);
-        userMemoryTurnContextTaken = true;
-        enqueueUserMemoryExtractionAfterTurn(userMemoryPayload);
+        if (isWorkflowRun) {
+          clearUserMemoryTurnContext(tabId);
+          userMemoryTurnContextTaken = true;
+        } else {
+          const userMemoryPayload = takeUserMemoryTurnExtractionPayload(tabId, {
+            userText: msg.text,
+            assistantText: result,
+            mode,
+            succeeded: runUpdatesSucceeded(updates),
+          });
+          userMemoryPayload.conversationId = await agent.getConversationId(tabId);
+          userMemoryTurnContextTaken = true;
+          enqueueUserMemoryExtractionAfterTurn(userMemoryPayload);
+        }
         return { content: result, updates, requestId: runUi.requestId, conversationId: await agent.getConversationId(tabId) };
       } catch (error) {
         runError = error;

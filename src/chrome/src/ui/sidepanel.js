@@ -565,6 +565,18 @@ const SLASH_COMMANDS = [
       { value: '--forget', valueLabel: '<id>', descriptionKey: 'sp.slash.forget_memory', action: 'forget', takesRemainder: true, outOfBand: false, exclusiveGroup: 'memory-action' },
     ],
   },
+  {
+    value: '/workflow',
+    usage: '/workflow [--save <name> | --run <id> | --delete <id>]',
+    descriptionKey: 'sp.slash.workflows',
+    action: 'list',
+    outOfBand: true,
+    options: [
+      { value: '--save', valueLabel: '<name>', descriptionKey: 'sp.slash.save_workflow', action: 'save', takesRemainder: true, outOfBand: true, exclusiveGroup: 'workflow-action' },
+      { value: '--run', valueLabel: '<id>', descriptionKey: 'sp.slash.run_workflow', action: 'run', takesRemainder: true, outOfBand: true, exclusiveGroup: 'workflow-action' },
+      { value: '--delete', valueLabel: '<id>', descriptionKey: 'sp.slash.delete_workflow', action: 'delete', takesRemainder: true, outOfBand: true, exclusiveGroup: 'workflow-action' },
+    ],
+  },
   { value: '/allow-api', usage: '/allow-api [prompt]', descriptionKey: 'sp.slash.allow_api', action: 'enable', acceptsPayload: true },
   { value: '/dangerously-skip-permissions', usage: '/dangerously-skip-permissions [prompt]', descriptionKey: 'sp.slash.dangerously_skip_permissions', action: 'disable', acceptsPayload: true, outOfBand: true },
   { value: '/compact', usage: '/compact [prompt]', descriptionKey: 'sp.slash.compact', action: 'compact', acceptsPayload: true },
@@ -2946,6 +2958,195 @@ async function forgetUserMemory(id, tabId = currentTabId) {
   }
 }
 
+const SAVED_WORKFLOW_FAILURE_REASON_KEYS = {
+  conversation_required: 'sp.workflows.reason.no_trace',
+  no_successful_trace: 'sp.workflows.reason.no_trace',
+  successful_run_required: 'sp.workflows.reason.no_trace',
+  no_replayable_steps: 'sp.workflows.reason.no_steps',
+  not_found: 'sp.workflows.reason.not_found',
+  name_required: 'sp.workflows.reason.name_required',
+  http_start_url_required: 'sp.workflows.reason.http_start_url',
+  normalization_failed: 'sp.workflows.reason.normalization_failed',
+};
+
+function savedWorkflowFailureMessage(res) {
+  const reasonKey = SAVED_WORKFLOW_FAILURE_REASON_KEYS[res?.reason];
+  return reasonKey
+    ? t(reasonKey)
+    : t('sp.workflows.error', { msg: res?.reason || res?.error || 'unknown error' });
+}
+
+async function showSavedWorkflows(tabId = currentTabId) {
+  try {
+    const res = await sendToBackground('list_saved_workflows');
+    if (currentTabId !== tabId) return;
+    if (!res?.ok) throw new Error(res?.error || 'unknown error');
+    const workflows = Array.isArray(res.workflows) ? res.workflows : [];
+    if (!workflows.length) {
+      addPersistentSlashMessage(t('sp.workflows.empty'));
+      return;
+    }
+    const body = workflows.map((workflow) => t('sp.workflows.item', {
+      id: workflow.id,
+      name: workflow.name,
+      steps: workflow.steps?.length || 0,
+      parameters: workflow.parameters?.length || 0,
+    })).join('\n');
+    const msgEl = addPersistentSlashMessage(systemHtml(`${t('sp.workflows.title_html')}<pre class="scratchpad-dump">${escapeHtml(body)}</pre>`));
+    addScratchpadCopyButton(msgEl);
+  } catch (error) {
+    if (currentTabId === tabId) addPersistentSlashMessage(t('sp.workflows.error', { msg: error.message }));
+  }
+}
+
+async function saveLatestWorkflow(name, tabId = currentTabId) {
+  try {
+    const res = await sendToBackground('save_latest_workflow', { tabId, name });
+    if (currentTabId !== tabId) return;
+    if (!res?.ok) {
+      showComposerToast(savedWorkflowFailureMessage(res), { duration: 7000 });
+      return;
+    }
+    const savedMessage = t('sp.workflows.saved', { name: res.workflow?.name || name });
+    const warnings = Array.isArray(res.warnings) ? res.warnings.filter(Boolean) : [];
+    showComposerToast(warnings.length ? `${savedMessage} ${warnings.join(' ')}` : savedMessage, {
+      duration: warnings.length ? 10000 : 3500,
+    });
+  } catch (error) {
+    if (currentTabId === tabId) showComposerToast(t('sp.workflows.error', { msg: error.message }), { duration: 7000 });
+  }
+}
+
+async function deleteSavedWorkflow(id, tabId = currentTabId) {
+  try {
+    const res = await sendToBackground('delete_saved_workflow', { id: String(id || '').trim() });
+    if (currentTabId !== tabId) return;
+    if (!res?.ok) {
+      showComposerToast(savedWorkflowFailureMessage(res), { duration: 5000 });
+      return;
+    }
+    showComposerToast(t('sp.workflows.deleted', { name: res.workflow?.name || id }));
+  } catch (error) {
+    if (currentTabId === tabId) showComposerToast(t('sp.workflows.error', { msg: error.message }), { duration: 5000 });
+  }
+}
+
+const boundWorkflowParameterForms = new WeakSet();
+
+async function startSavedWorkflowRun(workflow, parameters, tabId = currentTabId) {
+  if (!workflow?.id || currentTabId !== tabId) return false;
+  await ensureActMode();
+  inputEl.value = t('sp.workflows.run_prompt', { name: workflow.name });
+  autoResizeInput();
+  return sendMessage({
+    __mode: 'act',
+    workflowId: workflow.id,
+    workflowParameters: parameters,
+  });
+}
+
+async function submitSavedWorkflowParameters(event, form) {
+  event.preventDefault();
+  const tabId = Number(form?.dataset?.tabId);
+  const workflowId = String(form?.dataset?.workflowId || '');
+  const errorEl = form?.querySelector('.schedule-error');
+  const submit = form?.querySelector('.schedule-submit');
+  if (!Number.isFinite(tabId) || !workflowId || !errorEl || !submit) return;
+  errorEl.textContent = '';
+  submit.disabled = true;
+  try {
+    const res = await sendToBackground('get_saved_workflow', { id: workflowId });
+    if (!res?.ok || !res.workflow) throw new Error(savedWorkflowFailureMessage(res));
+    const inputs = new Map(Array.from(form.querySelectorAll('[data-workflow-parameter-id]'))
+      .map((input) => [input.dataset.workflowParameterId, input]));
+    const parameters = {};
+    for (const descriptor of res.workflow.parameters || []) {
+      const input = inputs.get(descriptor.id);
+      if (!input) throw new Error(t('sp.workflows.error', { msg: 'parameter form is incomplete' }));
+      if (descriptor.required !== false && input.value === '') {
+        throw new Error(t('sp.workflows.parameter_required', { name: descriptor.label || descriptor.id }));
+      }
+      parameters[descriptor.id] = input.value;
+    }
+    inputs.forEach((input) => { input.value = ''; });
+    form.closest('.message')?.remove();
+    setTimeout(() => {
+      startSavedWorkflowRun(res.workflow, parameters, tabId)
+        .catch((error) => showComposerToast(t('sp.workflows.error', { msg: error.message }), { duration: 7000 }));
+    }, 0);
+  } catch (error) {
+    submit.disabled = false;
+    errorEl.textContent = error.message;
+  }
+}
+
+function bindSavedWorkflowParameterForm(form) {
+  if (!form || boundWorkflowParameterForms.has(form)) return;
+  boundWorkflowParameterForms.add(form);
+  form.querySelector('.schedule-cancel')?.addEventListener('click', () => form.closest('.message')?.remove());
+  form.addEventListener('submit', (event) => submitSavedWorkflowParameters(event, form));
+}
+
+function renderSavedWorkflowParameterForm(workflow, tabId = currentTabId) {
+  if (!workflow?.id || currentTabId !== tabId) return;
+  const parameterMessage = t('sp.workflows.parameters_for', { name: workflow.name });
+  const msgEl = addMessage('system', parameterMessage);
+  const content = msgEl.querySelector('.message-content');
+  const form = document.createElement('form');
+  form.className = 'schedule-composer workflow-parameter-form';
+  form.dataset.tabId = String(tabId);
+  form.dataset.workflowId = workflow.id;
+  for (const parameter of workflow.parameters || []) {
+    const input = document.createElement('input');
+    input.type = parameter.sensitive ? 'password' : 'text';
+    input.autocomplete = 'off';
+    input.maxLength = 10000;
+    input.required = parameter.required !== false;
+    input.dataset.workflowParameterId = parameter.id;
+    addScheduleField(form, parameter.label || parameter.id, input);
+  }
+  const errorEl = document.createElement('div');
+  errorEl.className = 'schedule-error';
+  form.appendChild(errorEl);
+  const actions = document.createElement('div');
+  actions.className = 'schedule-form-actions';
+  const submit = document.createElement('button');
+  submit.type = 'submit';
+  submit.className = 'schedule-submit';
+  submit.textContent = t('sp.scheduled.run_now');
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'schedule-cancel';
+  cancel.textContent = t('sp.schedule_form.cancel');
+  actions.append(submit, cancel);
+  form.appendChild(actions);
+  bindSavedWorkflowParameterForm(form);
+  content.appendChild(form);
+  form.querySelector('input')?.focus();
+  scrollToBottom();
+}
+
+async function prepareSavedWorkflowRun(id, tabId = currentTabId) {
+  try {
+    const res = await sendToBackground('get_saved_workflow', { id: String(id || '').trim() });
+    if (currentTabId !== tabId) return;
+    if (!res?.ok || !res.workflow) {
+      showComposerToast(savedWorkflowFailureMessage(res), { duration: 5000 });
+      return;
+    }
+    if (res.workflow.parameters?.length) {
+      renderSavedWorkflowParameterForm(res.workflow, tabId);
+      return;
+    }
+    setTimeout(() => {
+      startSavedWorkflowRun(res.workflow, {}, tabId)
+        .catch((error) => showComposerToast(t('sp.workflows.error', { msg: error.message }), { duration: 7000 }));
+    }, 0);
+  } catch (error) {
+    if (currentTabId === tabId) showComposerToast(t('sp.workflows.error', { msg: error.message }), { duration: 7000 });
+  }
+}
+
 async function showProgress(tabId = currentTabId) {
   try {
     const res = await sendToBackground('get_progress', { tabId });
@@ -4670,6 +4871,7 @@ function rebindRestoredMessageControls() {
   rebindClarifyCards();
   rebindPlanReviewCards();
   rebindScheduleComposers();
+  document.querySelectorAll('form.workflow-parameter-form').forEach(bindSavedWorkflowParameterForm);
   rebindSubscribeButtons();
 }
 
@@ -5494,6 +5696,26 @@ async function parseSlashCommands(text, tabId = currentTabId, options = {}) {
 
   if (command.value === '/memory' && action === 'forget') {
     await forgetUserMemory(payload, tabId);
+    return '';
+  }
+
+  if (command.value === '/workflow' && action === 'list') {
+    await showSavedWorkflows(tabId);
+    return '';
+  }
+
+  if (command.value === '/workflow' && action === 'save') {
+    await saveLatestWorkflow(payload, tabId);
+    return '';
+  }
+
+  if (command.value === '/workflow' && action === 'run') {
+    await prepareSavedWorkflowRun(payload, tabId);
+    return '';
+  }
+
+  if (command.value === '/workflow' && action === 'delete') {
+    await deleteSavedWorkflow(payload, tabId);
     return '';
   }
 
