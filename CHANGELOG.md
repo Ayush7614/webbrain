@@ -4,6 +4,20 @@ All notable changes to WebBrain are documented in this file.
 
 This changelog was generated from the repository Git history and release tags. Versions without a Git tag are inferred from version-bump commits and the current `package.json` / browser manifest versions.
 
+## [25.6.0] - 2026-07-22
+
+### Added
+- Added Ask-only OpenAI Responses streaming for interactive Ask-mode chats (Chrome and Firefox parity).
+
+### Changed
+- Updated planner benchmark coverage by adding Nanbeige 4.2 planner benchmark results to the repo.
+
+### Fixed
+- Improved structured plan review/editor stability by preserving editor scroll position across input and keeping step editing scroll stable (Chrome and Firefox parity).
+
+### Tests
+- Added Nanbeige 4.2 planner benchmark fixtures/results to the test suite.
+
 ## [25.5.0] - 2026-07-22
 
 ### Added
