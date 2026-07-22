@@ -849,6 +849,31 @@ class LoopDetectorShim {
     }
     return false;
   }
+  _findTextMatchLoopIdentity(result) {
+    if (result?.success !== true || !result?.rect || typeof result.rect !== 'object') return '';
+    const rect = result.rect;
+    const pageX = typeof rect.pageX === 'number' ? rect.pageX : NaN;
+    const pageY = typeof rect.pageY === 'number' ? rect.pageY : NaN;
+    const viewportX = typeof rect.x === 'number' ? rect.x : NaN;
+    const viewportY = typeof rect.y === 'number' ? rect.y : NaN;
+    const width = typeof rect.width === 'number' ? rect.width : NaN;
+    const height = typeof rect.height === 'number' ? rect.height : NaN;
+    const x = Number.isFinite(pageX) ? pageX : viewportX;
+    const y = Number.isFinite(pageY) ? pageY : viewportY;
+    if (![x, y, width, height].every(Number.isFinite)) return '';
+    return [x, y, width, height]
+      .map(value => Math.round(value * 2) / 2)
+      .join(',');
+  }
+  _noteHealthyLoopCall(tabId) {
+    const healthy = (this.healthyCallsSinceLoop.get(tabId) || 0) + 1;
+    this.healthyCallsSinceLoop.set(tabId, healthy);
+    if (healthy >= 2) {
+      this.loopNudges.delete(tabId);
+      this.healthyCallsSinceLoop.delete(tabId);
+    }
+    return { kind: 'none' };
+  }
   _loopCallKey(name, args, result) {
     if (result?.nonRetryableScope) {
       return `nonretryable|${String(result.nonRetryableScope).slice(0, 240)}|err`;
@@ -876,6 +901,10 @@ class LoopDetectorShim {
     // tools.
     const argsHash = bucketArgsKey(name, args);
     const errored = this._isToolResultErroredForLoop(name, args, result);
+    if (name === 'find_text' && !errored) {
+      const matchIdentity = this._findTextMatchLoopIdentity(result);
+      if (matchIdentity) return `${name}|${argsHash}|match:${matchIdentity}`;
+    }
     return `${name}|${argsHash}|${errored ? 'err' : 'ok'}`;
   }
   _recordCall(tabId, name, args, result) {
@@ -915,6 +944,13 @@ class LoopDetectorShim {
       this.axReadStates.delete(tabId);
       this.noProgressScrolls.delete(tabId);
     }
+    if (
+      name === 'find_text'
+      && result?.success === true
+      && !this._findTextMatchLoopIdentity(result)
+    ) {
+      return this._noteHealthyLoopCall(tabId);
+    }
     const { buf, key } = this._recordCall(tabId, name, args, result);
     if (STATE_CHANGE_TOOLS_TEST.has(name)) {
       const normalizeFailureScope = value => String(value).slice(0, 320);
@@ -953,14 +989,11 @@ class LoopDetectorShim {
       if (repeats >= 2) return { kind: 'nudge' };
     }
     const loop = this._detectLoop(buf, key);
+    if (loop?.type === 'oscillation' && loop.a === 'find_text' && loop.b === 'find_text') {
+      return this._noteHealthyLoopCall(tabId);
+    }
     if (!loop) {
-      const healthy = (this.healthyCallsSinceLoop.get(tabId) || 0) + 1;
-      this.healthyCallsSinceLoop.set(tabId, healthy);
-      if (healthy >= 2) {
-        this.loopNudges.delete(tabId);
-        this.healthyCallsSinceLoop.delete(tabId);
-      }
-      return { kind: 'none' };
+      return this._noteHealthyLoopCall(tabId);
     }
     const method = String(args?.method || 'GET').toUpperCase();
     if (
@@ -3633,6 +3666,73 @@ test('three identical calls trigger nudge', () => {
   d._checkLoop(tab, 'click', { selector: '#submit' }, { success: true });
   const result = d._checkLoop(tab, 'click', { selector: '#submit' }, { success: true });
   assert.equal(result.kind, 'nudge');
+});
+
+test('find_text loop detection follows match progress in both browser agents', () => {
+  const implementations = [
+    ['shim', LoopDetectorShim],
+    ['chrome', AgentCh],
+    ['firefox', AgentFx],
+  ];
+  const args = { text: 'Needle' };
+  const match = pageY => ({
+    success: true,
+    found: true,
+    rect: { x: 10, y: 20, pageX: 110, pageY, width: 30, height: 12 },
+  });
+
+  for (const [label, Detector] of implementations) {
+    const advancing = new Detector({});
+    const advancingTab = `${label}-advancing`;
+    for (const pageY of [220, 420, 620]) {
+      assert.equal(
+        advancing._checkLoop(advancingTab, 'find_text', args, match(pageY)).kind,
+        'none',
+        `${label}: a new match position was treated as a repeated call`,
+      );
+    }
+
+    const alternating = new Detector({});
+    const alternatingTab = `${label}-alternating`;
+    for (const pageY of [220, 420, 220, 420]) {
+      assert.equal(
+        alternating._checkLoop(alternatingTab, 'find_text', args, match(pageY)).kind,
+        'none',
+        `${label}: wrapped find results were treated as an ABAB action loop`,
+      );
+    }
+
+    const stuck = new Detector({});
+    const stuckTab = `${label}-stuck`;
+    assert.equal(stuck._checkLoop(stuckTab, 'find_text', args, match(220)).kind, 'none');
+    assert.equal(stuck._checkLoop(stuckTab, 'find_text', args, match(220)).kind, 'none');
+    assert.equal(
+      stuck._checkLoop(stuckTab, 'find_text', args, match(220)).kind,
+      'nudge',
+      `${label}: a truly unchanged match position should remain loop-detectable`,
+    );
+
+    const framed = new Detector({});
+    const framedTab = `${label}-framed`;
+    for (let index = 0; index < 4; index += 1) {
+      assert.equal(
+        framed._checkLoop(framedTab, 'find_text', args, { success: true, found: true }).kind,
+        'none',
+        `${label}: a successful frame match without a top-document rect was blocked`,
+      );
+    }
+
+    const missing = new Detector({});
+    const missingTab = `${label}-missing`;
+    const failure = { success: false, found: false, error: 'not found' };
+    assert.equal(missing._checkLoop(missingTab, 'find_text', args, failure).kind, 'none');
+    assert.equal(missing._checkLoop(missingTab, 'find_text', args, failure).kind, 'none');
+    assert.equal(
+      missing._checkLoop(missingTab, 'find_text', args, failure).kind,
+      'nudge',
+      `${label}: failed searches should still be loop-detectable`,
+    );
+  }
 });
 
 test('failed actions nudge on attempt two and stop on attempt three', () => {
@@ -30935,6 +31035,8 @@ test('find_text uses page search and returns selected match evidence in both bro
 
     let findArgs;
     const window = {
+      scrollX: 100,
+      scrollY: 200,
       find: (...args) => {
         findArgs = args;
         return true;
@@ -30953,7 +31055,11 @@ test('find_text uses page search and returns selected match evidence in both bro
     assert.equal(result.success, true);
     assert.equal(result.found, true);
     assert.equal(result.selectedText, 'Needle');
-    assert.deepEqual({ ...result.rect }, { x: 10, y: 20, width: 30, height: 12 });
+    assert.deepEqual(
+      { ...result.rect },
+      { x: 10, y: 20, pageX: 110, pageY: 220, width: 30, height: 12 },
+      `${label}: find_text should return stable page coordinates for loop identity`,
+    );
     window.find = () => false;
     const missing = findText({ text: 'absent phrase' });
     assert.equal(missing.success, false, `${label}: a missing match should not count as successful task evidence`);

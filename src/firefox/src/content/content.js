@@ -2044,9 +2044,13 @@
       let rect;
       if (selection?.rangeCount) {
         const bounds = selection.getRangeAt(0).getBoundingClientRect();
+        const scrollX = Number.isFinite(Number(window.scrollX)) ? Number(window.scrollX) : 0;
+        const scrollY = Number.isFinite(Number(window.scrollY)) ? Number(window.scrollY) : 0;
         rect = {
           x: bounds.x,
           y: bounds.y,
+          pageX: bounds.x + scrollX,
+          pageY: bounds.y + scrollY,
           width: bounds.width,
           height: bounds.height,
         };
