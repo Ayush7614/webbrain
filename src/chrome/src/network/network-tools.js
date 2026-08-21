@@ -234,11 +234,25 @@ export function validateFetchUrl(rawUrl, opts = {}) {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     return { ok: false, error: `Unsupported URL scheme: ${u.protocol} (only http/https allowed)` };
   }
+  // Block URLs that embed credentials in userinfo (e.g. http://evil@host or
+  // http://user:pass@host). The hostname check below would see only the real
+  // host, but userinfo is attacker-controlled and can confuse downstream
+  // logging/auditing. Fail closed unless explicitly relaxed.
+  if (u.username || u.password) {
+    return { ok: false, error: `Blocked URL with embedded credentials: ${rawUrl.slice(0, 120)}` };
+  }
 
   // URL.hostname keeps the [..] around IPv6 literals — strip them.
   let host = (u.hostname || '').toLowerCase();
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
   if (!host) return { ok: false, error: 'URL has no hostname.' };
+  // Block DNS rebinding helpers that encode an IP in the hostname
+  // (e.g. 127.0.0.1.nip.io, 10-0-0-1.sslip.io). The IP octet itself is checked
+  // below, but the suffix signals an attacker-controlled indirection that
+  // should not reach an allowLocalNetwork=false caller.
+  if (/\.nip\.io$|\.xip\.io$|\.sslip\.io$|\.xip\.name$/i.test(host)) {
+    return { ok: false, error: `Blocked DNS rebinding host: ${host}` };
+  }
 
   // Always-blocked hostnames (cloud metadata aliases + intranet TLDs).
   const ALWAYS_BLOCKED_HOSTS = new Set([
