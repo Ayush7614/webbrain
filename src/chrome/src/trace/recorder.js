@@ -1,6 +1,7 @@
 import { normalizeRuntimeTraceConfig } from './runtime-config.js';
 import { buildPromptTraceProvenance } from './prompt-provenance.js';
 import { formatErrorMessage } from '../error-format.js';
+import { scrubTraceString, scrubTraceValue } from './trace-sanitize.js';
 
 /**
  * Trace recorder — writes per-run traces (LLM requests/responses, tool calls,
@@ -145,7 +146,7 @@ export async function startRun(meta = {}) {
       providerClass: meta.providerClass || '',
       webbrainVersion: meta.webbrainVersion || '',
       runtimeConfig: normalizeRuntimeTraceConfig(meta.runtimeConfig),
-      userMessage: meta.userMessage || '',
+      userMessage: scrubTraceString(meta.userMessage || ''),
       tabUrl: meta.tabUrl || '',
       tabTitle: meta.tabTitle || '',
       mode: meta.mode || 'act',
@@ -228,9 +229,9 @@ export function recordToolCall(runId, step, { name, args, result, latencyMs }) {
   // Truncate very large tool results (a11y trees can be huge). Keep the first
   // 20KB verbatim and note the truncation — plenty for debugging flow, and
   // the model response still has the full thing in context anyway.
-  let shortResult = result;
+  let shortResult = scrubTraceValue(result);
   try {
-    const s = typeof result === 'string' ? result : JSON.stringify(result);
+    const s = typeof shortResult === 'string' ? shortResult : JSON.stringify(shortResult);
     if (s && s.length > 20_000) {
       shortResult = { _truncated: true, length: s.length, head: s.slice(0, 20_000) };
     }
@@ -238,7 +239,7 @@ export function recordToolCall(runId, step, { name, args, result, latencyMs }) {
   return _appendEvent(runId, 'tool', {
     step,
     name,
-    args: args || null,
+    args: scrubTraceValue(args) || null,
     result: shortResult,
     latencyMs: latencyMs || null,
   });

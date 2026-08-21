@@ -1,6 +1,7 @@
 import { normalizeRuntimeTraceConfig } from './runtime-config.js';
 import { buildPromptTraceProvenance } from './prompt-provenance.js';
 import { formatErrorMessage } from '../error-format.js';
+import { scrubTraceString, scrubTraceValue } from './trace-sanitize.js';
 
 /**
  * Trace recorder — writes per-run traces (LLM requests/responses, tool calls,
@@ -62,10 +63,25 @@ function promisifyReq(req) {
 async function tracingEnabled() {
   try {
     if (typeof indexedDB === 'undefined') return false;
-    const storageApi = (typeof browser !== 'undefined' ? browser : chrome).storage.local;
-    const { tracingEnabled } = await storageApi.get(['tracingEnabled']);
+    const { tracingEnabled } = await chrome.storage.local.get(['tracingEnabled']);
     return tracingEnabled === true;
   } catch { return false; }
+}
+
+async function isForcedTraceRun(runId) {
+  if (!runId) return false;
+  if (_runState.get(runId)?.forced === true) return true;
+  try {
+    const db = await openDB();
+    const record = await promisifyReq(
+      tx(db, ['runs'], 'readonly').objectStore('runs').get(runId),
+    );
+    return record?.forced === true;
+  } catch { return false; }
+}
+
+async function tracingEnabledForRun(runId) {
+  return (await tracingEnabled()) || (await isForcedTraceRun(runId));
 }
 
 // ----- Per-run state (held in memory on the service worker) ------------------
@@ -108,8 +124,9 @@ function normalizeTraceAttachments(attachments) {
 
 // ----- Public API ------------------------------------------------------------
 
-export async function startRun(meta) {
-  if (!(await tracingEnabled())) return null;
+export async function startRun(meta = {}) {
+  const forced = meta.force === true;
+  if (!forced && !(await tracingEnabled())) return null;
   try {
     const db = await openDB();
     const runId = meta.runId || `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -129,18 +146,19 @@ export async function startRun(meta) {
       providerClass: meta.providerClass || '',
       webbrainVersion: meta.webbrainVersion || '',
       runtimeConfig: normalizeRuntimeTraceConfig(meta.runtimeConfig),
-      userMessage: meta.userMessage || '',
+      userMessage: scrubTraceString(meta.userMessage || ''),
       tabUrl: meta.tabUrl || '',
       tabTitle: meta.tabTitle || '',
       mode: meta.mode || 'act',
       attachments: normalizeTraceAttachments(meta.attachments),
+      forced,
       stepCount: 0,
       totalInputTokens: 0,
       totalOutputTokens: 0,
       finalContent: null,
     };
     await promisifyReq(tx(db, ['runs']).objectStore('runs').put(record));
-    _runState.set(runId, { seq: 0, model: record.model, providerId: record.providerId });
+    _runState.set(runId, { seq: 0, model: record.model, providerId: record.providerId, forced });
     return runId;
   } catch (e) {
     console.warn('[trace] startRun failed:', e);
@@ -150,13 +168,13 @@ export async function startRun(meta) {
 
 async function _appendEvent(runId, kind, data) {
   if (!runId) return;
-  if (!(await tracingEnabled())) return;
+  if (!(await tracingEnabledForRun(runId))) return;
   try {
     const db = await openDB();
     if (!_runState.has(runId)) {
       // Recover from SW eviction.
       const seq = await _peekSeq(db, runId);
-      _runState.set(runId, { seq });
+      _runState.set(runId, { seq, forced: await isForcedTraceRun(runId) });
     }
     const seq = _newSeq(runId);
     const ev = { runId, seq, ts: Date.now(), kind, data: data || null };
@@ -211,9 +229,9 @@ export function recordToolCall(runId, step, { name, args, result, latencyMs }) {
   // Truncate very large tool results (a11y trees can be huge). Keep the first
   // 20KB verbatim and note the truncation — plenty for debugging flow, and
   // the model response still has the full thing in context anyway.
-  let shortResult = result;
+  let shortResult = scrubTraceValue(result);
   try {
-    const s = typeof result === 'string' ? result : JSON.stringify(result);
+    const s = typeof shortResult === 'string' ? shortResult : JSON.stringify(shortResult);
     if (s && s.length > 20_000) {
       shortResult = { _truncated: true, length: s.length, head: s.slice(0, 20_000) };
     }
@@ -221,7 +239,7 @@ export function recordToolCall(runId, step, { name, args, result, latencyMs }) {
   return _appendEvent(runId, 'tool', {
     step,
     name,
-    args: args || null,
+    args: scrubTraceValue(args) || null,
     result: shortResult,
     latencyMs: latencyMs || null,
   });
@@ -229,13 +247,13 @@ export function recordToolCall(runId, step, { name, args, result, latencyMs }) {
 
 export async function recordScreenshot(runId, step, dataUrl, caption = '') {
   if (!runId) return;
-  if (!(await tracingEnabled())) return;
+  if (!(await tracingEnabledForRun(runId))) return;
   if (!dataUrl) return;
   try {
     const db = await openDB();
     if (!_runState.has(runId)) {
       const seq = await _peekSeq(db, runId);
-      _runState.set(runId, { seq });
+      _runState.set(runId, { seq, forced: await isForcedTraceRun(runId) });
     }
     const seq = _newSeq(runId);
     // Decode data URL to a Blob so IDB stores raw bytes (no base64 overhead).
@@ -296,12 +314,13 @@ export function recordNote(runId, step, note, extra = null) {
 
 export async function endRun(runId, { status = 'done', finalContent = null } = {}) {
   if (!runId) return;
-  if (!(await tracingEnabled())) return;
+  if (!(await tracingEnabledForRun(runId))) return;
   try {
     const db = await openDB();
-    // Tally usage from events. `totalCost` is the sum of `usage.cost`
-    // across all llm_response events — providers report this in their
-    // native units (OpenRouter & OpenAI: USD).
+    // Tally usage from events. `totalCost` is the sum of `usage.cost` across
+    // all llm_response events — providers report this in their native units
+    // (OpenRouter & OpenAI: USD). Surfaced in the Traces UI so users can
+    // spot expensive-failure runs at a glance.
     let totalIn = 0, totalOut = 0, totalCost = 0, stepCount = 0;
     let sawLoopError = false;
     await new Promise((resolve) => {
@@ -335,7 +354,7 @@ export async function endRun(runId, { status = 'done', finalContent = null } = {
       existing.stepCount = stepCount;
       existing.totalInputTokens = totalIn;
       existing.totalOutputTokens = totalOut;
-      existing.totalCost = totalCost;
+      existing.totalCost = totalCost; // null/0 when the provider didn't report cost
       await promisifyReq(tx(db, ['runs']).objectStore('runs').put(existing));
     }
   } catch (e) {
