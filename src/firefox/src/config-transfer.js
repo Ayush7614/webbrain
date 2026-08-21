@@ -144,6 +144,66 @@ function clone(value) {
   return structuredClone(value);
 }
 
+const VALID_PERMISSION_CAPABILITIES = new Set([
+  'navigate',
+  'click',
+  'type',
+  'execute_js',
+  'dev_patch',
+  'network_write',
+  'download',
+  'upload',
+  'window',
+  'schedule',
+]);
+const VALID_PERMISSION_ACTIONS = new Set(['allow', 'deny']);
+const VALID_PERMISSION_DURATIONS = new Set(['always', 'once']);
+
+function sanitizeWbPermissions(value, { strict = false } = {}) {
+  if (!Array.isArray(value)) {
+    if (strict) throw new Error('Invalid wb_permissions: expected an array.');
+    return [];
+  }
+  const sanitized = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const entry = value[index];
+    if (!isPlainObject(entry)) {
+      if (strict) throw new Error(`Invalid wb_permissions[${index}]: expected an object.`);
+      continue;
+    }
+    const capability = String(entry.capability || '').trim();
+    const host = String(entry.host || '').trim().toLowerCase().replace(/^www\./, '');
+    const rawAction = entry.action == null || String(entry.action).trim() === '' ? 'allow' : String(entry.action).trim().toLowerCase();
+    const action = rawAction;
+    const duration = String(entry.duration || 'always').trim().toLowerCase();
+    if (!VALID_PERMISSION_CAPABILITIES.has(capability)) {
+      if (strict) throw new Error(`Invalid wb_permissions[${index}].capability: "${entry.capability}".`);
+      continue;
+    }
+    if (!host || host.length > 253 || !/^[a-z0-9.-]+$/.test(host) || host.startsWith('.') || host.endsWith('.') || host.includes('..')) {
+      if (strict) throw new Error(`Invalid wb_permissions[${index}].host: "${entry.host}".`);
+      continue;
+    }
+    if (!VALID_PERMISSION_ACTIONS.has(action)) {
+      if (strict) throw new Error(`Invalid wb_permissions[${index}].action: "${entry.action}".`);
+      continue;
+    }
+    const normalizedDuration = VALID_PERMISSION_DURATIONS.has(duration) ? duration : 'always';
+    if (strict && !VALID_PERMISSION_DURATIONS.has(duration)) {
+      throw new Error(`Invalid wb_permissions[${index}].duration: "${entry.duration}".`);
+    }
+    const ts = Number(entry.ts);
+    sanitized.push({
+      capability,
+      host,
+      action,
+      duration: normalizedDuration,
+      ...(Number.isFinite(ts) ? { ts } : { ts: Date.now() }),
+    });
+  }
+  return sanitized;
+}
+
 function sanitizeProviders(value, { strict = false } = {}) {
   if (!isPlainObject(value)) return {};
   const providers = clone(value);
@@ -182,9 +242,14 @@ function normalizeSettings(source, { strict = false } = {}) {
       if (strict) throw new Error(`Invalid value for configuration setting "${key}".`);
       continue;
     }
+    if (key === 'wb_permissions') {
+      settings[key] = sanitizeWbPermissions(value, { strict });
+      continue;
+    }
     settings[key] = clone(value);
   }
   settings.providers = sanitizeProviders(settings.providers, { strict });
+  settings.wb_permissions = sanitizeWbPermissions(settings.wb_permissions, { strict });
   return settings;
 }
 
@@ -254,6 +319,10 @@ export function parseConfigPatchImport(json) {
     }
     if (!validSettingValue(key, value)) {
       throw new Error(`Invalid value for configuration setting "${key}".`);
+    }
+    if (key === 'wb_permissions') {
+      settings[key] = sanitizeWbPermissions(value, { strict: true });
+      continue;
     }
     settings[key] = key === 'providers'
       ? sanitizeProviders(value, { strict: true })
