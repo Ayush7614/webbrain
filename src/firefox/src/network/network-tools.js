@@ -215,10 +215,16 @@ export function validateFetchUrl(rawUrl, opts = {}) {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     return { ok: false, error: `Unsupported URL scheme: ${u.protocol} (only http/https allowed)` };
   }
+  if (u.username || u.password) {
+    return { ok: false, error: `Blocked URL with embedded credentials: ${rawUrl.slice(0, 120)}` };
+  }
 
   let host = (u.hostname || '').toLowerCase();
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
   if (!host) return { ok: false, error: 'URL has no hostname.' };
+  if (/\.nip\.io$|\.xip\.io$|\.sslip\.io$|\.xip\.name$/i.test(host)) {
+    return { ok: false, error: `Blocked DNS rebinding host: ${host}` };
+  }
 
   const ALWAYS_BLOCKED_HOSTS = new Set([
     'metadata.google.internal',
