@@ -110,8 +110,23 @@ export async function fetchWithFallback(url, options = {}) {
   try {
     const res = await fetch(url, { ...fetchOptions, signal: controller.signal });
     clearTimeout(timeoutId);
-    // Keep the caller signal linked after headers arrive: aborting the fetch
-    // must also cancel a response body that stalls while the caller reads it.
+    // Keep the caller signal linked after headers arrive so a stalled body read
+    // remains cancellable, but clean up the listener once the body settles so it
+    // does not leak across the 130-step agent loop.
+    if (callerSignal && res?.body?.closed) {
+      const cleanup = () => callerSignal.removeEventListener('abort', abortDirectFromCaller);
+      try {
+        res.body.closed.finally(cleanup);
+      } catch {
+        callerSignal.removeEventListener('abort', abortDirectFromCaller);
+      }
+    } else if (callerSignal && res?.body) {
+      // Body without closed promise (older mocks) — keep listener; the
+      // once:true abort handler will auto-remove on abort, and non-aborted
+      // bodies are short-lived in tests so the leak window is bounded.
+    } else if (callerSignal) {
+      callerSignal.removeEventListener('abort', abortDirectFromCaller);
+    }
     return res;
   } catch (directError) {
     clearTimeout(timeoutId);
