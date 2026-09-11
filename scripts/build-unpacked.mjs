@@ -22,7 +22,7 @@
  * test. Never publish these directories to stores; use `npm run build:zip`.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -35,6 +35,8 @@ export const DEV_BUILD_SOURCE_DIRS = {
   chrome: 'src/chrome',
   firefox: 'src/firefox',
 };
+
+const DEV_BUILD_PROTECTED_DIRS = ['.git', 'src', 'scripts'];
 
 /**
  * Resolve which browsers to build and where they land.
@@ -53,6 +55,81 @@ export function resolveBuildPlan({ browser = 'all', outDir = 'build' } = {}) {
     sourceDir: DEV_BUILD_SOURCE_DIRS[name],
     outDir: path.join(outDir, name === 'chrome' ? 'chrome' : 'firefox'),
   }));
+}
+
+function pathContains(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === ''
+    || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+function pathsOverlap(left, right) {
+  return pathContains(left, right) || pathContains(right, left);
+}
+
+// Resolve symlinks in the existing portion of a path. This catches an output
+// parent that aliases src/ even when the final build directory does not exist.
+function resolveExistingPath(absPath) {
+  let existing = path.resolve(absPath);
+  const missing = [];
+  while (!existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    missing.unshift(path.basename(existing));
+    existing = parent;
+  }
+  const resolvedParent = existsSync(existing) ? realpathSync(existing) : existing;
+  return path.resolve(resolvedParent, ...missing);
+}
+
+/**
+ * Resolve and validate the complete plan before any destination is removed.
+ * Outputs must not contain the repository, overlap either browser source, or
+ * enter repository metadata/build-script directories.
+ */
+export function assertSafeBuildPlan(plan, rootDir = root) {
+  const rootPath = resolveExistingPath(rootDir);
+  const sourcePaths = Object.entries(DEV_BUILD_SOURCE_DIRS).map(([name, sourceDir]) => ({
+    label: `${name} source`,
+    path: resolveExistingPath(path.resolve(rootPath, sourceDir)),
+  }));
+  const protectedPaths = DEV_BUILD_PROTECTED_DIRS.map((protectedDir) => ({
+    label: `protected repository directory ${protectedDir}`,
+    path: resolveExistingPath(path.resolve(rootPath, protectedDir)),
+  }));
+  const resolvedPlan = plan.map((step) => ({
+    ...step,
+    sourcePath: path.resolve(rootPath, step.sourceDir),
+    outputPath: path.resolve(rootPath, step.outDir),
+    outputSafetyPath: resolveExistingPath(path.resolve(rootPath, step.outDir)),
+  }));
+
+  for (const step of resolvedPlan) {
+    if (pathContains(step.outputSafetyPath, rootPath)) {
+      throw new Error(
+        `unsafe output directory for ${step.browser}: ${step.outputPath} contains repository root ${rootPath}`,
+      );
+    }
+    for (const protectedPath of [...sourcePaths, ...protectedPaths]) {
+      if (pathsOverlap(step.outputSafetyPath, protectedPath.path)) {
+        throw new Error(
+          `unsafe output directory for ${step.browser}: ${step.outputPath} overlaps ${protectedPath.label} ${protectedPath.path}`,
+        );
+      }
+    }
+  }
+
+  for (let i = 0; i < resolvedPlan.length; i += 1) {
+    for (let j = i + 1; j < resolvedPlan.length; j += 1) {
+      if (pathsOverlap(resolvedPlan[i].outputSafetyPath, resolvedPlan[j].outputSafetyPath)) {
+        throw new Error(
+          `unsafe output directories overlap: ${resolvedPlan[i].outputPath} and ${resolvedPlan[j].outputPath}`,
+        );
+      }
+    }
+  }
+
+  return resolvedPlan;
 }
 
 /** Read + parse JSON, throwing a path-annotated error. */
@@ -113,43 +190,55 @@ function parseArgs(argv) {
   return args;
 }
 
-function runCli() {
-  const args = parseArgs(process.argv.slice(2));
-  const { version } = assertDevBuildInputs(root);
-  const plan = resolveBuildPlan({ browser: args.browser, outDir: args.outDir });
+export function buildUnpacked({
+  browser = 'all',
+  outDir = 'build',
+  dryRun = false,
+  clean = false,
+  rootDir = root,
+  log = console.log,
+} = {}) {
+  const { version } = assertDevBuildInputs(rootDir);
+  const plan = assertSafeBuildPlan(resolveBuildPlan({ browser, outDir }), rootDir);
 
-  if (args.clean && !args.dryRun) {
+  if (clean && !dryRun) {
     for (const step of plan) {
-      rmSync(path.resolve(root, step.outDir), { recursive: true, force: true });
+      rmSync(step.outputPath, { recursive: true, force: true });
     }
   }
 
   for (const step of plan) {
-    const from = path.resolve(root, step.sourceDir);
-    const to = path.resolve(root, step.outDir);
+    const from = step.sourcePath;
+    const to = step.outputPath;
     if (!existsSync(from)) throw new Error(`missing source directory: ${from}`);
-    if (args.dryRun) {
-      console.log(`[dry-run] ${step.browser}: ${step.sourceDir}/ -> ${step.outDir}/ (v${version})`);
+    if (dryRun) {
+      log(`[dry-run] ${step.browser}: ${step.sourceDir}/ -> ${step.outDir}/ (v${version})`);
       continue;
     }
     mkdirSync(path.dirname(to), { recursive: true });
     rmSync(to, { recursive: true, force: true });
     cpSync(from, to, { recursive: true });
-    console.log(`built ${step.browser} v${version}: ${step.sourceDir}/ -> ${step.outDir}/`);
+    log(`built ${step.browser} v${version}: ${step.sourceDir}/ -> ${step.outDir}/`);
   }
 
-  if (!args.dryRun) {
-    console.log('Load paths:');
+  if (!dryRun) {
+    log('Load paths:');
     for (const step of plan) {
       if (step.browser === 'chrome') {
-        console.log(`  Chrome: chrome://extensions/ -> Load unpacked -> ${step.outDir}/`);
+        log(`  Chrome: chrome://extensions/ -> Load unpacked -> ${step.outDir}/`);
       } else {
-        console.log(
+        log(
           `  Firefox: about:debugging#/runtime/this-firefox -> Load Temporary Add-on -> ${step.outDir}/manifest.json`,
         );
       }
     }
   }
+
+  return { version, plan };
+}
+
+function runCli() {
+  buildUnpacked(parseArgs(process.argv.slice(2)));
 }
 
 const invokedAsCli =
