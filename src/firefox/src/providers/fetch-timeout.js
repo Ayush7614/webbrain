@@ -20,6 +20,7 @@
 
 let _cachedTimeoutMs = 120000;
 let _timeoutInitialized = false;
+let _storageListener = null;
 const TIMEOUT_FLOOR_MS = 5000;
 const TIMEOUT_CEILING_MS = 600000;
 
@@ -36,8 +37,8 @@ async function _ensureTimeoutInitialized() {
     if (typeof v === 'number' && v >= TIMEOUT_FLOOR_MS && v <= TIMEOUT_CEILING_MS) {
       _cachedTimeoutMs = v;
     }
-    if (api.storage.onChanged?.addListener) {
-      api.storage.onChanged.addListener((changes, area) => {
+    if (api.storage.onChanged?.addListener && !_storageListener) {
+      _storageListener = (changes, area) => {
         if (area !== 'local' || !changes.requestTimeoutMs) return;
         const next = changes.requestTimeoutMs.newValue;
         if (typeof next === 'number' && next >= TIMEOUT_FLOOR_MS && next <= TIMEOUT_CEILING_MS) {
@@ -45,7 +46,8 @@ async function _ensureTimeoutInitialized() {
         } else if (next == null) {
           _cachedTimeoutMs = 120000;
         }
-      });
+      };
+      api.storage.onChanged.addListener(_storageListener);
     }
   } catch { /* keep the hardcoded default */ }
 }
